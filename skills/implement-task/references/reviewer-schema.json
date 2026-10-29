@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["PASS", "FAIL"] },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+          "location": { "type": "string" },
+          "issue": { "type": "string" },
+          "fix": { "type": "string" }
+        },
+        "required": ["severity", "location", "issue"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["verdict", "findings", "summary"],
+  "additionalProperties": false
+}

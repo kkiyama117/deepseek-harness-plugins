@@ -1,0 +1,43 @@
+- id: headless-startup
+  disabled: true
+- id: headless-runner
+  disabled: true
+- id: sandbox-policy
+  inject: []
+  config:
+    mode: workspace-write
+    workspaceRoot: !!js process.cwd()
+- id: session-title-llm
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: agent-loop
+  config:
+    agents:
+      - id: main
+        sessionId: request-acceptance-test
+        provider: acceptance-mock
+        model: acceptance-mock
+        cwd: !!js process.cwd()
+- id: session-persistence-jsonl
+  config:
+    root: './.sessions'
+    compression: none
+- id: goal
+  disabled: true
+- id: subagent
+  disabled: true
+- insert:
+    - id: acceptance-goal-provider
+      name: '../../src/goal-provider.ts'
+    - id: acceptance-subagent-provider
+      name: '../../src/subagent-provider.ts'
+      config:
+        maxDepth: 2
+    - id: request-acceptance
+      name: '../../src/index.ts'
+      config:
+        maxRecordBytes: 16384
+        sessionIds: [request-acceptance-test]
+    - id: acceptance-fixture
+      name: './acceptance-fixture.ts'

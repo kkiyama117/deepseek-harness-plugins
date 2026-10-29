@@ -1,0 +1,33 @@
+{
+  "name": "deepseek-harness-plugins",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r --workspace-concurrency=1 test"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-atomic-write": "^0.1.0-rc.8",
+    "@deepseek-ai/cordis-plugin-include": "^1.0.6",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-credentials-local": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-launch-environment": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-scope": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-settings-file": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-timeout": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-web": "^0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "devDependencies": {
+    "vitest": "^4.1.8"
+  }
+}

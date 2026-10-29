@@ -1,0 +1,22 @@
+[Unit]
+Description=Slack Intake daily decisions and DSH verification Worker
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/data/softwares/slack-intake
+Environment=DSH_HOME=/home/kiyama/.dsh
+Environment=LANG=C.UTF-8
+Environment=PATH=/home/kiyama/.local/share/mise/installs/go/1.27.1/bin:/home/kiyama/.local/share/mise/installs/node/latest/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/kiyama/.local/share/mise/installs/node/latest/bin/node /data/softwares/deepseek-harness/apps/cli/lib/bin.js --profile headless --patch /data/softwares/slack-intake/integrations/dsh-slack-digest/daemon.patch.yml
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

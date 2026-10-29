@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "roles": {
+    "flash": { "provider": "ollama-cloud", "model": "deepseek-v4.1-flash" },
+    "astra": { "provider": "openai-codex", "model": "gpt-6-astra" }
+  },
+  "limits": {
+    "maxConcurrency": 1,
+    "maxCalls": 5,
+    "maxNodes": 3,
+    "maxWorkers": 1,
+    "maxBatches": 1,
+    "maxRepairRounds": 0
+  },
+  "customDesignerAllowlist": []
+}

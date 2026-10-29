@@ -1,0 +1,3 @@
+- insert:
+    - id: acceptance-pilot-isolation
+      name: '@local/dsh-acceptance-pilot-isolation'

@@ -1,0 +1,11 @@
+{
+  "name": "@local/dsh-aistore-native-preset",
+  "version": "1.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Restricted child preset for aistore structured reader and reviewer tasks.",
+  "exports": {".": "./index.mjs", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg"},
+  "files": ["index.mjs", "cordis.patch.yml", "locale", "icon.svg", "README.md"],
+  "peerDependencies": {"@deepseek-ai/dsh-tool-executor-native": "0.2.1-rc.3"},
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+}

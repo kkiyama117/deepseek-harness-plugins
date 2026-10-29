@@ -1,0 +1,30 @@
+/** Test external package sources against one explicit target-runtime module identity. */
+import ts from 'typescript'
+import { resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { defineConfig } from 'vitest/config'
+import { standardDecoratorPlugin, vitestExecArgv } from './vitest.shared.ts'
+
+const { config: { compilerOptions: { paths } }, error } = ts.readConfigFile('tsconfig.base.json', ts.sys.readFile)
+if (error) throw new Error(ts.flattenDiagnosticMessageText(error.messageText, '\n'))
+const alias = Object.entries(paths).map(([name, targets]) => {
+  const pattern = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('\\*', '(.*)')
+  const target = (targets as string[])[0]!.replace('*', '$1')
+  return { find: new RegExp(`^${pattern}$`), replacement: resolve(target) }
+}).sort((a, b) => b.find.source.length - a.find.source.length)
+alias.push({ find: /^@earendil-works\/pi-ai$/, replacement: resolve('packages/llm/llm-pi-ai/node_modules/@earendil-works/pi-ai/dist/index.js') })
+
+export default defineConfig({
+  plugins: [standardDecoratorPlugin()],
+  resolve: { alias },
+  test: {
+    include: ['scripts/local-workflow-results.spec.ts', 'scripts/local-goal-acceptance.spec.ts', 'scripts/local-session-cleanup.spec.ts', 'scripts/local-codex-recovery.spec.ts'],
+    pool: 'forks',
+    maxWorkers: 2,
+    execArgv: vitestExecArgv,
+    setupFiles: ['./scripts/test-proxy-environment.ts', './scripts/test-dom-environment.ts'],
+    testTimeout: 15000,
+    hookTimeout: 15000,
+    server: { deps: { inline: [/deepseek-harness-plugins/] } },
+  },
+})

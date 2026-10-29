@@ -1,0 +1,2 @@
+# Unified diff context markers precede the target's original tab indentation.
+skill-explorer-0.3.22-auth.patch whitespace=-space-before-tab

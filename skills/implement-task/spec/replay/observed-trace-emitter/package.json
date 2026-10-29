@@ -1,0 +1,14 @@
+{
+  "name": "@kkiyama117/dsh-observed-trace-emitter",
+  "description": "Harness-observed emitter for the implement-task Quint replay gate: listens to the Cordis tools/result event (fires on every tool dispatch, independent of the agent) and appends each observed tool call to a per-session spec/replay/trace.observed.<sid>.jsonl log, so the replay check runs on what the agent actually did, not what it self-reports. Experimental telemetry, not an enforcement gate.",
+  "version": "0.1.1",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "selfcheck.mjs", "cordis.patch.yml", "README.md"],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

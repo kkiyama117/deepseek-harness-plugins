@@ -1,0 +1,25 @@
+{
+  "name": "@kkiyama117/dsh-evolve",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Observed failures, tested skill proposals, and human-controlled activation for DSH.",
+  "license": "MIT",
+  "engines": { "node": ">=24.9.0", "dsh": "=0.2.1-rc.3" },
+  "exports": {
+    ".": "./index.mjs",
+    "./trial-policy": "./trial-policy.mjs",
+    "./trial-policy/locale/*.json": "./locale/trial-policy/*.json",
+    "./trial-policy/icon": "./icon.svg",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": ["*.mjs", "bin/check.mjs", "cordis.patch.yml", "locale", "icon.svg", "LICENSE", "README.md", "DESIGN.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": { "test": "node --test tests/*.test.mjs", "check": "node bin/check.mjs" },
+  "dependencies": { "zod": "^4.4.3" },
+  "peerDependencies": { "@deepseek-ai/dsh-llm": "0.2.1-rc.3" },
+  "devDependencies": { "@deepseek-ai/dsh-llm": "link:../../deepseek-harness/packages/llm/llm" },
+  "packageManager": "pnpm@11.28.5"
+}

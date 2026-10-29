@@ -1,0 +1,1 @@
+[{"a":"scopeDone"},{"a":"clarify","clear":true},{"a":"plan","frontierOk":true},{"a":"approve"},{"a":"delegate","w":1,"task":"ImplementTask"},{"a":"workerDone","w":1,"task":"ImplementTask","ok":true},{"a":"delegate","w":2,"task":"VerifyTask"},{"a":"workerDone","w":2,"task":"VerifyTask","ok":true},{"a":"review","v":"Pass"},{"a":"report"}]

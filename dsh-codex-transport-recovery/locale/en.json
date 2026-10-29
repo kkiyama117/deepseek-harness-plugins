@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex transport recovery",
+    "description": "Recognize interrupted WebSocket close 1000 or service restart 1012 for bounded native retries."
+  }
+}

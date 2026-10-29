@@ -1,0 +1,21 @@
+{
+  "name": "@local/dsh-request-acceptance-pilot",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Session-limited request acceptance pilot for the local DSH Host",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "probe.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md"],
+  "dependencies": {
+    "@kkiyama117/dsh-goal-acceptance": "file:/data/softwares/deepseek-harness-plugins/releases/kkiyama117-dsh-goal-acceptance-1.1.0.tgz"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-scope": "0.2.1-rc.3"
+  },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

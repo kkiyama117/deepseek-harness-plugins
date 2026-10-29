@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Chrome DevTools connection",
+    "description": "Inspect the running local Chrome's pages, Console, and network requests after browser approval. Uses the Chrome DevTools MCP installed in the local DSH checkout."
+  }
+}

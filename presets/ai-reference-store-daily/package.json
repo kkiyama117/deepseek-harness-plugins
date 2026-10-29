@@ -1,0 +1,9 @@
+{
+  "name": "@local/dsh-ai-reference-store-daily-preset",
+  "version": "1.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Daily AI reference-store preset with the existing task restrictions and receipt paths.",
+  "files": ["cordis.patch.yml", "README.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

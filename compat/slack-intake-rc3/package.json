@@ -1,0 +1,58 @@
+{
+  "name": "@kkiyama117/dsh-slack-intake",
+  "version": "0.2.1-local.3",
+  "description": "DSH credential and native-Agent adapters for the Go aistore CLI",
+  "type": "module",
+  "license": "MIT",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./agent": "./agent.mjs",
+    "./native": "./native.mjs",
+    "./daily": "./daily.mjs",
+    "./bridge": "./bridge.mjs",
+    "./verification-runtime": "./verification-runtime.mjs",
+    "./automation-client": "./automation-client.mjs",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.mjs",
+    "intake.mjs",
+    "agent.mjs",
+    "native.mjs",
+    "daily.mjs",
+    "daily-start.sh",
+    "bridge.mjs",
+    "automation-client.mjs",
+    "verification-runtime.mjs",
+    "development-sandbox.mjs",
+    "slack-client.mjs",
+    "slack-cards.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "UPGRADE.json"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2 || 4.0.5-alpha.1 || 4.0.5",
+    "@deepseek-ai/dsh-cmdline": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
+    "@deepseek-ai/dsh-credentials": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
+    "@deepseek-ai/dsh-credentials-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
+    "@deepseek-ai/dsh-subagent": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
+    "@deepseek-ai/dsh-session-query": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.1-rc.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --import ./tests/host-imports.mjs --test tests/*.test.mjs"
+  }
+}

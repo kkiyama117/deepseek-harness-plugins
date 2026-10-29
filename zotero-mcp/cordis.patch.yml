@@ -1,0 +1,13 @@
+- insert:
+    - id: mcp-zotero
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: zotero
+        transport: stdio
+        command: /home/kiyama/.local/bin/zotero-mcp
+        args: [serve, --transport, stdio]
+        env:
+          HOME: /home/kiyama/.local/share/zotero-mcp-dsh
+          ZOTERO_LOCAL: 'true'
+          ZOTERO_DB_PATH: /home/kiyama/.local/share/Zotero/zotero.sqlite
+        failOnStartupError: true

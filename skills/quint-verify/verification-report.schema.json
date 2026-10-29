@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://deepseek-harness/dsh/quint-verify/verification-report.schema.json",
+  "title": "Quint Verification Report",
+  "description": "Machine-readable verdict for a Quint spec verification: typecheck + per-invariant safety (expect satisfied) + per-witness liveness (expect reached/violated). Ported from quint-llm's verification-report, adapted to the DSH quint-verify runner. Note the faithful-but-confusing witness terms: result 'violated' = reached = GOOD (liveness); 'satisfied' = unreachable = CONCERN.",
+  "type": "object",
+  "required": ["configuration", "invariants", "witnesses", "verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "configuration": {
+      "type": "object",
+      "required": ["module"],
+      "additionalProperties": false,
+      "properties": {
+        "module": { "type": "string", "description": "The --main module verified" },
+        "parameters": {
+          "type": "object",
+          "description": "Const parameter values if the module is parameterized",
+          "additionalProperties": true
+        }
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "description": "Safety checks. SATISFIED = good (holds in sampled traces); VIOLATED = bug.",
+      "required": ["total", "satisfied", "violated", "details"],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "integer" },
+        "satisfied": { "type": "integer", "description": "No counterexample found in the sampled traces" },
+        "violated": { "type": "integer", "description": "A trace disproved the invariant — a bug" },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "result"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "result": { "type": "string", "enum": ["satisfied", "violated"] },
+              "seed": { "type": "string", "description": "Reproduction seed, present only when violated" }
+            }
+          }
+        }
+      }
+    },
+    "witnesses": {
+      "type": "object",
+      "description": "Liveness checks. 'violated' (reached in >0 traces) = good; 'satisfied' (0 traces) = unreachable = concern.",
+      "required": ["total", "violated", "satisfied", "details"],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "integer" },
+        "violated": { "type": "integer", "description": "Witnesses reached in >0 traces — scenarios are reachable (good)" },
+        "satisfied": { "type": "integer", "description": "Witnesses with 0 traces — unreachable / over-constrained (concern)" },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "result"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "result": { "type": "string", "enum": ["violated", "satisfied"], "description": "violated = reached (good); satisfied = 0 traces (unreachable, concern)" },
+              "traces": { "type": "integer", "description": "Traces that reached the witness state" },
+              "explored": { "type": "integer", "description": "Total traces explored" }
+            }
+          }
+        }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail"],
+      "description": "pass iff every invariant is satisfied AND every witness is reached (>0 traces)"
+    }
+  }
+}

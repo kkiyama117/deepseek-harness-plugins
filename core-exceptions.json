@@ -1,0 +1,17 @@
+{
+  "approvedUpstreamBase": "22ddee3792402c3e70ec5f86a63c3e3e895a2f60",
+  "exception": {
+    "id": "sidebar-disposed-opening-diagnostic",
+    "files": [
+      "packages/client/ui-sidebar-right/README.i18n.yaml",
+      "packages/client/ui-sidebar-right/README.md",
+      "packages/client/ui-sidebar-right/README.zh.md",
+      "packages/client/ui-sidebar-right/src/client/session-view.ts",
+      "packages/client/ui-sidebar-right/tests/session-views.client.spec.ts"
+    ],
+    "patchSha256": "064c6667e8759481333c0e27d7928863c8e06aaaa05d2344a902e52eb135fca5",
+    "reason": "The disposed flag and opening-error handler are private to the upstream view. No public service or Slot exposes this diagnostic; a console-wide filter or replacement of the entire sidebar would broaden the change.",
+    "sourceCommit": "b5059f530faec33b8485da5f89b74b70d4f925a9"
+  },
+  "rule": "Keep local features and documents outside Core. An upstream baseline change or exception-content change requires explicit review; do not regenerate this hash to bypass a failure."
+}

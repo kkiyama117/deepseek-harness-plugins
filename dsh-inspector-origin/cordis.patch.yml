@@ -1,0 +1,5 @@
+- id: experimental-inspector
+  config:
+    captureFetch: true
+    clientOrigins:
+      - https://boiled.colobus-powan.ts.net

@@ -1,0 +1,53 @@
+- id: headless-startup
+  disabled: true
+- id: headless-runner
+  disabled: true
+- id: session-title-llm
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: sandbox-policy
+  inject: []
+  config:
+    mode: workspace-write
+    workspaceRoot: !!js process.cwd()
+- id: session-persistence-jsonl
+  config:
+    root: './.sessions'
+    compression: none
+- id: agent-loop
+  config:
+    agents:
+      - id: main
+        sessionId: evolve-composition-root
+        provider: evolve-mock
+        model: fixed
+        cwd: !!js process.cwd()
+- id: local-evolve
+  config:
+    mode: propose
+    locale: ja
+    route:
+      provider: evolve-mock
+      model: fixed
+    dailyRequestLimit: 3
+    request:
+      maxOutputTokens: 512
+      maxInputBytes: 1000000
+      maxOutputBytes: 32000
+      timeoutMs: 10000
+    assets:
+      - name: evolve-fixture
+        description: Return the required fixture answer.
+        initialContent: "EXACT ORIGINAL BODY\n"
+        tests:
+          - id: exact-answer
+            prompt: Answer the fixture question.
+            equals: GOOD
+- insert:
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: evolve-trial
+    - id: evolve-fixture
+      name: './mock.mjs'

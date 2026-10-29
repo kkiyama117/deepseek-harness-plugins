@@ -1,0 +1,17 @@
+{
+  "base": "@linxin666/dsh-remote-web-ui@0.4.6",
+  "version": "0.4.6-local.1",
+  "changedFiles": [
+    "src/index.ts",
+    "lib/types/index.js",
+    "lib/index.js",
+    "src/client/index.ts",
+    "lib/types/client/index.js",
+    "src/client/remote-channel.ts",
+    "lib/types/client/remote-channel.js",
+    "lib/client.js",
+    "package.json"
+  ],
+  "retainedFix": "0.4.4-local.2 bootstrap policy and retired-channel lifetime; authentication/gating code unchanged",
+  "verification": "pending"
+}

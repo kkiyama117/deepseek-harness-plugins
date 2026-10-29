@@ -1,0 +1,46 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -67,12 +67,12 @@
+ //#region src/access.ts
+ /**
+ * Whether this request may enter any /api/dsh-skill-explorer route.
+-* @param ctx - host context; may expose remoteWebUiPairing.
++* @param ctx - host context with the injected DSH connection service.
+ * @param request - the incoming HTTP request.
+-* @returns true for loopback, or a live paired-device cookie.
++* @returns true when DSH accepts the authority, origin, and browser authentication.
+ */
+ function isSkillExplorerAllowed(ctx, request) {
+-	return isPairedOrLoopbackAllowed(ctx, request);
++	return ctx.connection.requestRejection(request) === void 0;
+ }
+ //#endregion
+ //#region src/frontmatter.ts
+@@ -827,9 +827,8 @@
+ /**
+ * skill-explorer — host half. Serves the skill center data source: the
+ * /api/dsh-skill-explorer route family (list grouped by source, set enabled,
+-* create, delete, health) over the shared trust fence (loopback by default;
+-* a live paired-device cookie is an extra allow path). The browser half
+-* (./client) renders the skill center panel.
++* create, delete, health) using DSH connection authentication and request trust.
++* The browser half (./client) renders the skill center panel.
+ *
+ * Ported from the local dsh-skill-explorer plugin; everything rides official
+ * NPM SDK packages — no dsh source changes.
+@@ -840,11 +839,12 @@
+ const inject = [
+ 	"webServer",
+ 	"skills",
+-	"sessions"
++	"sessions",
++	"connection"
+ ];
+ /**
+-* Mount the skill center routes (trust fence looks up remoteWebUiPairing on ctx).
+-* @param ctx - host plugin context carrying webServer/skills/sessions.
++* Mount the skill center routes with DSH connection authentication.
++* @param ctx - host plugin context carrying webServer/skills/sessions/connection.
+ * @param config - resolved plugin config.
+ */
+ function applyImpl(ctx, config) {

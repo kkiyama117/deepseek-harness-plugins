@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Slack常駐処理の構成",
+    "description": "Pinned shared adapter and explicitly selected worker overlay."
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Application icon fallback",
+    "description": "Provide cacheable generic icons for selected applications while preserving browser authentication and the upstream launcher."
+  }
+}

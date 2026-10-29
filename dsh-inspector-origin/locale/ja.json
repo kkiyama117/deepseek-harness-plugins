@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Inspectorの信頼済みOrigin",
+    "description": "既存のDSH HTTPS Originを許可します。待受先はループバックのままです。"
+  }
+}

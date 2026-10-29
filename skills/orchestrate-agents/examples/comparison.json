@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "flow": "comparison",
+  "fixtureId": "synthetic-arithmetic-v1",
+  "order": ["flash", "astra", "flash-advisor"],
+  "task": {
+    "originalRequest": "Compare the totals in this synthetic fixed fixture.",
+    "goal": "Report totals for A=[2,3] and B=[1,5], and identify the larger total.",
+    "context": "All input is provided here. Do not read files, use network access, invoke tools or modify any state. Include the complete answer in summary, and the arithmetic in evidence.",
+    "acceptance": ["A totals 5; B totals 6; B is larger by 1."],
+    "constraints": ["Read-only synthetic exercise, not a model-quality benchmark.", "No tools or recursive delegation."],
+    "writeScope": []
+  }
+}

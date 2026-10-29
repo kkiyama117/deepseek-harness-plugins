@@ -1,0 +1,9 @@
+# @kkiyama117/dsh-llm-cursor bundle layer.
+# Installed with `dsh plugin --profile <name> add <this directory>`; the layer
+# inserts the llm-cursor row, which registers the `cursor` provider route on
+# the harness LLM seam. The base bundle's `llm` row is untouched: this plugin
+# is additive, and its config defaults (CURSOR_API_KEY, local runtime,
+# $DSH_HOME/cursor state root) work out of the box.
+- insert:
+    - id: llm-cursor
+      name: '@kkiyama117/dsh-llm-cursor'

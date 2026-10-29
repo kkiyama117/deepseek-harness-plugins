@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session connection cleanup",
+    "description": "Release provider caches on Session disposal, never at each turn."
+  }
+}

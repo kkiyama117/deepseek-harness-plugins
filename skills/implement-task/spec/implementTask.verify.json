@@ -1,0 +1,27 @@
+{
+  "invariants": [
+    "fixRoundCap",
+    "planRequiresClarify",
+    "reviewOnlyAfterVerify",
+    "reportRequiresReview",
+    "noImplementBeforeApproval",
+    "approveRequiresPlan",
+    "reportHonesty",
+    "workHappensInWorkers"
+  ],
+  "witnesses": [
+    "reachedClarify",
+    "clarifyUsed",
+    "reachedImplement",
+    "reachedVerify",
+    "reachedReview",
+    "reachedReport",
+    "fixLoopUsed",
+    "capReachedOpenItems",
+    "fallbackOccurred",
+    "delegationUsed",
+    "parallelChunks"
+  ],
+  "maxSteps": 40,
+  "maxSamples": 1000
+}

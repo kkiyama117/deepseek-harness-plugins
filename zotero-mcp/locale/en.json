@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Zotero MCP",
+    "description": "Search and read the local Zotero library. Uses separate MCP settings with no automatic embedding updates."
+  }
+}

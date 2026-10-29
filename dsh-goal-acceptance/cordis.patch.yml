@@ -1,0 +1,11 @@
+- id: goal
+  disabled: true
+- id: subagent
+  disabled: true
+- insert:
+    - id: acceptance-goal-provider
+      name: '@kkiyama117/dsh-goal-acceptance/goal-provider'
+    - id: acceptance-subagent-provider
+      name: '@kkiyama117/dsh-goal-acceptance/subagent-provider'
+    - id: goal-acceptance
+      name: '@kkiyama117/dsh-goal-acceptance'

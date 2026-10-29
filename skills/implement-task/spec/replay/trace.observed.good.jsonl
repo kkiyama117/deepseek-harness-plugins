@@ -1,0 +1,4 @@
+{"seq":0,"sid":"session-demo","name":"ask_user_question","ok":true,"qHead":"Plan is ready: scope -> clarify -> plan -> gate -> implement -> verify -> review -> report.","optsHead":"Approve|Adjust","outHead":"Approve"}
+{"seq":1,"sid":"session-demo","name":"subagent_worker","ok":true,"desc":"implement chunk 1","promptHead":"implement the feature per the plan...","outHead":"Implemented chunk 1: feature files written, one runnable check added."}
+{"seq":2,"sid":"session-demo","name":"subagent_verify","ok":true,"desc":"verify","promptHead":"run the deterministic checks and report raw output...","outHead":"pnpm build green; pnpm test green; git diff --check clean."}
+{"seq":3,"sid":"session-demo","name":"subagent_frontier","ok":true,"desc":"review","promptHead":"reviewer: judge the diff against the acceptance criteria...","outHead":"Verdict: PASS"}

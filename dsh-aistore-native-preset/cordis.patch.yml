@@ -1,0 +1,11 @@
+- insert:
+    - id: preset-aistore-native
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: aistore-native
+        name: Aistore structured reader
+        description: Reads the supplied packet without filesystem, network, or delegation tools.
+        order: 1000
+        plugins:
+          - id: aistore-native-restriction
+            name: '@local/dsh-aistore-native-preset'

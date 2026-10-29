@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "flow": "coordinator-advisor",
+  "task": {
+    "originalRequest": "Analyze two synthetic batches of documentation tasks without executing them.",
+    "goal": "Give routing guidance for each stable batch, escalating only a concrete unresolved decision.",
+    "context": "Batch one consists of typo corrections with exact replacements. Batch two consists of explicit relative-link corrections. Each batch has separate files and exact acceptance checks.",
+    "acceptance": ["Both batches receive guidance grounded in the supplied facts, without invented missing requirements."],
+    "constraints": ["Reasoning-only exercise. No tools, file changes or recursive delegation."],
+    "writeScope": []
+  },
+  "units": [
+    { "id": "typos", "prompt": "Describe minimal checks for the typo batch.", "writeScope": [] },
+    { "id": "links", "prompt": "Describe minimal checks for the link batch.", "writeScope": [] }
+  ],
+  "batches": [["typos"], ["links"]],
+  "options": { "concurrency": 2, "repairRounds": 1 }
+}

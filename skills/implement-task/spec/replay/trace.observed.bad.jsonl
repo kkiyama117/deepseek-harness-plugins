@@ -1,0 +1,3 @@
+{"seq":0,"sid":"session-demo","name":"subagent_worker","ok":true,"desc":"implement chunk 1","promptHead":"implement the feature per the plan...","outHead":"Implemented chunk 1."}
+{"seq":1,"sid":"session-demo","name":"subagent_verify","ok":true,"desc":"verify","promptHead":"run the deterministic checks...","outHead":"checks ran; output captured"}
+{"seq":2,"sid":"session-demo","name":"subagent_frontier","ok":true,"desc":"review","promptHead":"reviewer: judge the diff against the acceptance criteria...","outHead":"Verdict: FAIL - verification evidence missing"}

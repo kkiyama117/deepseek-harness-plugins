@@ -1,0 +1,5 @@
+# Installing the shared adapter must not start its standalone CLI entry.
+- id: aistore-credentials
+  disabled: true
+- id: aistore-adapter
+  disabled: true

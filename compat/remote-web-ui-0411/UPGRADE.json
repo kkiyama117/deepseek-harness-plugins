@@ -1,0 +1,22 @@
+{
+  "base": "@linxin666/dsh-remote-web-ui@0.4.11",
+  "version": "0.4.11-local.1",
+  "changedFiles": [
+    "src/index.ts",
+    "lib/types/index.js",
+    "lib/index.js",
+    "src/client/index.ts",
+    "lib/types/client/index.js",
+    "src/client/remote-channel.ts",
+    "lib/types/client/remote-channel.js",
+    "lib/client.js",
+    "package.json"
+  ],
+  "retainedFix": "0.4.6-local.1 bootstrap pairing policy (__DSH_REMOTE_PAIRING_POLICY__) and retired-channel lifetime, re-applied to 0.4.11; authentication, pairing, gate and route code unchanged",
+  "notIncorporatedUpstream": [
+    "0.4.6 -> 0.4.11 never publishes the steady-state pairing gate ahead of boot; the browser half still starts hostPairingPolicy undefined and installs the gated channel provisionally",
+    "0.4.11 installRemoteChannel still has no generation guard: a retired generation can notify, rewrite, and uninstall after its restore"
+  ],
+  "sourceMapNote": "lib/*.js.map and lib/types/**/*.d.ts.map are the upstream 0.4.11 maps; they do not describe the patched statements",
+  "verification": "node local-fix/patch.mjs --verify; node --test local-fix/ (57/57 pass on source, unbundled and served; 42 fail on pristine 0.4.11)"
+}

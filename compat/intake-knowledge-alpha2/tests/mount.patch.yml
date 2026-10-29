@@ -1,0 +1,28 @@
+- id: headless-startup
+  disabled: true
+- id: headless-runner
+  disabled: true
+- id: session-title-llm
+  disabled: true
+- insert:
+    - id: knowledge-mount-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: intake-knowledge-check
+    - id: preset-intake-knowledge-check
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: intake-knowledge-check
+        plugins:
+          - id: intake-knowledge-readonly
+            name: /home/kiyama/.dsh/profiles/web/node_modules/@local/dsh-intake-knowledge-reader/readonly.mjs
+            config:
+              aistoreExecutable: /data/softwares/slack-intake/cli/bin/aistore
+              storeRoot: /data/references/AI
+              scopeFile: /home/kiyama/.local/state/slack-intake/stores/a5165b4bace493c40601809b87dd7dbec2d16d00ce3ea957d52608bf1afd209a/knowledge/scope.json
+    - id: knowledge-mount-check
+      name: /data/softwares/slack-intake/integrations/dsh-intake-knowledge/tests/mount.mjs
+      config:
+        presetId: intake-knowledge-check
+        cwd: /data/softwares/slack-intake
+        reportPath: !!js process.env.INTAKE_KNOWLEDGE_REPORT

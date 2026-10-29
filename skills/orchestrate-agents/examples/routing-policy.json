@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "mode": "shadow",
+  "externalSend": false,
+  "stageAuthorized": true,
+  "workflowAuthorized": false,
+  "model": "jev-1.13.0",
+  "limits": { "maxCalls": 2, "maxInputBytes": 32000, "maxRequestBytes": 16000, "maxResponseBytes": 16000, "timeoutMs": 10000 },
+  "facts": { "readiness": "ready", "separability": "together" },
+  "routines": {},
+  "execution": {
+    "version": 1,
+    "roles": {
+      "executor": { "provider": "fixture", "model": "synthetic-only" },
+      "lead": { "provider": "fixture", "model": "synthetic-only" },
+      "worker": { "provider": "fixture", "model": "synthetic-only" },
+      "reviewer": { "provider": "fixture", "model": "synthetic-only" }
+    },
+    "limits": { "maxConcurrency": 2, "maxCalls": 5, "maxNodes": 8, "maxWorkers": 2, "maxBatches": 1, "maxRepairRounds": 0 },
+    "customDesignerAllowlist": []
+  },
+  "options": { "concurrency": 2, "repairRounds": 0 }
+}

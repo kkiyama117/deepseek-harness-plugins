@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "flow": "lead-workers",
+  "task": {
+    "originalRequest": "Compare two synthetic workflow policies from supplied text only.",
+    "goal": "Explain the tradeoff between central planning and lightweight coordination.",
+    "context": "Policy A: one expert plans and integrates independent workers. Policy B: an expert designs stable batches; a lighter coordinator manages them and asks an expert advisor about exceptions.",
+    "acceptance": ["Address both policies and distinguish architectural benefits from unmeasured cost/quality claims."],
+    "constraints": ["Read-only reasoning exercise. No tools, web retrieval, files, recursive delegation or performance claims."],
+    "writeScope": []
+  },
+  "units": [
+    { "id": "policy_a", "prompt": "Identify when policy A is appropriate and one limitation from the supplied context.", "writeScope": [] },
+    { "id": "policy_b", "prompt": "Identify when policy B is appropriate and one limitation from the supplied context.", "writeScope": [] }
+  ],
+  "batches": [],
+  "options": { "concurrency": 2, "repairRounds": 1 }
+}

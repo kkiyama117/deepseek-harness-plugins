@@ -1,0 +1,6 @@
+{
+  "source": "dsh-better-sidebar@0.25.0",
+  "target": "DSH 0.2.1-alpha.2",
+  "change": "Documented webRuntime -> webStartup injection and trustedHosts read; no authorization broadening.",
+  "verification": "packed full Web profile and Chromium settings smoke passed; no inactive plugin or browser errors"
+}

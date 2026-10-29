@@ -1,0 +1,16 @@
+- insert:
+    - id: preset-evolve-trial
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: evolve-trial
+        name: Evolve evaluation
+        description: Text-only, tool-denied evaluation sessions.
+        order: 100
+        plugins:
+          - id: evolve-trial-policy
+            name: '@kkiyama117/dsh-evolve/trial-policy'
+    - id: local-evolve
+      name: '@kkiyama117/dsh-evolve'
+      config:
+        mode: observe
+        locale: ja

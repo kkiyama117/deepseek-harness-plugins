@@ -1,0 +1,12 @@
+{
+  "upstream": "@deepseek-ai/dsh-tool-workflow",
+  "base": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
+  "target": "d743267388641bc76f17c45ce8b4c231aed1d32c",
+  "preserved": "da1639e82401fc34dced7246c60168374f45e8d1",
+  "sourceFiles": [
+    "index.ts",
+    "record.ts",
+    "types.ts"
+  ],
+  "delta": "Optional resultKeys validates and saves the complete result before selected foreground/background delivery; upstream engine remains unchanged."
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Inspector trusted origin",
+    "description": "Allow the existing DSH HTTPS origin without changing the loopback bind."
+  }
+}

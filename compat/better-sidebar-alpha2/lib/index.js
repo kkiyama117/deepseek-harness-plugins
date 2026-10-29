@@ -1,0 +1,7199 @@
+import { createHash, randomUUID } from "node:crypto";
+import { access, lstat, mkdir, open, opendir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
+import { WebSocket, WebSocketServer } from "ws";
+import { parse } from "yaml";
+import z from "@deepseek-ai/schemastery";
+import { execFileSync, spawn } from "node:child_process";
+import { appendFileSync, createWriteStream, readFileSync, statSync, watch } from "node:fs";
+import { once } from "node:events";
+import { homedir } from "node:os";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import { deflateRaw } from "node:zlib";
+import { promisify } from "node:util";
+import { SettingsConflictError } from "@deepseek-ai/dsh-settings";
+import { defineTool } from "@deepseek-ai/dsh-tools";
+import { BlockAssembler, ReasoningEffortId, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { snapshotSubagentDescriptor } from "@deepseek-ai/dsh-subagent";
+//#region src/prefs-shared.ts
+/**
+* Shared "Side card" preference vocabulary (types + constants), consumed by
+* BOTH halves: the host registers the schemastery schema over these values
+* (config.ts) and the client reads/writes them through the settings RPC
+* (client/prefs.ts, client/SideCardSection.tsx). Kept free of schemastery so
+* the browser bundle never pulls the schema runtime in.
+*/
+/** The user-settings namespace holding the side card preferences. */
+const SIDEBAR_PREFS_NS = "dsh-better-sidebar";
+/** The stock exclude list (VS Code ships a similar files.exclude default). */
+const EXPLORER_EXCLUDE_DEFAULTS = [".DS_Store", "Thumbs.db"];
+/** Fallback prefs used whenever the settings document is unreachable or malformed. */
+const SIDEBAR_PREFS_DEFAULTS = {
+	autoOpenSubagent: true,
+	autoOpenJobs: true,
+	tasksViewMode: "graph",
+	mobileNoAutoOpen: true,
+	mobileDefaultTree: true,
+	agentOpenTools: false,
+	editorExplorer: false,
+	editorGitGutter: true,
+	explorerExclude: [...EXPLORER_EXCLUDE_DEFAULTS],
+	customCss: "",
+	htmlViewerNoSandbox: false,
+	htmlViewerDefaultUnsafe: false,
+	tabsEnabled: {},
+	viewersEnabled: {},
+	pluginSettings: {}
+};
+//#endregion
+//#region src/config.ts
+/**
+* Serializable configuration and defaults for the sidebar host half. Loader
+* schema validation normally fills defaults; {@link resolveSidebarConfig}
+* applies the same defaults for direct callers that bypass the Loader.
+*
+* Schemastery comes from DSH, not from the public `schemastery` package, and
+* that is load-bearing rather than stylistic: only DSH's build WRAPS a
+* `meta.volatile` field in a cosmokit `Volatile` reference when it parses the
+* config. The Loader's volatile-commit path walks those references
+* (`volatileEntries` / `updateVolatile`), so a schema built with the public
+* package produces plain values, leaves the loader nothing to commit, and
+* **silently drops every live preference write** — the write reports success
+* and the effective value never changes.
+* @module dsh-better-sidebar/config
+*/
+/** Schemastery schema for the deployment-provided host limits. */
+const LimitsSchema = z.object({
+	readLimit: z.number().step(1).min(1).default(524288),
+	mediaLimit: z.number().step(1).min(1).default(20971520),
+	uploadLimit: z.number().step(1).min(1).default(134217728),
+	listLimit: z.number().step(1).min(1).default(1e3)
+});
+/**
+* Apply direct-call defaults after Loader schema validation has normally run.
+*
+* @param config - Deployment-provided sidebar host settings.
+* @returns Complete settings consumed by the host half.
+*/
+function resolveSidebarConfig(config) {
+	return {
+		readLimit: config?.readLimit ?? 524288,
+		mediaLimit: config?.mediaLimit ?? 20971520,
+		uploadLimit: config?.uploadLimit ?? 134217728,
+		listLimit: config?.listLimit ?? 1e3
+	};
+}
+/**
+* Schemastery schema for the user-facing preferences (validated by the
+* settings service).
+*
+* Asserted as `z<SidebarPrefs>` (the interface lives in `prefs-shared.ts`; the
+* explicit annotation is also what keeps the emitted declaration portable).
+* Unknown keys are TOLERATED by this schema and pass through untouched, which
+* is what keeps a legacy `workspaceFence: true` — or the retired title-bar
+* compatibility keys (`titleBarScheme` / `titleBarPresetId` /
+* `titleBarCompat` / `titleBarStripPx`, removed with the whole strip
+* mechanism) — in an old profile harmless instead of fatal.
+*/
+const PrefsSchema = z.object({
+	autoOpenSubagent: z.boolean().default(true),
+	autoOpenJobs: z.boolean().default(true),
+	tasksViewMode: z.union([z.const("graph"), z.const("tree")]).default("graph"),
+	mobileNoAutoOpen: z.boolean().default(true),
+	mobileDefaultTree: z.boolean().default(true),
+	agentOpenTools: z.boolean().default(false),
+	editorExplorer: z.boolean().default(false),
+	editorGitGutter: z.boolean().default(true),
+	explorerExclude: z.array(z.string()).default([...EXPLORER_EXCLUDE_DEFAULTS]),
+	customCss: z.string(),
+	htmlViewerNoSandbox: z.boolean().default(false),
+	htmlViewerDefaultUnsafe: z.boolean().default(false),
+	tabsEnabled: z.dict(z.boolean()).default({}),
+	viewersEnabled: z.dict(z.boolean()).default({}),
+	pluginSettings: z.dict(z.dict(z.any())).default({})
+});
+const volatilePrefs = Object.fromEntries(Object.entries(PrefsSchema.dict ?? {}).map(([key, field]) => [key, field.volatile()]));
+/**
+* Config schema of this plugin's Loader row: deployment limits plus the live
+* user preferences.
+*/
+const Config = z.object({
+	...LimitsSchema.dict,
+	...volatilePrefs
+});
+//#endregion
+//#region src/git.ts
+/**
+* Git operations for the sidebar source-control panel. Everything goes
+* through the system `git` binary spawned per request (no library, no state),
+* with porcelain-parseable output formats (`-z` NUL framing, unit separators)
+* so parsing never depends on locale or color config. All commands run with
+* `-C <cwd>` on the session's working directory and `--no-pager` /
+* `-c color.ui=false` / `-c core.quotePath=false` so output stays
+* machine-readable and paths stay literal (git's default C-quotes a non-ASCII
+* path, which every diff surface would render as the file name).
+*
+* Commits use the user's git global identity untouched (never sets
+* user.name/user.email).
+*/
+/** One git failure (stderr text as the message). */
+var GitCommandError = class extends Error {
+	code;
+	command;
+	constructor(message, code = "git-error", command) {
+		super(message);
+		this.code = code;
+		this.command = command;
+	}
+};
+/** Parse porcelain v1 -z output into entries (rename/copy pairs collapse to one row). */
+function parsePorcelainZ(output) {
+	const tokens = output.split("\0");
+	const entries = [];
+	let index = 0;
+	while (index < tokens.length) {
+		const token = tokens[index];
+		index += 1;
+		if (token === "") continue;
+		const xy = token.slice(0, 2);
+		const rest = token.slice(3);
+		entries.push({
+			path: rest,
+			xy
+		});
+		if ((xy[0] === "R" || xy[0] === "C") && tokens[index] !== void 0 && tokens[index] !== "") index += 1;
+	}
+	return entries;
+}
+/**
+* Resolve one `--numstat` path field to the path the file has NOW: the plain
+* (`old => new`) and brace (`src/{a => b}/x.ts`) rename notations both fold
+* into the new name, and anything else passes through verbatim.
+*
+* Only the LINE-framed output needs this: in `-z` framing git writes the two
+* names as separate NUL fields, so a path is never folded into rename notation
+* there — a file literally named `a => b.txt` keeps its own name.
+*/
+function resolveNumstatPath(path) {
+	const arrow = path.indexOf(" => ");
+	if (arrow === -1) return path;
+	const open = path.indexOf("{");
+	if (open !== -1 && open < arrow) {
+		const close = path.indexOf("}", arrow + 4);
+		if (close !== -1) return `${path.slice(0, open)}${path.slice(arrow + 4, close)}${path.slice(close + 1)}`;
+	}
+	return path.slice(arrow + 4);
+}
+/**
+* Parse one `git diff --numstat` answer into a path → line-counts map. Both
+* framings are accepted: the production `-z` one (records NUL-framed, so paths
+* with newlines or quotes stay lossless) and the plain line-framed one.
+*
+* Three record shapes exist:
+*  - `2\t0\tpath` — an ordinary change,
+*  - `-\t-\tpath` — a binary change: no counts exist, so it maps to the binary
+*    variant rather than to `0 0`,
+*  - renames — the path field is the pair `old => new` (or the brace form
+*    `src/{a => b}/x.ts`) in line framing, and two NUL-framed fields (origin
+*    first) in `-z` framing.
+*
+* A rename is attributed to the NEW path: that is the file as it exists now,
+* and the exact path `git status --porcelain` reports for the same change, so
+* the counts land on the row the panel renders.
+*/
+function parseNumstat(output) {
+	const counts = /* @__PURE__ */ new Map();
+	const framed = output.includes("\0");
+	const records = output.split(framed ? "\0" : "\n");
+	let index = 0;
+	while (index < records.length) {
+		const record = records[index];
+		index += 1;
+		if (record === "") continue;
+		const addedEnd = record.indexOf("	");
+		const deletedEnd = addedEnd === -1 ? -1 : record.indexOf("	", addedEnd + 1);
+		if (deletedEnd === -1) continue;
+		const added = record.slice(0, addedEnd);
+		const deleted = record.slice(addedEnd + 1, deletedEnd);
+		let path = record.slice(deletedEnd + 1);
+		if (framed && path === "") {
+			const renamed = records[index + 1];
+			index += 2;
+			if (renamed === void 0) continue;
+			path = renamed;
+		} else if (!framed) path = resolveNumstatPath(path);
+		if (path === "") continue;
+		if (added === "-" || deleted === "-") {
+			counts.set(path, { binary: true });
+			continue;
+		}
+		const additions = Number(added);
+		const deletions = Number(deleted);
+		if (!Number.isFinite(additions) || !Number.isFinite(deletions)) continue;
+		counts.set(path, {
+			additions,
+			deletions
+		});
+	}
+	return counts;
+}
+/** Parse `git worktree list --porcelain` records. Production requests use
+* `-z` so even newlines and non-ASCII bytes in checkout paths stay lossless;
+* newline framing remains accepted for small fixtures and older Git output. */
+function parseWorktreeList(output) {
+	const rows = [];
+	let path;
+	let branch = "HEAD";
+	let locked = false;
+	let prunable = false;
+	const flush = () => {
+		if (path !== void 0) rows.push({
+			path,
+			branch,
+			locked,
+			prunable
+		});
+		path = void 0;
+		branch = "HEAD";
+		locked = false;
+		prunable = false;
+	};
+	const sep = output.includes("\0") ? "\0" : "\n";
+	const framed = output.endsWith(sep) ? output : `${output}${sep}`;
+	for (const line of framed.split(sep)) if (line === "") flush();
+	else if (line.startsWith("worktree ")) path = line.slice(9);
+	else if (line.startsWith("branch refs/heads/")) branch = line.slice(18);
+	else if (line === "locked" || line.startsWith("locked ")) locked = true;
+	else if (line === "prunable" || line.startsWith("prunable ")) prunable = true;
+	return rows;
+}
+/** Parse `git log --pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D` rows. */
+function parseLogLines(output) {
+	const rows = [];
+	for (const line of output.split("\n")) {
+		if (line === "") continue;
+		const [hash, subject, author, date, hashFull, refs] = line.split("");
+		if (hash === void 0 || subject === void 0) continue;
+		rows.push({
+			hash,
+			subject,
+			author: author ?? "",
+			date: date ?? "",
+			hashFull: hashFull ?? hash,
+			refs: refs ?? ""
+		});
+	}
+	return rows;
+}
+/** Run one git command; resolves with stdout, rejects with GitCommandError. */
+function runGit(cwd, args, timeoutMs = 3e4) {
+	const full = [
+		"-C",
+		cwd,
+		"--no-pager",
+		"-c",
+		"color.ui=false",
+		"-c",
+		"core.quotePath=false",
+		...args
+	];
+	return new Promise((resolvePromise, reject) => {
+		const child = spawn("git", full, {
+			stdio: [
+				"ignore",
+				"pipe",
+				"pipe"
+			],
+			windowsHide: true,
+			env: {
+				...process.env,
+				GIT_OPTIONAL_LOCKS: "0"
+			}
+		});
+		let stdout = "";
+		let stderr = "";
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL");
+			reject(new GitCommandError(`git ${args[0] ?? ""} timed out after ${timeoutMs}ms`, "git-error", args.join(" ")));
+		}, timeoutMs);
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk.toString("utf8");
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk.toString("utf8");
+		});
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			reject(new GitCommandError(`cannot run git: ${error.message}`, "git-error", args.join(" ")));
+		});
+		child.on("close", (code) => {
+			clearTimeout(timer);
+			if (code === 0) resolvePromise(stdout);
+			else reject(new GitCommandError(stderr.trim() || `git exited with ${String(code)}`, "git-error", args.join(" ")));
+		});
+	});
+}
+/** Raw stdout of one git command. Callers that only need text (no status
+*  parsing) should use this instead of re-implementing the spawn. */
+function runGitRaw(cwd, args, timeoutMs = 3e4) {
+	return runGit(cwd, args, timeoutMs);
+}
+/** Format epoch seconds plus a `+HHMM`/`-HHMM` timezone as ISO 8601. */
+function isoWithOffset(seconds, timezone) {
+	const zone = /^([+-])(\d{2})(\d{2})$/.exec(timezone);
+	const offsetMinutes = zone === null ? 0 : (zone[1] === "-" ? -1 : 1) * (Number(zone[2]) * 60 + Number(zone[3]));
+	const shifted = /* @__PURE__ */ new Date((seconds + offsetMinutes * 60) * 1e3);
+	const pad = (value) => String(value).padStart(2, "0");
+	const stamp = `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
+	return zone === null ? `${stamp}Z` : `${stamp}${zone[1]}${zone[2]}:${zone[3]}`;
+}
+/**
+* Parse `git blame --porcelain -L <a>,<b>` output into one row per blamed
+* line. Porcelain repeats only the `<hash> <orig> <final>` header for the
+* SECOND and later lines of the same commit (the author / committer / summary
+* block is emitted once per commit per run), so metadata is carried forward
+* per hash; every record ends with its `\t`-prefixed content line, which is
+* where the walk resumes. Unknown lines are skipped, never fatal.
+*/
+function parseBlamePorcelain(output) {
+	const rows = [];
+	const seen = /* @__PURE__ */ new Map();
+	const lines = output.split("\n");
+	let index = 0;
+	while (index < lines.length) {
+		const header = /^([0-9a-f]{40,64}) \d+ (\d+)(?: \d+)?$/.exec(lines[index]);
+		if (header === null) {
+			index += 1;
+			continue;
+		}
+		const hash = header[1];
+		const line = Number(header[2]);
+		index += 1;
+		let author;
+		let date;
+		let summary;
+		while (index < lines.length && !lines[index].startsWith("	")) {
+			const text = lines[index];
+			index += 1;
+			if (text.startsWith("author ")) author = text.slice(7);
+			else if (text.startsWith("author-time ")) {
+				const seconds = Number(text.slice(12));
+				const zone = /^author-tz (.+)$/.exec(lines[index] ?? "");
+				if (Number.isFinite(seconds)) date = isoWithOffset(seconds, zone?.[1] ?? "");
+			} else if (text.startsWith("summary ")) summary = text.slice(8);
+		}
+		if (index < lines.length && lines[index].startsWith("	")) index += 1;
+		const known = seen.get(hash);
+		if (known === void 0) {
+			const record = {
+				author: author ?? "",
+				date: date ?? "",
+				summary: summary ?? ""
+			};
+			seen.set(hash, record);
+			rows.push({
+				hash,
+				line,
+				...record
+			});
+		} else rows.push({
+			hash,
+			line,
+			...known
+		});
+	}
+	return rows;
+}
+/**
+* Blame one line range of a file (`git blame --porcelain -L <a>,<b>`).
+* Every failure mode — not a repository, an untracked file (`git blame`
+* exits non-zero: no such path in HEAD), a bad revision, a stalled mount
+* hitting the command timeout — resolves to an EMPTY result: the editor's
+* hover tooltip shows nothing and a missing answer can never break the
+* editing surface.
+*/
+async function blame(cwd, path, startLine, endLine, selected) {
+	try {
+		return parseBlamePorcelain(await runGit(await repoRoot(cwd, selected), [
+			"blame",
+			"--porcelain",
+			"-L",
+			`${String(startLine)},${String(endLine)}`,
+			"--",
+			path
+		]));
+	} catch {
+		return [];
+	}
+}
+/** Cap on child directories probed by the workspace-container fallback scan.
+*  A home-directory cwd can hold hundreds of visible folders (Library, iCloud
+*  mounts…); probing them all serially is what froze the panel in #369. */
+const DISCOVERY_LIMIT = 200;
+/** Per-probe and direct-discovery budget. `rev-parse` is millisecond-scale on
+*  a healthy checkout; a probe that needs longer is a stalled mount and is
+*  better abandoned than waited on. */
+const DISCOVERY_TIMEOUT_MS = 5e3;
+/** Discovery results are cheap to recompute but expensive to storm: the panel
+*  polls every 2s and each poll fans out into several git.* calls that all
+*  resolve the same roots. A short TTL keeps fan-out at one scan per cwd. */
+const DISCOVERY_CACHE_TTL_MS = 6e4;
+const repoRootsCache = /* @__PURE__ */ new Map();
+const repoRootsInFlight = /* @__PURE__ */ new Map();
+/** Whether the directory is inside a git work tree (exit-0 `git rev-parse`).
+*  Probe timeout is short: a cwd on a stalled mount must not hold the panel
+*  hostage for the full command budget (issue #369). */
+async function isGitRepo(cwd) {
+	try {
+		return (await runGit(cwd, ["rev-parse", "--is-inside-work-tree"], DISCOVERY_TIMEOUT_MS)).trim() === "true";
+	} catch {
+		return false;
+	}
+}
+/** The repository top level containing `cwd` (`git rev-parse --show-toplevel`). */
+async function directRepoRoot(cwd) {
+	return (await runGit(cwd, ["rev-parse", "--show-toplevel"], DISCOVERY_TIMEOUT_MS)).trim();
+}
+/** Discover the current repository or direct child repositories. Results are
+*  cached per cwd and concurrent callers share one in-flight scan, so opening
+*  the panel (three parallel git.* requests) costs a single discovery pass. */
+function repoRoots(cwd) {
+	const cached = repoRootsCache.get(cwd);
+	if (cached !== void 0 && cached.expires > Date.now()) return Promise.resolve(cached.roots);
+	const pending = repoRootsInFlight.get(cwd);
+	if (pending !== void 0) return pending;
+	const promise = discoverRepoRoots(cwd).then((roots) => {
+		repoRootsCache.set(cwd, {
+			roots,
+			expires: Date.now() + DISCOVERY_CACHE_TTL_MS
+		});
+		repoRootsInFlight.delete(cwd);
+		return roots;
+	}, (error) => {
+		repoRootsInFlight.delete(cwd);
+		throw error;
+	});
+	repoRootsInFlight.set(cwd, promise);
+	return promise;
+}
+async function discoverRepoRoots(cwd) {
+	try {
+		return [await directRepoRoot(cwd)];
+	} catch {
+		const entries = await readdir(cwd, { withFileTypes: true }).catch(() => []);
+		const roots = [];
+		for (const entry of entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules").sort((left, right) => left.name.localeCompare(right.name)).slice(0, DISCOVERY_LIMIT)) try {
+			const root = await directRepoRoot(join(cwd, entry.name));
+			if (!roots.some((existing) => pathIdentity(existing) === pathIdentity(root))) roots.push(root);
+		} catch {}
+		return roots;
+	}
+}
+/** Resolve the selected repository, defaulting to the first discovered root. */
+async function repoRoot(cwd, selected) {
+	const roots = await repoRoots(cwd);
+	if (roots.length === 0) throw new GitCommandError("not a git repository", "not-repo", "rev-parse");
+	if (selected !== void 0) {
+		const identity = pathIdentity(selected);
+		const match = roots.find((root) => pathIdentity(root) === identity);
+		if (match !== void 0) return match;
+	}
+	return roots[0];
+}
+/** The current branch name (`git rev-parse --abbrev-ref HEAD`; 'HEAD' when detached). */
+async function currentBranch(cwd) {
+	return (await runGit(cwd, [
+		"rev-parse",
+		"--abbrev-ref",
+		"HEAD"
+	])).trim();
+}
+/** Upper bound on status rows shipped to the client. Beyond this the result
+*  is truncated (with `truncated: true`) so a pathological untracked set —
+*  e.g. the working tree discovered under a home-directory cwd — cannot
+*  freeze the browser main thread on JSON parse or list render (#369). */
+const GIT_STATUS_LIMIT = 2e3;
+/**
+* Fold one path's counts from both numstat sides into a running map. A file
+* changed in the index AND in the worktree is measured on each side against
+* HEAD, so the two readings ADD UP; a binary reading on either side wins,
+* because then there is no line count to add.
+*/
+function addLineCounts(into, from) {
+	for (const [path, counts] of from) {
+		const previous = into.get(path);
+		if (previous === void 0) {
+			into.set(path, counts);
+			continue;
+		}
+		if (!("additions" in previous) || !("additions" in counts)) {
+			into.set(path, { binary: true });
+			continue;
+		}
+		into.set(path, {
+			additions: previous.additions + counts.additions,
+			deletions: previous.deletions + counts.deletions
+		});
+	}
+}
+/**
+* Working-tree status (untracked included). `--untracked-files=all` lists
+* the contents of new directories as individual entries, while preserving
+* repository discovery and explicit repository selection for workspace roots.
+*
+* The per-path line counts (#131) ride this SAME read: one batch of three git
+* processes answers status and both numstat sides together, never one process
+* per file, and callers keep their existing refresh cadence. A numstat failure
+* costs only the counts (the rows fall back to their count-less rendering) —
+* the status answer itself must never fail because of it.
+*/
+async function status(cwd, selected) {
+	const repositories = await repoRoots(cwd);
+	if (repositories.length === 0) return {
+		isRepo: false,
+		entries: [],
+		repositories: []
+	};
+	const root = await repoRoot(cwd, selected);
+	const [branch, raw, unstagedNumstat, stagedNumstat] = await Promise.all([
+		currentBranch(root).catch(() => "HEAD"),
+		runGit(root, [
+			"status",
+			"--porcelain=v1",
+			"-z",
+			"--untracked-files=all"
+		]),
+		runGit(root, [
+			"diff",
+			"--numstat",
+			"-z"
+		]).catch(() => ""),
+		runGit(root, [
+			"diff",
+			"--cached",
+			"--numstat",
+			"-z"
+		]).catch(() => "")
+	]);
+	const parsed = parsePorcelainZ(raw);
+	const lineCounts = /* @__PURE__ */ new Map();
+	addLineCounts(lineCounts, parseNumstat(stagedNumstat));
+	addLineCounts(lineCounts, parseNumstat(unstagedNumstat));
+	const truncated = parsed.length > GIT_STATUS_LIMIT;
+	return {
+		isRepo: true,
+		branch,
+		entries: (truncated ? parsed.slice(0, GIT_STATUS_LIMIT) : parsed).map((entry) => {
+			const counts = lineCounts.get(entry.path);
+			return counts === void 0 ? entry : {
+				...entry,
+				counts
+			};
+		}),
+		truncated,
+		root,
+		repositories
+	};
+}
+/** Platform-aware identity used only for comparing absolute checkout roots. */
+function pathIdentity(path) {
+	const absolute = resolve(path).replace(/[\\/]+$/, "");
+	return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+}
+/** Whether the current Git binary supports NUL-framed `worktree list` output.
+* Git < 2.36 rejects `-z`; cache the capability after the first attempt so
+* the SCM panel's polling does not repeatedly spawn a command known to fail. */
+let worktreeListSupportsZ;
+/** Raw usable checkout records, shared by inventory and target validation.
+* Prunable records point at missing paths and are deliberately excluded from
+* both the selector and the command-target allowlist. */
+async function listedWorktrees(cwd) {
+	let raw;
+	if (worktreeListSupportsZ === false) raw = await runGit(cwd, [
+		"worktree",
+		"list",
+		"--porcelain"
+	]);
+	else try {
+		raw = await runGit(cwd, [
+			"worktree",
+			"list",
+			"--porcelain",
+			"-z"
+		]);
+		worktreeListSupportsZ = true;
+	} catch {
+		worktreeListSupportsZ = false;
+		raw = await runGit(cwd, [
+			"worktree",
+			"list",
+			"--porcelain"
+		]);
+	}
+	return parseWorktreeList(raw).filter((entry) => !entry.prunable);
+}
+/** All linked checkouts of the repository containing `cwd`, enriched with a
+* live change count. The current checkout is first so a single-worktree repo
+* preserves the old UI ordering. */
+async function worktrees(cwd) {
+	if (!await isGitRepo(cwd)) return [];
+	const currentRoot = await repoRoot(cwd);
+	const listed = await listedWorktrees(cwd);
+	return (await Promise.all(listed.map(async (entry) => ({
+		path: entry.path,
+		branch: entry.branch,
+		current: pathIdentity(entry.path) === pathIdentity(currentRoot),
+		changes: await status(entry.path).then((result) => result.entries.length, () => 0)
+	})))).sort((left, right) => Number(right.current) - Number(left.current));
+}
+/** Resolve an optional client-selected linked checkout. A caller may never use
+* this seam to point Git operations at an unrelated repository: the target
+* must occur in the authoritative session repository's worktree list. */
+async function resolveWorktree(cwd, requested) {
+	if (requested === void 0 || requested === "") return cwd;
+	const identity = pathIdentity(requested);
+	const match = (await listedWorktrees(cwd)).find((entry) => pathIdentity(entry.path) === identity);
+	if (match === void 0) throw new GitCommandError(`unknown linked worktree: ${requested}`, "git-worktree", "worktree list");
+	return match.path;
+}
+/** Diff text of the worktree (unstaged) or the index (staged). */
+async function diff(cwd, path, staged, selected) {
+	const root = await repoRoot(cwd, selected);
+	const args = [
+		"diff",
+		"--no-ext-diff",
+		"--no-color",
+		"-U3"
+	];
+	if (staged) args.push("--cached");
+	if (path !== void 0) args.push("--", path);
+	return runGit(root, args);
+}
+/**
+* Diff text of the worktree against HEAD — staged and unstaged changes in
+* ONE patch, which is what "uncommitted changes" means for the editor's
+* change gutter (the two-sided `diff()` above would each miss half of a file
+* that is partly staged). A repository whose HEAD is not born yet cannot
+* answer `diff HEAD`, so that one failure falls back to `diff --cached`
+* (index against the empty tree — the unborn-HEAD shape of the same
+* question). Untracked files never appear in either: the caller marks them
+* from the status store instead.
+*/
+async function diffHead(cwd, path, selected) {
+	const root = await repoRoot(cwd, selected);
+	const tail = path !== void 0 ? ["--", path] : [];
+	try {
+		return await runGit(root, [
+			"diff",
+			"--no-ext-diff",
+			"--no-color",
+			"-U3",
+			"HEAD",
+			...tail
+		]);
+	} catch {
+		return runGit(root, [
+			"diff",
+			"--no-ext-diff",
+			"--no-color",
+			"-U3",
+			"--cached",
+			...tail
+		]);
+	}
+}
+/** Stage paths (all when path is undefined). */
+async function stage(cwd, path, selected) {
+	await runGit(await repoRoot(cwd, selected), [
+		"add",
+		"-A",
+		...path !== void 0 ? ["--", path] : []
+	]);
+}
+/** Unstage paths (all when path is undefined). */
+async function unstage(cwd, path, selected) {
+	await runGit(await repoRoot(cwd, selected), [
+		"reset",
+		"-q",
+		...path !== void 0 ? ["--", path] : []
+	]);
+}
+/** Commit the staged changes with a message (global identity untouched). */
+async function commit(cwd, message, selected) {
+	await runGit(await repoRoot(cwd, selected), [
+		"commit",
+		"-m",
+		message
+	]);
+}
+/** Branch names (current first). */
+async function branches(cwd, selected) {
+	const root = await repoRoot(cwd, selected);
+	const [current, raw] = await Promise.all([currentBranch(root).catch(() => "HEAD"), runGit(root, [
+		"for-each-ref",
+		"--format=%(refname:short)",
+		"refs/heads"
+	])]);
+	const names = raw.split("\n").filter((line) => line !== "");
+	return {
+		current,
+		names: names.includes(current) ? names : [current, ...names]
+	};
+}
+/** Switch to an existing branch.
+*  `--end-of-options` precedes the operand: without it a caller-supplied
+*  branch beginning with `-` is parsed as an OPTION, so `-f` force-discarded
+*  the worktree changes and `--work-tree=…` redirected the checkout. Same
+*  guard as show / commitDiff / revert / cherryPick (4100e16). */
+async function checkout(cwd, branch, selected) {
+	await runGit(await repoRoot(cwd, selected), [
+		"checkout",
+		"--end-of-options",
+		branch
+	]);
+}
+/** Recent commit history (newest first), lazily pageable via skip/count. */
+async function log(cwd, count = 30, skip = 0, selected) {
+	return parseLogLines(await runGit(await repoRoot(cwd, selected), [
+		"log",
+		"-n",
+		String(count),
+		"--skip",
+		String(skip),
+		"--decorate=short",
+		"--pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D"
+	]));
+}
+/**
+* Content of a file at a revision (`git show <rev>:<path>`), or null when the
+* revision has no such path (a new/untracked file has no HEAD side).
+*
+* `--end-of-options` precedes the operand: without it a caller-supplied `rev`
+* beginning with `-` is parsed as an OPTION rather than a revision, so
+* `rev: "--output=NUL"` silently wrote to a file and returned empty instead of
+* failing (the Changes tab's diff/blame panes then rendered blank). The
+* sentinel ends option parsing, so the operand can never be a flag while every
+* legitimate revision form still works (`HEAD`, `:0`, `<hash>^`, `HEAD~2`,
+* `origin/main`, any branch name).
+*/
+async function show(cwd, rev, path, selected) {
+	try {
+		return await runGit(await repoRoot(cwd, selected), [
+			"show",
+			"--end-of-options",
+			`${rev}:${path}`
+		]);
+	} catch {
+		return null;
+	}
+}
+/** Full patch text of one commit (`git show` with the commit header suppressed).
+*  Merge commits show their diff against the first parent (`-m --first-parent`
+*  is a no-op for regular commits), so a history click always has content.
+*  `--end-of-options` keeps a caller-supplied hash from parsing as an option. */
+async function commitDiff(cwd, hash, selected) {
+	return runGit(await repoRoot(cwd, selected), [
+		"show",
+		"--no-ext-diff",
+		"--no-color",
+		"--format=",
+		"-m",
+		"--first-parent",
+		"--end-of-options",
+		hash
+	]);
+}
+/** Discard the worktree changes of one path (`git checkout -- <path>`; the index is untouched). */
+async function discard(cwd, path, selected) {
+	await runGit(await repoRoot(cwd, selected), [
+		"checkout",
+		"--",
+		path
+	]);
+}
+/** Revert one commit onto the current branch with an auto-generated message.
+*  `--end-of-options` keeps a caller-supplied hash from parsing as an option. */
+async function revert(cwd, hash, selected) {
+	await runGit(await repoRoot(cwd, selected), [
+		"revert",
+		"--no-edit",
+		"--end-of-options",
+		hash
+	]);
+}
+/** Cherry-pick one commit onto the current branch.
+*  `--end-of-options` keeps a caller-supplied hash from parsing as an option. */
+async function cherryPick(cwd, hash, selected) {
+	await runGit(await repoRoot(cwd, selected), [
+		"cherry-pick",
+		"--end-of-options",
+		hash
+	]);
+}
+/** Push the current branch to its upstream (`git push`). A branch without a
+*  tracking remote fails loudly with git's own message — the panel shows it and
+*  the user fixes the tracking in a terminal. No operands, so there is nothing
+*  for a caller-supplied value to smuggle in as an option. */
+async function push(cwd, selected) {
+	await runGit(await repoRoot(cwd, selected), ["push"]);
+}
+/** Pull upstream changes into the current branch (`git pull --ff-only`).
+*  Fast-forward-only keeps a headless panel out of merge/conflict editors: a
+*  diverged branch fails with git's own message instead of opening an
+*  interactive merge, so the user resolves it in a terminal. */
+async function pull(cwd, selected) {
+	await runGit(await repoRoot(cwd, selected), ["pull", "--ff-only"]);
+}
+//#endregion
+//#region src/wire.ts
+/** One API failure with its wire code and HTTP status. */
+var SidebarError = class extends Error {
+	code;
+	status;
+	meta;
+	constructor(code, message, status = 400, meta) {
+		super(message);
+		this.code = code;
+		this.status = status;
+		this.meta = meta;
+	}
+};
+/** Body size bound of one JSON request (defense against unbounded reads). */
+const MAX_BODY_BYTES = 1 << 20;
+/** Read and parse the JSON request body (bounded; malformed → bad-request). */
+async function readJsonBody(req) {
+	const chunks = [];
+	let total = 0;
+	for await (const chunk of req) {
+		const buffer = Buffer.from(chunk);
+		total += buffer.length;
+		if (total > MAX_BODY_BYTES) throw new SidebarError("bad-request", "request body too large");
+		chunks.push(buffer);
+	}
+	const text = Buffer.concat(chunks).toString("utf8");
+	if (text.trim() === "") return {};
+	try {
+		return JSON.parse(text);
+	} catch {
+		throw new SidebarError("bad-request", "request body is not valid JSON");
+	}
+}
+/** Write a JSON response with the given status. */
+function writeJson(res, status, body) {
+	const payload = JSON.stringify(body);
+	res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+	res.end(payload);
+}
+/** Write the success envelope. */
+function writeOk(res, value) {
+	writeJson(res, 200, {
+		ok: true,
+		value
+	});
+}
+/** Write the failure envelope for any thrown value (unknown → internal 500). */
+function writeError(res, error) {
+	if (error instanceof SidebarError) {
+		writeJson(res, error.status, {
+			ok: false,
+			error: {
+				code: error.code,
+				message: error.message
+			}
+		});
+		return;
+	}
+	if (error instanceof GitCommandError) {
+		const notRepo = error.code === "not-repo";
+		writeJson(res, notRepo ? 409 : 400, {
+			ok: false,
+			error: {
+				code: notRepo ? "not-repo" : "git-error",
+				message: error.message
+			}
+		});
+		return;
+	}
+	writeJson(res, 500, {
+		ok: false,
+		error: {
+			code: "internal",
+			message: error instanceof Error ? error.message : String(error)
+		}
+	});
+}
+/** Narrow an unknown payload value to a string, else throw bad-request. */
+function requireString(payload, key) {
+	const value = payload?.[key];
+	if (typeof value !== "string" || value === "") throw new SidebarError("bad-request", `missing or invalid "${key}"`);
+	return value;
+}
+//#endregion
+//#region src/fs-tree.ts
+/**
+* Single-level directory listing for the sidebar explorer.
+*
+* The hot path here IS the explorer's latency budget, so the implementation is
+* deliberately allocation-shy: one `readdir(withFileTypes)` call (no
+* `opendir` stream), rows built only for the capped slice, paths composed by
+* string concatenation, and a hand-rolled case-insensitive sort (see
+* {@link compareEntries} — `localeCompare` alone costs ~15ms/10k rows, ~40x
+* the whole listing budget). A short TTL cache ({@link DIRECTORY_CACHE_TTL_MS})
+* absorbs the repeat listings a tree view makes on every re-render.
+*
+* Row semantics are unchanged: directories first, case-insensitive name order
+* with a deterministic tie-break, POSIX-hidden entries flagged for dimming,
+* symlinks stat'ed once so a link to a directory expands like a directory and
+* a dangling one is flagged broken. Directory rows additionally get one
+* bounded read of their own level to mark singleton-dir chains (`compact`)
+* for the explorer's breadcrumb folding.
+*/
+/**
+* Directory-first, case-insensitive name ordering (VSCode explorer order).
+*
+* `toLowerCase()` + code-point comparison instead of `localeCompare`: measured
+* at ~0.35ms/10k rows against ~14.6ms for the collator, and the tie-break on
+* the ORIGINAL name keeps the order total and deterministic for names that
+* only differ in case (`A` before `a`).
+*/
+function compareEntries(a, b) {
+	if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+	const la = a.name.toLowerCase();
+	const lb = b.name.toLowerCase();
+	if (la !== lb) return la < lb ? -1 : 1;
+	if (a.name === b.name) return 0;
+	return a.name < b.name ? -1 : 1;
+}
+/** How many symlink target stats run in flight during one level listing. */
+const SYMLINK_PROBE_CONCURRENCY = 32;
+/**
+* The level cache, keyed by `"<absoluteDir>\0<cap>\0<excludeKey>"`.
+*
+* Keyed by ABSOLUTE PATH, not by session: a listing is a pure function of the
+* path plus the cap AND the exclude pattern set, and its rows already carry
+* absolute paths, so sharing an entry between two sessions that read the same
+* directory is correct (and desirable — one directory read serves both).
+* Nothing session-scoped is stored, so no session's data can leak into
+* another's listing.
+*
+* The exclude set is part of the key, never ambient host state: a listing
+* filtered by one pattern list must never be served to a request carrying
+* another (the user's edit must show up on the next read, and the pattern list
+* travels WITH the request — see {@link ExcludeMatcher.key}).
+*/
+const directoryCache = /* @__PURE__ */ new Map();
+/** Cache key of one level read. */
+function cacheKey(path, maxEntries, exclude) {
+	return `${path}\0${maxEntries}\0${exclude?.key ?? ""}`;
+}
+/**
+* Drop the cached level(s) for one directory (and, when called with no
+* argument, everything). Writers call this after any mutation: `fs.write`,
+* `fs.rename`, `fs.remove`, `fs.mkdir`, the upload route and the fs-watch
+* notifier all funnel here, so a stale level is never served past the write
+* that changed it.
+* @param path - absolute (or session-relative) directory to invalidate; absent
+*  clears the whole cache.
+*/
+function invalidateDirectoryCache(path) {
+	if (path === void 0) {
+		directoryCache.clear();
+		return;
+	}
+	const prefix = `${resolve(path)}\0`;
+	for (const key of directoryCache.keys()) if (key.startsWith(prefix)) directoryCache.delete(key);
+}
+/** Max entries tracked in the TTL cache before the oldest are evicted. */
+const DIRECTORY_CACHE_MAX = 512;
+/** Read one level through the cache when it is fresh. */
+async function listDirectoryCached(path, maxEntries, exclude) {
+	const key = cacheKey(path, maxEntries, exclude);
+	const now = Date.now();
+	const hit = directoryCache.get(key);
+	if (hit !== void 0 && now - hit.at < 1500) return hit.listing;
+	const listing = await readDirectory(path, maxEntries, exclude);
+	if (directoryCache.size >= DIRECTORY_CACHE_MAX) {
+		const oldest = directoryCache.keys().next().value;
+		if (oldest !== void 0) directoryCache.delete(oldest);
+	}
+	directoryCache.set(key, {
+		at: now,
+		listing
+	});
+	return listing;
+}
+/**
+* List one directory level (cached for {@link DIRECTORY_CACHE_TTL_MS}).
+* @param path - absolute directory path.
+* @param maxEntries - row bound of one level (extra rows flag `truncated`).
+* @param exclude - compiled exclude-pattern probe (the explorerExclude pref):
+*  matched entries are dropped from the listing AND the singleton fold probe,
+*  so they never render nor block a breadcrumb fold.
+* @returns the sorted listing.
+* @throws {SidebarError} fs-error when the level is unreadable or not a directory.
+*/
+async function listDirectory(path, maxEntries = 1e3, exclude) {
+	return await listDirectoryCached(path, maxEntries, exclude);
+}
+/** Read one level straight from the filesystem (the cache's slow path). */
+async function readDirectory(path, maxEntries, exclude) {
+	let dirents;
+	try {
+		dirents = await readdir(path, { withFileTypes: true });
+	} catch (error) {
+		throw new SidebarError("fs-error", `cannot list "${path}": ${messageOf$1(error)}`, 400);
+	}
+	const prefix = path.endsWith(sep) ? path : `${path}${sep}`;
+	const visible = exclude === void 0 ? dirents : dirents.filter((dirent) => !exclude(`${prefix}${dirent.name}`, dirent.name));
+	const truncated = visible.length > maxEntries;
+	const kept = truncated ? visible.slice(0, maxEntries) : visible;
+	const rows = new Array(kept.length);
+	for (let index = 0; index < kept.length; index += 1) {
+		const dirent = kept[index];
+		rows[index] = {
+			name: dirent.name,
+			path: `${prefix}${dirent.name}`,
+			isDir: dirent.isDirectory(),
+			isSymlink: dirent.isSymbolicLink(),
+			broken: false,
+			hidden: dirent.name.startsWith(".")
+		};
+	}
+	await probeSymlinkTargets(rows);
+	await probeCompactRows(rows, exclude);
+	rows.sort(compareEntries);
+	return {
+		path,
+		entries: rows,
+		truncated
+	};
+}
+/** Probe each symlink row's target once (bounded concurrency, order-preserving). */
+async function probeSymlinkTargets(rows, concurrency = SYMLINK_PROBE_CONCURRENCY) {
+	let next = 0;
+	const workers = Array.from({ length: Math.min(concurrency, rows.length) }, async () => {
+		for (;;) {
+			const index = next;
+			next += 1;
+			if (index >= rows.length) return;
+			const row = rows[index];
+			if (!row.isSymlink) continue;
+			const info = await stat(row.path).catch(() => void 0);
+			row.isDir = info !== void 0 ? info.isDirectory() : row.isDir;
+			row.broken = info === void 0;
+		}
+	});
+	await Promise.all(workers);
+}
+/** How many compact probes run in flight during one level listing. */
+const COMPACT_PROBE_CONCURRENCY = 32;
+/**
+* Mark each directory row whose contents are EXACTLY one non-symlink child
+* (`compact`), so the explorer can fold singleton chains into one breadcrumb
+* row. The terminal link (sole FILE child) is marked too: the client
+* preloads marked levels to stabilize the fold label before expansion.
+* Bounded concurrency like the symlink probe: each probe is one opendir + up
+* to two dirent reads, so a directory-heavy level stays responsive. Probe
+* failures (unreadable child level) leave the row unmarked — it simply does
+* not fold.
+*/
+async function probeCompactRows(rows, exclude, concurrency = COMPACT_PROBE_CONCURRENCY) {
+	let next = 0;
+	const workers = Array.from({ length: Math.min(concurrency, rows.length) }, async () => {
+		for (;;) {
+			const index = next;
+			next += 1;
+			if (index >= rows.length) return;
+			const row = rows[index];
+			if (!row.isDir || row.broken) continue;
+			if (await hasSingletonChild(row.path, exclude)) row.compact = true;
+		}
+	});
+	await Promise.all(workers);
+}
+/**
+* Whether `dir` holds exactly one EFFECTIVE entry (POSIX-hidden entries —
+* dot-prefixed, e.g. macOS's `.DS_Store` — don't count, and neither do
+* entries the user's exclude list removes) and that entry is NOT a symlink.
+* Symlink children never qualify: the client's fold chain follows `compact`
+* links eagerly, and a self-referential link would otherwise fold forever.
+* Hidden/excluded entries never qualify either: the client walks chains
+* with the same filters, so a fold never hides a visible row — the user's
+* "show hidden files" switch only affects rendering, never the fold itself.
+*/
+async function hasSingletonChild(dir, exclude) {
+	let level;
+	try {
+		level = await opendir(dir);
+		let only = null;
+		for (;;) {
+			const entry = await level.read();
+			if (entry === null) break;
+			if (entry.name.startsWith(".")) continue;
+			if (exclude !== void 0 && exclude(`${dir}${sep}${entry.name}`, entry.name)) continue;
+			if (only !== null) return false;
+			only = entry;
+		}
+		return only !== null && !only.isSymbolicLink();
+	} catch {
+		return false;
+	} finally {
+		await level?.close().catch(() => void 0);
+	}
+}
+/** The root row label of a listing: the last path segment (or the full path at the filesystem root). */
+function rootLabel(path) {
+	const base = basename(path);
+	return base !== "" ? base : path;
+}
+/** Parent of a path, or undefined at the filesystem root (the explorer's "up" target). */
+function parentOf(path) {
+	const parent = dirname(path);
+	return parent === path ? void 0 : parent;
+}
+/**
+* Normalize a caller-supplied path to an absolute, resolved path or throw
+* fs-error. `path.isAbsolute()` is the OS's own notion of absolute: POSIX
+* roots (`/...`), Windows drive letters (`C:\...`) and — on win32 — UNC
+* network shares (`\\server\share\...`); drive-relative forms (`C:foo`)
+* stay rejected.
+*/
+function requireAbsolute(path) {
+	if (!isAbsolute(path)) throw new SidebarError("fs-error", `"${path}" is not an absolute path`, 400);
+	return resolve(path);
+}
+/** Message text of an unknown thrown value. */
+function messageOf$1(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+//#endregion
+//#region src/session-path.ts
+/** `\\wsl.localhost\<distro>` root of a Windows-hosted WSL workspace. */
+const WSL_LOCALHOST_ROOT = /^\\\\wsl\.localhost\\([^\\]+)(?:\\|$)/i;
+/**
+* `<...>\.dsh\remote-workspaces\<host-key>\<workspace>` mirror root of a
+* dsh-remote session. The captured group is the mirror root itself: the
+* local directory that mirrors one remote workspace.
+*/
+const REMOTE_MIRROR_ROOT = /^(.*\\\.dsh\\remote-workspaces\\[^\\]+\\[^\\]+)(?:\\|$)/i;
+/** Metadata file dsh-remote writes at the root of every mirror directory. */
+const REMOTE_META_FILE = ".dsh-remote-meta.json";
+/**
+* Mirror metadata cache. `resolveSessionPath` is synchronous and sits on
+* every filesystem request, so the metadata is read synchronously and
+* memoized per mirror root; an mtime change re-reads it.
+*/
+const remoteMetaCache = /* @__PURE__ */ new Map();
+/**
+* The remote workspace path a mirror root stands for, or undefined when the
+* directory carries no usable metadata. Failures are swallowed on purpose:
+* an unreadable or malformed meta file must leave the caller's path alone
+* rather than break the request.
+*/
+function remotePathOf(mirrorRoot) {
+	const metaFile = win32.join(mirrorRoot, REMOTE_META_FILE);
+	let mtimeMs;
+	try {
+		mtimeMs = statSync(metaFile).mtimeMs;
+	} catch {
+		remoteMetaCache.delete(mirrorRoot);
+		return;
+	}
+	const cached = remoteMetaCache.get(mirrorRoot);
+	if (cached !== void 0 && cached.mtimeMs === mtimeMs) return cached.remotePath;
+	let remotePath;
+	try {
+		const value = JSON.parse(readFileSync(metaFile, "utf8"))?.remotePath;
+		remotePath = typeof value === "string" && value.startsWith("/") ? value : void 0;
+	} catch {
+		remotePath = void 0;
+	}
+	remoteMetaCache.set(mirrorRoot, {
+		mtimeMs,
+		remotePath
+	});
+	return remotePath;
+}
+/**
+* The POSIX path segments of `target` relative to `base`, or undefined when
+* `target` does not lie under `base`. Both are remote (POSIX) paths, so the
+* comparison is case-SENSITIVE and separator handling is plain '/'.
+*/
+function relativeUnderPosix(base, target) {
+	const normalize = (value) => value.replace(/\/+$/, "");
+	const root = normalize(base);
+	if (target === root) return "";
+	if (!target.startsWith(`${root}/`)) return void 0;
+	return target.slice(root.length + 1);
+}
+/**
+* Reinterpret an already-absolute path in the namespace of one session.
+*
+* Windows treats `/foo` as rooted on the current drive, so `path.resolve()`
+* turns it into e.g. `C:\\foo`. That is wrong for a session whose cwd is a
+* WSL UNC path: in that namespace `/foo` means the distro's Linux `/foo`.
+* It is equally wrong for a dsh-remote mirror session, whose cwd is a local
+* directory (`...\\.dsh\\remote-workspaces\\<host>\\<workspace>`) standing in
+* for a remote POSIX workspace: there `/srv/app/src/a.ts` means the mirrored
+* file, not `C:\\srv\\app\\src\\a.ts` (which does not exist — the symptom is
+* `ENOENT ... realpath 'C:\\Users\\...'`).
+*
+* Project only those unambiguous combinations onto the matching root; drive
+* paths, UNC paths, ordinary Windows sessions and non-Windows hosts keep
+* their existing semantics.
+*
+* What happens AFTER projection is the caller's business (the old workspace
+* fence is gone; `resolveTarget` only normalizes). The important part for a
+* WSL session is that `/tmp/x` is read as WSL `/tmp/x`, not silently
+* redirected to `C:\\tmp\\x`. For a mirror session a remote path OUTSIDE the
+* mirrored workspace (e.g. `/etc/hosts`) is deliberately left unprojected:
+* it stays slash-rooted, `resolve()` then drive-roots it and the request
+* fails as a missing local file — it is never mapped onto an unrelated file
+* inside the mirror.
+*/
+function resolveSessionPath(cwd, target, platform = process.platform) {
+	if (platform !== "win32" || !/^\/(?!\/)/.test(target)) return target;
+	const normalizedCwd = cwd.replace(/\//g, "\\");
+	const wsl = WSL_LOCALHOST_ROOT.exec(normalizedCwd);
+	if (wsl !== null) {
+		const distroRoot = `\\\\wsl.localhost\\${wsl[1]}`;
+		const relative = target.slice(1).replace(/\//g, "\\");
+		return win32.resolve(distroRoot, relative);
+	}
+	const mirror = REMOTE_MIRROR_ROOT.exec(normalizedCwd);
+	if (mirror !== null) {
+		const mirrorRoot = mirror[1];
+		const remotePath = remotePathOf(mirrorRoot);
+		if (remotePath !== void 0) {
+			const relative = relativeUnderPosix(remotePath, target);
+			if (relative !== void 0) return relative === "" ? win32.resolve(mirrorRoot) : win32.resolve(mirrorRoot, relative.replace(/\//g, "\\"));
+		}
+	}
+	return target;
+}
+//#endregion
+//#region src/path-security.ts
+/**
+* Lexical path resolution for the sidebar's filesystem routes.
+*
+* ⚠️ **This module no longer enforces workspace containment.** It used to
+* canonicalize through `realpath` and reject anything outside the session
+* workspace; the user asked for that guard to be removed, so the sidebar fs
+* routes now reach any path the HOST USER can reach, bounded only by OS
+* permissions (and by the browser-trust fence on the routes themselves).
+*
+* What remains is the part every caller still needs: turn the client's
+* (possibly session-relative) target into one absolute, lexically-normalized
+* path. `resolveSessionPath` joins it under the session cwd, `resolve()`
+* collapses `.` / `..` segments, and {@link requireAbsolute} rejects
+* non-absolute input. No `realpath`, no `isWithin`, no 403.
+*
+* Kept as one module (and the old names kept) so the call sites read the same
+* way they did with the fence: the change is the SEMANTICS — "resolve" rather
+* than "guard".
+*/
+/**
+* Resolve an existing path to one absolute, lexically-normalized target.
+*
+* @param cwd - Session workspace directory (the base of relative targets).
+* @param target - Client-supplied absolute or session-relative path.
+* @param _fence - IGNORED. Kept as a positional parameter so every call site
+*  (and the route tests) did not have to change shape in the same commit; the
+*  containment decision it used to carry is gone for good. New code should
+*  omit it.
+* @returns The absolute path used for the filesystem operation.
+* @deprecated The name is historical — this is now plain resolution. Use
+*  {@link resolveTarget} in new code.
+*/
+async function ensureWorkspacePath(cwd, target, _fence) {
+	return resolveTarget(cwd, target);
+}
+/**
+* Resolve a path for a WRITE destination (which may not exist yet).
+*
+* Lexical only, exactly like {@link ensureWorkspacePath}: a missing target is
+* returned as the caller composed it (its parent is created on demand), and an
+* existing symlink in the path is NOT resolved — the caller writes through it,
+* which is what "no containment policy" means.
+*
+* @param cwd - Session workspace directory (the base of relative targets).
+* @param target - Client-supplied absolute or session-relative path.
+* @param _fence - IGNORED (see {@link ensureWorkspacePath}).
+* @returns The absolute destination path.
+* @deprecated The name is historical — this is now plain resolution.
+*/
+async function ensureWorkspaceWritePath(cwd, target, _fence) {
+	return resolveTarget(cwd, target);
+}
+/**
+* The single resolution primitive: session-relative targets resolve under the
+* session cwd, absolute targets stay absolute, and the result is `resolve()`d
+* (lexical `..` collapse). Throws fs-error for a non-absolute result.
+*/
+function resolveTarget(cwd, target) {
+	const homeExpanded = target === "~" || target.startsWith("~/") || target.startsWith("~\\") ? join(homedir(), target.slice(1)) : target;
+	return requireAbsolute(resolveSessionPath(cwd, isAbsolute(homeExpanded) ? homeExpanded : join(cwd, homeExpanded)));
+}
+//#endregion
+//#region src/fs-operations.ts
+/**
+* File mutations for the sidebar (the upload route and the tree's renames,
+* deletes and mkdirs).
+*
+* ⚠️ **No workspace containment any more.** The guard was removed at the
+* user's request, so these operations reach whatever the HOST USER can reach.
+* What is still enforced is the SHAPE of a request: the relative upload path
+* is sanitized (absolute paths, '.', '..' and empty segments are refused), a
+* rename/mkdir name must be one path segment, a new FILE's name is additionally
+* checked against the characters and device names Windows cannot store, an
+* existing destination is refused instead of clobbered, and the session
+* workspace root itself is never renamable or removable. Bytes stream from the
+* request body to a uniquely named temp sibling and are renamed into place, so
+* a failed, aborted, or oversized upload never leaves a partial file at the
+* target path.
+*
+* The tree's rename/delete are link-aware: they address the LEXICAL row path
+* (lstat decides), so renaming or deleting a symlink row renames/unlinks the
+* LINK, never its target — matching what the tree row visually names (VS Code
+* semantics). Every mutation invalidates the directory cache of the level(s)
+* it touched.
+*/
+/**
+* Stream `chunks` into `dir/relativePath` atomically: a uniquely named temp
+* sibling receives the bytes, then is renamed over the target. The parent
+* directory is created on demand (recursive), so folder uploads work before
+* any level exists. The unique temp name keeps concurrent uploads to the same
+* target independent (each writes and renames its own file; the last rename
+* wins) and never blocks later uploads after a crashed process.
+*
+* @throws SidebarError with a wire code for shape and size failures; the temp
+* file is always removed on failure.
+*/
+async function writeWorkspaceUpload(input) {
+	const { cwd, dir, relativePath, chunks, limit } = input;
+	const base = resolveTarget(cwd, dir);
+	if (relativePath === "" || relativePath.startsWith("/") || relativePath.startsWith("\\")) throw new SidebarError("bad-request", "relativePath must stay below the upload directory", 400);
+	const segments = relativePath.split(/[\\/]/);
+	if (segments.some((part) => part === "" || part === "." || part === "..")) throw new SidebarError("bad-request", "relativePath must stay below the upload directory", 400);
+	const target = join(base, ...segments);
+	const safeTarget = await ensureWorkspaceWritePath(cwd, target);
+	const tmp = join(dirname(safeTarget), `.${basename(safeTarget)}.dsh-upload-${randomUUID()}.tmp`);
+	await mkdir(dirname(safeTarget), { recursive: true });
+	const stream = createWriteStream(tmp, { flags: "wx" });
+	const closed = new Promise((resolve) => {
+		stream.once("close", () => resolve());
+	});
+	let size = 0;
+	let streamError;
+	stream.on("error", (error) => {
+		streamError = error;
+	});
+	try {
+		for await (const chunk of chunks) {
+			const buffer = Buffer.from(chunk);
+			size += buffer.length;
+			if (size > limit) throw new SidebarError("too-large", `upload exceeds the ${limit} byte limit`, 413);
+			if (!stream.write(buffer)) await once(stream, "drain");
+			if (streamError !== void 0) throw streamError;
+		}
+		await new Promise((resolve, reject) => {
+			stream.end((error) => error === void 0 || error === null ? resolve() : reject(error));
+		});
+		if (streamError !== void 0) throw streamError;
+		await rename(tmp, safeTarget);
+		const info = await stat(safeTarget);
+		invalidateDirectoryCache(dirname(safeTarget));
+		return {
+			path: target,
+			size: info.size
+		};
+	} catch (error) {
+		stream.destroy();
+		await closed.catch(() => {});
+		await rm(tmp, { force: true }).catch(() => {});
+		throw error;
+	}
+}
+/**
+* Resolve one existing entry for a link-aware mutation through the SHARED
+* resolution contract: session-relative targets join the cwd, `~` targets
+* expand against the home (#713), remote-mirror namespaces project, and
+* everything lands on one absolute, lexically-normalized path (plus the
+* resolved workspace root for the "never rename/remove the root" check).
+* No realpath, no containment: the path exists (lstat decides) and the
+* operation addresses it as written.
+*/
+function resolveEntry(cwd, target) {
+	return {
+		absolute: resolveTarget(cwd, target),
+		realCwd: requireAbsolute(cwd)
+	};
+}
+/**
+* Compare two spellings the way Windows itself does: the extended-length
+* prefix is not part of the name and case is free. Only reached when the
+* volume cannot answer with an inode (FAT/exFAT, some network shares) — weaker
+* than an identity, but never weaker than the plain string compare it
+* replaced.
+*/
+function sameSpelling(a, b) {
+	const strip = (value) => value.replace(/^\\\\\?\\/, "");
+	const left = strip(a);
+	const right = strip(b);
+	return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+/**
+* Whether `target` IS the workspace root. Comparing the two SPELLINGS is not
+* enough: the resolution above is deliberately lexical (a symlink row must
+* keep addressing the LINK, not its target), and one directory has many
+* spellings — a case variant, a `\\?\` prefix, an 8.3 short name, a mapped
+* drive. Each of them walked straight past this guard and turned "delete this
+* row" into a recursive delete of the whole project. `dev`+`ino` is the
+* identity the filesystem itself uses, and it does not care how the path is
+* spelled — read as `bigint`, because the file id is 64-bit and a JS number
+* rounds it above 2^53, at which point two unrelated entries compare equal and
+* a legitimate delete is refused as "the workspace root".
+*
+* `lstat` (not `stat`) is deliberate, and so is the removal below using the
+* same call: the question is whether THIS ENTRY is the root, so a symlink is
+* its own identity, never its target's. A link pointed at the root therefore
+* stays deletable — only the link goes, no recursion — which is what the
+* string compare did. The spellings above, the actual way a project was lost,
+* are all still refused. A target that cannot be lstat'ed (it may legitimately
+* be gone) falls back to the spelling.
+*/
+async function isWorkspaceRoot(target, root) {
+	try {
+		const [entry, base] = await Promise.all([lstat(target, { bigint: true }), lstat(root, { bigint: true })]);
+		if (entry.ino === 0n || base.ino === 0n) return sameSpelling(target, root);
+		return entry.dev === base.dev && entry.ino === base.ino;
+	} catch {
+		return sameSpelling(target, root);
+	}
+}
+/** Whether a path exists (ENOENT → false; other failures propagate). */
+async function pathExists(target) {
+	try {
+		await access(target);
+		return true;
+	} catch (error) {
+		if (error.code === "ENOENT") return false;
+		throw error;
+	}
+}
+/**
+* Rename one tree row within its directory: `path` → `<parent>/<name>`.
+* The new name must be a single path segment (this is rename, not move);
+* an existing destination is refused (POSIX rename would clobber it
+* silently); the workspace root itself is never renamable; a symlink row
+* renames the link, not its target. A no-op rename (same name) succeeds
+* without touching the filesystem.
+*
+* @throws SidebarError with a wire code for shape, existence and root
+* failures.
+*/
+async function renameWorkspaceEntry(input) {
+	const { cwd, path, name } = input;
+	if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\\")) throw new SidebarError("bad-request", "name must be a single path segment", 400);
+	const { absolute, realCwd } = resolveEntry(cwd, path);
+	if (await isWorkspaceRoot(absolute, realCwd)) throw new SidebarError("fs-error", "cannot rename the workspace root", 400);
+	if (basename(absolute) === name) return { path: absolute };
+	const safeDestination = await ensureWorkspaceWritePath(cwd, join(dirname(absolute), name));
+	if (await pathExists(safeDestination)) throw new SidebarError("fs-error", `"${name}" already exists`, 409);
+	try {
+		await rename(absolute, safeDestination);
+	} catch (error) {
+		throw new SidebarError("fs-error", `cannot rename "${path}" to "${name}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	}
+	invalidateDirectoryCache(dirname(safeDestination));
+	return { path: safeDestination };
+}
+/**
+* Create one directory inside an existing tree row: `<path>/<name>`.
+* The name must be a single path segment; an existing destination is refused
+* (mkdir would otherwise fail with EEXIST anyway, but the explicit check
+* yields the same "already exists" sentence rename uses); the parent row may
+* be any directory the host user can write.
+*
+* @throws SidebarError with a wire code for shape and existence failures.
+*/
+async function mkdirWorkspaceEntry(input) {
+	const { cwd, path, name } = input;
+	if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\\")) throw new SidebarError("bad-request", "name must be a single path segment", 400);
+	const { absolute } = resolveEntry(cwd, path);
+	const destination = await ensureWorkspaceWritePath(cwd, join(absolute, name));
+	if (await pathExists(destination)) throw new SidebarError("fs-error", `"${name}" already exists`, 409);
+	try {
+		await mkdir(destination);
+	} catch (error) {
+		throw new SidebarError("fs-error", `cannot create "${name}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	}
+	invalidateDirectoryCache(absolute);
+	return { path: destination };
+}
+/**
+* Characters Windows refuses in a file NAME (control characters — U+0000 to
+* U+001F — are refused beside these, see {@link firstIllegalNameChar}).
+* Checked on every platform: a tree row the plugin happily creates on macOS
+* must not become un-openable (or un-checkout-able) on the Windows host the
+* same workspace is later opened on.
+*/
+const ILLEGAL_FILE_NAME_CHARS = /[<>:"|?*]/;
+/**
+* The first character of one file name that Windows cannot store, or undefined
+* when the name is storable there. Iterating the string (not indexing it) keeps
+* astral characters whole, so a valid emoji name is never mistaken for two
+* illegal halves.
+*/
+function firstIllegalNameChar(name) {
+	for (const char of name) if (ILLEGAL_FILE_NAME_CHARS.test(char) || (char.codePointAt(0) ?? 0) < 32) return char;
+}
+/**
+* Windows device names, reserved in EVERY directory with or without an
+* extension (`NUL.txt` and `NUL.tar.gz` both name the device, so the check is
+* on the segment before the FIRST dot).
+*/
+const RESERVED_FILE_NAMES = /* @__PURE__ */ new Set([
+	"con",
+	"prn",
+	"aux",
+	"nul",
+	...Array.from({ length: 9 }, (_, index) => `com${index + 1}`),
+	...Array.from({ length: 9 }, (_, index) => `lpt${index + 1}`)
+]);
+/**
+* The NEW FILE name rule: one path segment (the shared rename/mkdir rule) plus
+* the two Windows-only refusals — illegal characters and reserved device
+* names. Refusing them HERE, as a shape error, is what lets the inline editor
+* say which rule was broken instead of surfacing a bare `EPERM` from the
+* filesystem on one platform and nothing at all on the others.
+*
+* @throws SidebarError with a wire code of `bad-request` for every refusal.
+*/
+function assertCreatableFileName(name) {
+	if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\\")) throw new SidebarError("bad-request", "name must be a single path segment", 400);
+	const illegal = firstIllegalNameChar(name);
+	if (illegal !== void 0) throw new SidebarError("bad-request", `name contains a character that is not allowed in a file name: ${JSON.stringify(illegal)}`, 400);
+	if (RESERVED_FILE_NAMES.has(name.split(".")[0].toLowerCase())) throw new SidebarError("bad-request", `"${name}" is a reserved device name on Windows`, 400);
+}
+/**
+* Create one EMPTY file inside an existing tree row: `<path>/<name>`.
+* The name must be one path segment and must survive a Windows host
+* ({@link assertCreatableFileName}); an existing destination — file OR
+* directory — is refused with the same "already exists" sentence rename and
+* mkdir use, and is never truncated (the write itself is `wx`, so a name that
+* appears between the check and the write is refused too, never clobbered);
+* the parent row may be any directory the host user can write (an unwritable
+* one surfaces the filesystem's own refusal text).
+*
+* @throws SidebarError with a wire code for shape, existence and write
+* failures.
+*/
+async function createWorkspaceFile(input) {
+	const { cwd, path, name } = input;
+	assertCreatableFileName(name);
+	const { absolute } = await resolveEntry(cwd, path);
+	const destination = await ensureWorkspaceWritePath(cwd, join(absolute, name));
+	if (await pathExists(destination)) throw new SidebarError("fs-error", `"${name}" already exists`, 409);
+	try {
+		await writeFile(destination, "", {
+			flag: "wx",
+			encoding: "utf8"
+		});
+	} catch (error) {
+		if (error.code === "EEXIST") throw new SidebarError("fs-error", `"${name}" already exists`, 409);
+		throw new SidebarError("fs-error", `cannot create "${name}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	}
+	invalidateDirectoryCache(absolute);
+	return { path: destination };
+}
+/**
+* Delete one tree row permanently (there is no trash on the host): files are
+* unlinked, directories removed recursively, a symlink row unlinks the LINK
+* only (lstat decides, so a link to a directory does not recurse into its
+* target). The workspace root itself is never removable.
+*
+* @throws SidebarError with a wire code for existence and root failures.
+*/
+async function removeWorkspaceEntry(input) {
+	const { cwd, path } = input;
+	const { absolute, realCwd } = resolveEntry(cwd, path);
+	if (await isWorkspaceRoot(absolute, realCwd)) throw new SidebarError("fs-error", "cannot remove the workspace root", 400);
+	try {
+		if ((await lstat(absolute)).isDirectory()) await rm(absolute, { recursive: true });
+		else await unlink(absolute);
+	} catch (error) {
+		throw new SidebarError("fs-error", `cannot remove "${path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	}
+	invalidateDirectoryCache(dirname(absolute));
+	return { path: absolute };
+}
+//#endregion
+//#region src/search-debug.ts
+/**
+* Gated debug instrumentation for the fs.search engine pipeline (host half).
+* Off by default: with DSH_SEARCH_DEBUG unset nothing is logged, nothing
+* touches the disk, and no console output is emitted. Setting
+* `DSH_SEARCH_DEBUG=1` in the dsh web environment appends one line per
+* probe/search/engine-failure to `<config-dir>/search-debug.log` and mirrors
+* it to the host console.
+*
+* The log file lives under $DSH_HOME (the DSH config dir) when set, exactly
+* like pty-deps.ts resolves it; otherwise it falls back to `~/.dsh`. A
+* missing/unwritable log dir must never break a search — write errors are
+* swallowed.
+*
+* The flag is read once at module load: toggling it requires restarting the
+* host, the same as any other host-side change.
+*/
+const SEARCH_DEBUG = process.env.DSH_SEARCH_DEBUG === "1";
+const LOG_FILE = join(process.env.DSH_HOME !== void 0 && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : join(homedir(), ".dsh"), "search-debug.log");
+/** Append one debug line (gated; no-op unless DSH_SEARCH_DEBUG=1). */
+function debugLog(msg) {
+	if (!SEARCH_DEBUG) return;
+	try {
+		appendFileSync(LOG_FILE, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}\n`);
+	} catch {}
+	console.log(msg);
+}
+//#endregion
+//#region src/search-engines.ts
+/**
+* Optional native search engines (fd / ripgrep) behind the editor's file-name
+* search (fs.search). The probe runs lazily once per process: each candidate
+* binary is verified with `--version` under a 500ms budget so a dead path is
+* never used. Engine stdout streams are always capped (fd's --max-results
+* included; rg is capped by killing the child).
+*
+* Engine output is normalized to the walk contract (see fs-search.ts):
+* root-relative, '/'-separated paths, case-insensitive NAME matching, sorted
+* by the caller, plus the directory/file split the client needs. fd reports
+* directories natively (`--type d`); rg --files reports files only, so
+* `deriveRgMatches` turns a matching path segment into the directory hit the
+* walk would have reported — the one real gap left is an EMPTY directory
+* whose name matches (no file path carries it, so rg cannot see it; fd and
+* the walk both report it).
+*
+* A runtime failure disables that engine for the rest of the process (a
+* broken binary must not slow every later search); the caller falls back to
+* the plain walk. A timeout is NOT a failure: it means this tree was too
+* large, so it must not strip every other root of the engine. Hooks are
+* swappable for tests (setEngineHooks).
+*/
+const PROBE_TIMEOUT_MS = 500;
+const ENGINE_TIMEOUT_MS = 15e3;
+const PATH_SEPARATOR = process.platform === "win32" ? ";" : ":";
+/**
+* Where DeepSeek Harness keeps its own `@vscode/ripgrep` platform package
+* (`@vscode/ripgrep-<platform>-<arch>/bin/rg` — the binary the harness's
+* agent-side search tools run on, so the sidebar search should prefer it
+* over a random PATH rg). The roots below are PACKAGE-MANAGER ROOTS (the
+* directory holding `@vscode/`), not `<root>/@deepseek-ai/dsh/node_modules`
+* style dependency dirs: npm and pnpm hoist the platform package next to
+* `@deepseek-ai`, not under it (verified against a real install: the
+* profile tree carries `<profile>/node_modules/@vscode/ripgrep-<…>` and no
+* `@deepseek-ai/dsh/node_modules` at all). Both shapes are still probed —
+* a tree that did not hoist keeps the package under the CLI. Deriving "the
+* node_modules that provided @deepseek-ai/dsh" from the running paths also
+* covers pnpm's `.pnpm/node_modules` hoist layer for free (verified on
+* fnm/pnpm: execPath `.../node/versions/v22/bin/node` walks
+* `bin/node_modules` → `versions/node_modules` → … → `.pnpm/node_modules`),
+* and `modulePath` (the CLI entry, `…/@deepseek-ai/dsh/lib/bin.js`) covers
+* a desktop shell whose bundled tree sits next to a node it did not ship —
+* a Homebrew node + this checkout's dependency tree is exactly that layout
+* (verified: the candidate resolves to the bundled rg on macOS).
+* Wrong guesses are cheap: every candidate goes through verify() and
+* unusable ones are dropped.
+*
+* Pure in `platform`: every path below is built with that platform's
+* `node:path` dialect (see `P` in the body), so the returned shape depends
+* only on the arguments — never on the OS running the probe.
+*/
+function bundledRgCandidates(platform, arch, execPath, env, home, modulePath = process.argv[1]) {
+	const binName = platform === "win32" ? "rg.exe" : "rg";
+	const platformPkg = `@vscode/ripgrep-${platform}-${arch}`;
+	const P = platform === "win32" ? win32 : posix;
+	const roots = [];
+	const addRoot = (root) => {
+		if (root !== "" && !roots.includes(root)) roots.push(root);
+	};
+	const walkRoots = (start) => {
+		if (start === "") return;
+		let current = P.dirname(start);
+		while (current !== P.dirname(current)) {
+			if (current.endsWith(`${P.sep}node_modules`)) addRoot(current);
+			current = P.dirname(current);
+		}
+	};
+	if (modulePath !== void 0 && modulePath !== "") walkRoots(modulePath);
+	walkRoots(execPath);
+	if (platform === "win32") {
+		if (env.APPDATA !== void 0 && env.APPDATA !== "") addRoot(P.join(env.APPDATA, "npm", "node_modules"));
+	} else {
+		addRoot(P.join(P.dirname(P.dirname(execPath)), "lib", "node_modules"));
+		addRoot("/opt/homebrew/lib/node_modules");
+		addRoot("/usr/local/lib/node_modules");
+	}
+	addRoot(P.join(home, ".dsh", "profiles", "node_modules"));
+	const candidates = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const root of roots) for (const candidate of [P.join(root, platformPkg, "bin", binName), P.join(root, "@deepseek-ai", "dsh", "node_modules", platformPkg, "bin", binName)]) if (!seen.has(candidate)) {
+		seen.add(candidate);
+		candidates.push(candidate);
+	}
+	return candidates;
+}
+/** Candidate binaries for one engine: the harness's bundled rg, then PATH
+*  entries, then fixed well-known locations. A PATH that misses Homebrew
+*  (seen in launchd-spawned processes) is covered by the fixed paths. */
+function candidates(engine) {
+	const env = process.env;
+	const pathNames = {
+		fd: ["fd", "fdfind"],
+		rg: ["rg"]
+	};
+	const out = [];
+	if (engine === "rg") out.push(...bundledRgCandidates(process.platform, process.arch, process.execPath, env, homedir()));
+	for (const name of pathNames[engine]) if (env.PATH !== void 0 && env.PATH !== "") {
+		for (const dir of env.PATH.split(PATH_SEPARATOR)) if (dir !== "") out.push(join(dir, name));
+	}
+	if (engine === "fd") out.push("/opt/homebrew/bin/fd", "/usr/local/bin/fd", "/usr/bin/fd", join(homedir(), ".cargo/bin/fd"));
+	else out.push("/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg");
+	return out;
+}
+/** Verify one binary actually runs (a broken install must not be used). */
+function verify(binary) {
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (ok) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(ok);
+		};
+		let child;
+		try {
+			child = spawn(binary, ["--version"], { stdio: "ignore" });
+		} catch {
+			finish(false);
+			return;
+		}
+		const timer = setTimeout(() => {
+			child.kill();
+			finish(false);
+		}, PROBE_TIMEOUT_MS);
+		child.once("error", () => {
+			finish(false);
+		});
+		child.once("exit", (code) => {
+			finish(code === 0);
+		});
+	});
+}
+/** Escape glob metacharacters so a query matches literally inside -g.
+*  Braces are metacharacters too ({a,b} alternation): an unbalanced '{'
+*  makes rg fail to parse the glob (exit 2 → the engine looks broken), and
+*  a balanced one silently matches a DIFFERENT literal ('a{b}' searches
+*  'ab'). Verified against rg 15: '\{' is a valid brace escape. */
+function escapeGlob(query) {
+	return query.replace(/[\[\]{}*?\\]/g, "\\$&");
+}
+/** Directory names that are never useful filename-search results (VCS
+*  internals, dependency forests, package-manager stores, build caches,
+*  worktree forests, language environments).
+*  The plain walk in fs-search.ts builds its case-insensitive skip set
+*  from this list, and BOTH engine argvs exclude every name — with
+*  --no-ignore active an rg/fd run would otherwise re-enter node_modules
+*  and regress the budget-saving behavior of the walk. Excludes are
+*  matched case-insensitively (fd honors --ignore-case; rg uses --iglob),
+*  mirroring the walk's toLowerCase comparison. */
+const SKIP_DIR_NAMES = [
+	".git",
+	"node_modules",
+	".pnpm-store",
+	".yarn",
+	".turbo",
+	".turbopack",
+	".next",
+	".nuxt",
+	".output",
+	".cache",
+	".parcel-cache",
+	"coverage",
+	"dist",
+	"build",
+	"out",
+	".worktrees",
+	".worktree",
+	"target",
+	"venv",
+	".venv",
+	"__pycache__",
+	".umi",
+	".umi-production",
+	".dumi"
+];
+/** A timeout means the tree is too big, not that the binary is broken —
+*  it must not disable the engine for every other search root. */
+var EngineTimeoutError = class extends Error {};
+/** Stream a child's stdout line-by-line, capped at `max` lines (the child is
+*  killed past the cap so a huge result set never buffers into memory). */
+function streamLines(child, max) {
+	return new Promise((resolve, reject) => {
+		const lines = [];
+		let truncated = false;
+		let closed = false;
+		const finish = (error) => {
+			if (closed) return;
+			closed = true;
+			clearTimeout(timer);
+			if (error !== void 0) {
+				child.kill();
+				reject(error);
+			} else resolve({
+				lines,
+				truncated
+			});
+		};
+		const timer = setTimeout(() => {
+			finish(new EngineTimeoutError("search engine timed out"));
+		}, ENGINE_TIMEOUT_MS);
+		child.once("error", (error) => {
+			finish(error);
+		});
+		child.once("close", (code) => {
+			if (truncated) finish(void 0);
+			else if (code !== 0 && code !== 1) finish(/* @__PURE__ */ new Error(`search engine exited with ${String(code)}`));
+			else finish(void 0);
+		});
+		const stdout = child.stdout;
+		if (stdout === null) {
+			finish(/* @__PURE__ */ new Error("search engine stdout unavailable"));
+			return;
+		}
+		createInterface({ input: stdout }).on("line", (line) => {
+			if (line === "" || truncated) return;
+			lines.push(line);
+			if (lines.length > max) {
+				truncated = true;
+				child.kill();
+			}
+		});
+	});
+}
+/** Normalize one engine's stdout lines to the walk contract: root-relative,
+*  '/'-separated, no leading './'. fd/rg emit relative paths with the
+*  PLATFORM separator; the walk contract is '/'-separated on every platform.
+*  `separator` defaults to the platform separator — pass '\\' to model
+*  Windows engine output (rg on Windows emits '\' paths and '.\' prefixes;
+*  Windows file names can never contain '\' or '/', so the substitution is
+*  lossless there). A trailing '\r' is also stripped: Windows engines emit
+*  CRLF line endings, and while readline usually swallows the CR, a leftover
+*  one must never leak into a path (safe on every platform — a POSIX file
+*  whose name ends in CR is pathological). */
+function normalizeEnginePaths(lines, separator = sep) {
+	const out = [];
+	for (const line of lines) {
+		if (line === "") continue;
+		const trimmed = line.endsWith("\r") ? line.slice(0, -1) : line;
+		if (trimmed === "") continue;
+		const normalized = trimmed.split(separator).join("/");
+		const bare = normalized.startsWith("./") ? normalized.slice(2) : normalized;
+		const clean = bare.endsWith("/") ? bare.replace(/\/+$/, "") : bare;
+		if (clean !== "" && clean !== ".") out.push(clean);
+	}
+	return out;
+}
+/** The fd argv: the query as a literal substring, every SKIP_DIR_NAMES
+*  excluded (a bare name excludes the entry at any depth; a worktree-style
+*  `.git` FILE is covered too — verified against real fd), '/' separators
+*  pinned, and --max-results one ABOVE the stream sentinel (cap + 1) so a
+*  full result set overflows into the same truncation detected for rg
+*  (see runChild). Directory matches are read from a second invocation
+*  (`type: 'd'`, see runChild) because fd cannot label its matches. */
+function fdArgv(cap, query, type) {
+	return [
+		"--hidden",
+		"--no-ignore",
+		...SKIP_DIR_NAMES.flatMap((name) => ["--exclude", name]),
+		"--fixed-strings",
+		"--ignore-case",
+		...type === void 0 ? [] : ["--type", type],
+		"--path-separator",
+		"/",
+		"--max-results",
+		String(cap + 1),
+		query,
+		"."
+	];
+}
+/** The rg argv: --files listing filtered by a case-insensitive literal-name
+*  glob, '/' separators pinned (rg emits '\' in cmd/PowerShell on Windows,
+*  '/' in Git Bash — rg#501; the flag exists since rg 0.8, a build without
+*  it fails at spawn and is disabled at runtime). Every SKIP_DIR_NAME gets
+*  a glob pair: a '<name>-anywhere' glob prunes the directory tree, and the second
+*  entry-only glob excludes an entry NAMED the skip word itself — a git
+*  worktree has a `.git` FILE (not a directory) at its root, and the
+*  directory-exclusion glob requires a path segment AFTER the word so it
+*  does not cover the pointer file (verified against real rg). fd's
+*  --exclude and the plain walk both skip it without the extra glob. */
+function rgArgv(query) {
+	const skipGlobs = SKIP_DIR_NAMES.flatMap((name) => [
+		"--iglob",
+		`!**/${name}/**`,
+		"--iglob",
+		`!**/${name}`
+	]);
+	const escaped = escapeGlob(query);
+	return [
+		"--files",
+		"--hidden",
+		"--no-ignore",
+		...skipGlobs,
+		"--iglob",
+		`*${escaped}*`,
+		"--iglob",
+		`**/*${escaped}*/*`,
+		"--iglob",
+		`**/*${escaped}*/**`,
+		"--path-separator",
+		"/",
+		"."
+	];
+}
+/** rg reports FILES only (`rg --files` never emits a directory line), while
+*  the walk contract matches entry names — files AND directories. Every rg
+*  line is a file path whose glob already guarantees the query appears
+*  somewhere in it, so: a basename hit stays a file match, and a matching
+*  DIRECTORY segment is derived as a directory match (a directory named X
+*  holding at least one file surfaces exactly as fd/walk report it).
+*  EMPTY directories stay invisible to rg — no file path carries them —
+*  the one gap left versus fd and the walk. Both lists are sorted and
+*  capped at the same sentinel (maxMatches + 1, the caller slices back and
+*  re-derives the directory subset from what it keeps, so `dirs` stays a
+*  subset of `matches`); `truncated` is raised when the derived set exceeded
+*  the budget — the budget, not the engine, cut the result short (runChild
+*  ORs it with the stream's own sentinel). */
+function deriveRgMatches(paths, query, maxMatches) {
+	const needle = query.toLowerCase();
+	const files = /* @__PURE__ */ new Set();
+	const dirs = /* @__PURE__ */ new Set();
+	for (const path of paths) {
+		const segments = path.split("/");
+		const base = segments[segments.length - 1];
+		if (base !== void 0 && base.toLowerCase().includes(needle)) files.add(path);
+		let prefix = "";
+		for (let index = 0; index < segments.length - 1; index += 1) {
+			const segment = segments[index];
+			if (segment === void 0) continue;
+			prefix = prefix === "" ? segment : `${prefix}/${segment}`;
+			if (segment.toLowerCase().includes(needle)) dirs.add(prefix);
+		}
+	}
+	const derived = [.../* @__PURE__ */ new Set([...files, ...dirs])].sort();
+	return {
+		paths: derived.slice(0, maxMatches + 1),
+		dirs: [...dirs].sort().slice(0, maxMatches + 1),
+		truncated: derived.length > maxMatches
+	};
+}
+/** One child invocation per engine, emitting normalized relative paths.
+*  fd needs two runs to fill the walk contract: the plain literal match (both
+*  files and directories — the walk's own shape) and a `--type d` run for the
+*  directory subset. rg's query globs admit basename hits AND files under
+*  matching directories; deriveRgMatches converts the latter into the
+*  directory matches the walk contract reports and drops nothing else.
+*
+*  Truncation symmetry: `streamLines` marks truncated when the stream
+*  exceeds `cap = maxMatches + 1` lines (the +1 is a sentinel proving
+*  "there is more"). rg has no --max-results so it naturally overflows
+*  into the sentinel; fd MUST NOT cap at `cap` (it would stop exactly at
+*  the sentinel and never be seen as truncated) — pin its --max-results
+*  one higher (maxMatches + 2) so a full result set trips the same
+*  sentinel and both engines report truncated identically, with the
+*  caller slicing back to maxMatches. */
+function runChild(probe, root, query, maxMatches) {
+	const cap = maxMatches + 1;
+	if (probe.engine === "rg") return streamLines(spawner(probe.binary, rgArgv(query), {
+		cwd: root,
+		stdio: [
+			"ignore",
+			"pipe",
+			"ignore"
+		]
+	}), cap).then(({ lines, truncated }) => {
+		const derived = deriveRgMatches(normalizeEnginePaths(lines), query, maxMatches);
+		return {
+			paths: derived.paths,
+			dirs: derived.dirs,
+			truncated: truncated || derived.truncated
+		};
+	});
+	const child = spawner(probe.binary, fdArgv(cap, query), {
+		cwd: root,
+		stdio: [
+			"ignore",
+			"pipe",
+			"ignore"
+		]
+	});
+	const dirChild = spawner(probe.binary, fdArgv(cap, query, "d"), {
+		cwd: root,
+		stdio: [
+			"ignore",
+			"pipe",
+			"ignore"
+		]
+	});
+	return Promise.all([streamLines(child, cap), streamLines(dirChild, cap)]).then(([matches, dirs]) => {
+		const paths = normalizeEnginePaths(matches.lines);
+		const dirSet = new Set(normalizeEnginePaths(dirs.lines));
+		return {
+			paths,
+			dirs: paths.filter((path) => dirSet.has(path)),
+			truncated: matches.truncated
+		};
+	});
+}
+let prober = () => probeOnce();
+let runner = runChild;
+/** Child spawn behind runChild — injectable so tests can drive the real
+*  orchestration with scripted children (event order, stream timing). */
+let spawner = spawn;
+/** Engines failed at runtime: skipped for the rest of this process. */
+const broken = /* @__PURE__ */ new Set();
+let probePromise = null;
+/** Probe once per process (lazy): each engine's first working candidate. */
+async function probeOnce() {
+	const found = [];
+	for (const engine of ["fd", "rg"]) for (const binary of candidates(engine)) if (await verify(binary)) {
+		found.push({
+			engine,
+			binary
+		});
+		break;
+	}
+	debugLog(`[dsh-search] engines probed: ${found.length > 0 ? found.map((p) => `${p.engine}(${p.binary})`).join(", ") : "none (plain-walk fallback)"}`);
+	return found;
+}
+/** The verified engines for this process (cached across searches). */
+function probeEngines() {
+	probePromise ??= prober();
+	return probePromise;
+}
+/** Run one engine and get capped, normalized matches; a runtime failure
+*  disables that engine for the rest of the process (a broken binary must
+*  not slow every later search) — but a TIMEOUT does not: a timeout means
+*  THIS tree was too big, while the broken-set is per-engine, so disabling
+*  here would strip every other (small) root of the engine over one huge
+*  directory. */
+async function runEngine(probe, root, query, maxMatches) {
+	try {
+		return await runner(probe, root, query, maxMatches);
+	} catch (error) {
+		if (error instanceof EngineTimeoutError) debugLog(`[dsh-search] engine ${probe.engine} timed out (tree too large), falling back`);
+		else {
+			broken.add(probe.engine);
+			debugLog(`[dsh-search] engine ${probe.engine} failed at runtime, disabled: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		throw error;
+	}
+}
+/** The engines a caller may actually try (verified, not broken). */
+async function usableEngines() {
+	return (await probeEngines()).filter((probe) => !broken.has(probe.engine));
+}
+//#endregion
+//#region src/fs-search.ts
+const DEFAULT_MAX_MATCHES = 200;
+const DEFAULT_MAX_VISITED = 1e5;
+/**
+* Directory names that are never useful filename-search results and would
+* burn the visit budget before the walk reaches project files. Compared
+* case-insensitively so `Node_Modules` / `.GIT` stay skipped on every
+* platform. The name list lives in search-engines.ts (SKIP_DIR_NAMES) — the
+* engine argvs exclude the same names so the fallback and the engines return
+* the same result shape. An entry with a skip name is neither matched nor
+* descended — including a worktree-style `.git` FILE, which the engine
+* excludes cover as well.
+*/
+const SEARCH_SKIP_DIRS = new Set(SKIP_DIR_NAMES);
+/** Shorten an absolute search root for log lines: ~/ for the config home. */
+function relRoot(root) {
+	const home = process.env.DSH_HOME !== void 0 && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : homedir();
+	if (root === home) return "~";
+	const boundary = home.endsWith(sep) ? home : home + sep;
+	return root.startsWith(boundary) ? `~${root.slice(home.length)}` : root;
+}
+/**
+* Whether one matched entry is a DIRECTORY, following symlinks the way the
+* tree and `fs.read` do: the dirent answers for real directories, a link is
+* stat'ed (a link to a directory is a directory row — `fs.read` refuses it as
+* a file), and an unresolvable link stays a plain entry.
+*/
+async function isDirectoryEntry(absolute, dirent) {
+	if (dirent.isDirectory()) return true;
+	if (!dirent.isSymbolicLink()) return false;
+	return (await stat(absolute).catch(() => void 0))?.isDirectory() === true;
+}
+/**
+* The platform's OWN path separators — on POSIX only `/`, on win32 both
+* spellings. Shared by every "does this query carry a separator?" decision so
+* they cannot drift apart: on POSIX a backslash is a legal name character (a
+* name like `back\slash.ts` or `.\notes.md`), and reading one as a separator
+* both steals the query from name matching and costs it engine eligibility.
+*/
+const SEPARATOR_RE = process.platform === "win32" ? /[/\\]/ : /\//;
+/**
+* A dot-anchored relative path (`./x`, `../x`) — the separator after the dots
+* must be one of the platform's own ({@link SEPARATOR_RE}), for the same
+* reason `~\` is win32-gated below: `.\notes` is a POSIX entry NAME, so
+* counting its backslash here would stat a path that cannot exist instead of
+* matching the name.
+*/
+const DOT_ANCHORED_RE = process.platform === "win32" ? /^\.+[/\\]/ : /^\.+\//;
+/**
+* Whether `query` carries a path separator: such a query can never hit an
+* entry NAME and takes the path branches instead of name matching. Only the
+* platform's own separators count — on POSIX a backslash is a legal name
+* character, not a separator (the engines must stay eligible for names
+* like `back\slash.ts`).
+*/
+function hasSeparator(query) {
+	return SEPARATOR_RE.test(query);
+}
+/**
+* Whether `query` NAMES one path (a direct-open gesture) instead of
+* filtering: node's own absolute forms, the `~`-relative home spellings the
+* resolution primitive expands (#713 — the client's own `isAbsolutePath`
+* treats the same forms as absolute), and dot-anchored relative paths
+* (`./x`, `../x`). No entry NAME can take these shapes — a name never
+* contains a separator — so the predicate steals no name query, with one
+* platform-bent exception: the `~\` form (and the `.\` spelling of a
+* dot-anchored path) counts only on win32, because on POSIX a backslash is a
+* legal name character and both `~\foo` and `.\foo` can be a file's NAME.
+* Plain fragments (`records/exp1`) stay with the path-fragment branch.
+*/
+function isDirectPathQuery(query) {
+	return isAbsolute(query) || query === "~" || query.startsWith("~/") || process.platform === "win32" && query.startsWith("~\\") || DOT_ANCHORED_RE.test(query);
+}
+/**
+* The plain-JS fallback walk: search `root` recursively for entries whose
+* name contains `query` (case-insensitive), or — for a query carrying a
+* path separator, which no NAME can contain — whose root-relative path
+* does.
+* @param root - absolute search root.
+* @param query - the name substring, or the path fragment for
+*  separator-carrying queries; empty matches nothing.
+* @param opts - budget overrides (tests).
+* @returns the matching paths RELATIVE to `root` ('/'-separated), sorted,
+*  plus which of them are directories and whether a budget cut the walk
+*  short. An unreadable level is skipped (permission errors never fail the
+*  whole search).
+*/
+async function searchFilesPlain(root, query, opts = {}) {
+	const needle = query.trim().toLowerCase();
+	if (needle === "") return {
+		matches: [],
+		dirs: [],
+		truncated: false
+	};
+	const maxMatches = opts.maxMatches ?? DEFAULT_MAX_MATCHES;
+	const maxVisited = opts.maxVisited ?? DEFAULT_MAX_VISITED;
+	const pathNeedle = hasSeparator(needle) ? needle.replace(/\//g, sep) : void 0;
+	const matches = [];
+	const dirs = [];
+	let visited = 0;
+	let truncated = false;
+	const walk = async (dir, relDir) => {
+		if (truncated) return;
+		const level = await opendir(dir).catch(() => void 0);
+		if (level === void 0) return;
+		for await (const dirent of level) {
+			visited += 1;
+			if (visited > maxVisited) {
+				truncated = true;
+				return;
+			}
+			if (SEARCH_SKIP_DIRS.has(dirent.name.toLowerCase())) continue;
+			const relativePath = relDir === "" ? dirent.name : `${relDir}${sep}${dirent.name}`;
+			const absolute = join(dir, dirent.name);
+			if (opts.exclude !== void 0 && opts.exclude(absolute, dirent.name)) continue;
+			if (pathNeedle === void 0 ? dirent.name.toLowerCase().includes(needle) : relativePath.toLowerCase().includes(pathNeedle)) {
+				matches.push(relativePath);
+				if (await isDirectoryEntry(absolute, dirent)) dirs.push(relativePath);
+				if (matches.length >= maxMatches) {
+					truncated = true;
+					return;
+				}
+			}
+			if (dirent.isDirectory() && !dirent.isSymbolicLink()) {
+				await walk(absolute, relativePath);
+				if (truncated) return;
+			}
+		}
+	};
+	await walk(root, "");
+	const normalize = (path) => path.split(sep).join("/");
+	return {
+		matches: matches.sort().map(normalize),
+		dirs: dirs.sort().map(normalize),
+		truncated
+	};
+}
+/**
+* The walk's exclude probe applied to a FLAT engine listing (the engines have
+* no notion of the user's patterns). The engines are a faster walk, not a
+* different surface, so the walk's two rules carry over verbatim: a row whose
+* name is excluded disappears, and so does every row BELOW an excluded
+* directory — the walk never descended into one, so it could never have
+* reported a child as a match either. Verdicts are memoized per directory:
+* the engines report hundreds of rows under the same few directories.
+*/
+function engineExcludeProbe(root, exclude) {
+	const excludedDirs = /* @__PURE__ */ new Map();
+	/** Whether the directory at `relativeDir` ('' = the search root) is
+	*  excluded, itself or through an ancestor. */
+	const dirExcluded = (relativeDir) => {
+		if (relativeDir === "") return false;
+		const cached = excludedDirs.get(relativeDir);
+		if (cached !== void 0) return cached;
+		const cut = relativeDir.lastIndexOf("/");
+		const parent = cut === -1 ? "" : relativeDir.slice(0, cut);
+		const name = cut === -1 ? relativeDir : relativeDir.slice(cut + 1);
+		const verdict = dirExcluded(parent) || exclude(join(root, ...relativeDir.split("/")), name);
+		excludedDirs.set(relativeDir, verdict);
+		return verdict;
+	};
+	return (relativePath) => {
+		const cut = relativePath.lastIndexOf("/");
+		const parent = cut === -1 ? "" : relativePath.slice(0, cut);
+		const name = cut === -1 ? relativePath : relativePath.slice(cut + 1);
+		return dirExcluded(parent) || exclude(join(root, ...relativePath.split("/")), name);
+	};
+}
+/**
+* The fs.search dispatch: an absolute query is stat'ed directly (see the
+* module header), a separator-carrying fragment goes to the walk, and plain
+* name queries run the native engines first (when verified and healthy) with
+* the plain walk as fallback. Engine output is normalized onto the walk
+* contract — root-relative, '/'-separated, sorted, and split into
+* matches/dirs — so the route and the client stay unchanged. A blank query
+* matches nothing and touches neither the engines nor the filesystem.
+*
+* The engines keep their own cap (and report it through `truncated`), so a
+* root whose first `maxMatches` rows are ALL excluded comes back short with
+* `truncated: true` rather than silently hiding the remainder — the same
+* signal a budget-cut walk gives.
+*/
+async function searchFiles(root, query, opts = {}) {
+	const needle = query.trim();
+	if (needle === "") return {
+		matches: [],
+		dirs: [],
+		truncated: false
+	};
+	const started = performance.now();
+	if (isDirectPathQuery(needle)) {
+		const target = resolveTarget(root, needle);
+		const info = await stat(target).catch(() => void 0);
+		const result = info === void 0 ? {
+			matches: [],
+			dirs: [],
+			truncated: false
+		} : info.isDirectory() ? {
+			matches: [target],
+			dirs: [target],
+			truncated: false
+		} : {
+			matches: [target],
+			dirs: [],
+			truncated: false
+		};
+		debugLog(`[dsh-search] engine=stat root=${relRoot(root)} query="${needle}" hits=${result.matches.length} truncated=${result.truncated} ${(performance.now() - started).toFixed(0)}ms`);
+		return result;
+	}
+	if (hasSeparator(needle)) {
+		const result = await searchFilesPlain(root, query, opts);
+		debugLog(`[dsh-search] engine=plain root=${relRoot(root)} query="${needle}" hits=${result.matches.length} truncated=${result.truncated} ${(performance.now() - started).toFixed(0)}ms`);
+		return result;
+	}
+	const maxMatches = opts.maxMatches ?? DEFAULT_MAX_MATCHES;
+	const isExcluded = opts.exclude === void 0 ? void 0 : engineExcludeProbe(root, opts.exclude);
+	for (const probe of await usableEngines()) try {
+		const result = await runEngine(probe, root, needle, maxMatches);
+		const matches = [...isExcluded === void 0 ? result.paths : result.paths.filter((path) => !isExcluded(path))].sort().slice(0, maxMatches);
+		const kept = new Set(matches);
+		const dirs = [...new Set(result.dirs)].filter((dir) => kept.has(dir)).sort();
+		debugLog(`[dsh-search] engine=${probe.engine} bin=${probe.binary} root=${relRoot(root)} query="${needle}" hits=${matches.length} truncated=${result.truncated} ${(performance.now() - started).toFixed(0)}ms`);
+		return {
+			matches,
+			dirs,
+			truncated: result.truncated
+		};
+	} catch {}
+	const result = await searchFilesPlain(root, query, opts);
+	debugLog(`[dsh-search] engine=plain root=${relRoot(root)} query="${needle}" hits=${result.matches.length} truncated=${result.truncated} ${(performance.now() - started).toFixed(0)}ms`);
+	return result;
+}
+/**
+* Normalize one raw pattern (accepts unknown wire values): trim, unify
+* separators, drop the doublestar-slash head (remembered as a suffix kind) and the
+* `./` and trailing-/ decorations. Returns undefined for empty/invalid input.
+*/
+function normalizePattern(raw) {
+	if (typeof raw !== "string") return void 0;
+	let pattern = raw.trim().replace(/\\/g, "/");
+	if (pattern.length > 256) return void 0;
+	while (pattern.startsWith("./")) pattern = pattern.slice(2);
+	while (pattern.startsWith("/")) pattern = pattern.slice(1);
+	while (pattern.endsWith("/")) pattern = pattern.slice(0, -1);
+	let kind = "name";
+	if (pattern.startsWith("**/")) {
+		kind = "suffix";
+		pattern = pattern.slice(3);
+	}
+	if (pattern === "" || pattern === "**") return;
+	if (kind === "name" && pattern.includes("/")) kind = "path";
+	return {
+		kind,
+		body: pattern
+	};
+}
+/** Compile one normalized glob body to an anchored RegExp. */
+function globToRegExp(body, insensitive) {
+	let out = "";
+	for (let i = 0; i < body.length; i += 1) {
+		const char = body[i];
+		if (char === "*") {
+			if (body[i + 1] === "*") {
+				out += ".*";
+				i += 1;
+			} else out += "[^/]*";
+			continue;
+		}
+		if (char === "?") {
+			out += "[^/]";
+			continue;
+		}
+		out += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+	}
+	return new RegExp(`^${out}$`, insensitive ? "i" : void 0);
+}
+/** The cwd-relative '/' path of `entryPath` (undefined when outside `root`). */
+function relativeToRoot(root, entryPath) {
+	const rel = relative(root, entryPath).split(sep).join("/");
+	return rel.startsWith("..") ? void 0 : rel;
+}
+/**
+* Compile the wire patterns into one entry probe.
+* @param raw - the request payload's `exclude` field (anything; validated).
+* @param root - the session cwd the path-anchored patterns resolve against.
+* @param platform - case-folding semantics (`'win32'` matches insensitively).
+* @returns the probe (with its {@link ExcludeMatcher.key}), or undefined when
+* nothing valid was declared (callers skip filtering entirely then — the
+* no-pattern fast path).
+*/
+function compileExcludePatterns(raw, root, platform = process.platform) {
+	if (!Array.isArray(raw)) return void 0;
+	const compiled = [];
+	for (const item of raw) {
+		if (compiled.length >= 64) break;
+		const normalized = normalizePattern(item);
+		if (normalized === void 0) continue;
+		compiled.push({
+			kind: normalized.kind,
+			regex: globToRegExp(normalized.body, platform === "win32")
+		});
+	}
+	if (compiled.length === 0) return void 0;
+	const needsRel = compiled.some((pattern) => pattern.kind !== "name");
+	const probe = (entryPath, name) => {
+		let rel;
+		for (const pattern of compiled) {
+			if (pattern.kind === "name") {
+				if (pattern.regex.test(name)) return true;
+				continue;
+			}
+			if (rel === void 0) {
+				if (!needsRel) continue;
+				rel = relativeToRoot(root, entryPath) ?? "";
+			}
+			if (pattern.kind === "path") {
+				if (rel !== "" && pattern.regex.test(rel)) return true;
+				continue;
+			}
+			if (pattern.regex.test(name)) return true;
+			if (rel !== "") {
+				const segments = rel.split("/");
+				for (let start = 0; start < segments.length - 1; start += 1) if (pattern.regex.test(segments.slice(start).join("/"))) return true;
+			}
+		}
+		return false;
+	};
+	const key = `${root}\0${compiled.map((pattern) => `${pattern.kind}:${pattern.regex.source}:${pattern.regex.flags}`).join("\0")}`;
+	return Object.assign(probe, { key });
+}
+/**
+* Decode a route pathname into the session + absolute file path. Rejects
+* a wrong prefix (404), an empty path, malformed percent encoding, and a
+* missing sessionId or file path (400). The caller still must bound the
+* decoded path with the workspace real-path guard — a decoded `..`
+* segment resolves outside the cwd and is refused there.
+*/
+function decodeHtmlUrl(pathname) {
+	if (!pathname.startsWith("/sidebar/html/")) return {
+		ok: false,
+		status: 404,
+		message: "not an html route"
+	};
+	const rest = pathname.slice(14);
+	if (rest === "") return {
+		ok: false,
+		status: 400,
+		message: "invalid html route path"
+	};
+	let segments;
+	try {
+		segments = rest.split("/").map((segment) => decodeURIComponent(segment));
+	} catch {
+		return {
+			ok: false,
+			status: 400,
+			message: "malformed URL encoding"
+		};
+	}
+	const [sessionId, ...pathSegments] = segments;
+	if (sessionId === void 0 || sessionId === "") return {
+		ok: false,
+		status: 400,
+		message: "sessionId and file path are required"
+	};
+	const unc = pathSegments[0] === "";
+	const tail = unc ? pathSegments.slice(1) : pathSegments;
+	if (tail.length === 0 || tail.some((segment) => segment === "")) return {
+		ok: false,
+		status: 400,
+		message: "sessionId and file path are required"
+	};
+	let path;
+	if (unc) path = `//${tail.join("/")}`;
+	else if (tail[0] === "~") path = tail.join("/");
+	else if (/^[A-Za-z]:$/.test(tail[0] ?? "")) path = tail.join("/");
+	else path = `/${tail.join("/")}`;
+	return {
+		ok: true,
+		ref: {
+			sessionId,
+			path
+		}
+	};
+}
+//#endregion
+//#region src/trust-fence.ts
+function header(headers, name) {
+	const value = headers[name];
+	return typeof value === "string" ? value : void 0;
+}
+/**
+* Origin of the Electron desktop shell's application page. The shell serves the
+* GUI from the `dsh-app:` scheme, so a page-initiated WebSocket handshake
+* carries this origin while the socket itself targets the Host's loopback
+* authority — an authority match is impossible by construction. The shell's own
+* request forwarder admits exactly this non-null origin and refuses every other
+* one; WebSocket upgrades bypass that forwarder (the scheme handler does not
+* carry them), which is why this fence is the first place the shell origin is
+* ever compared against a request.
+*/
+const SHELL_APP_ORIGIN = "dsh-app://app";
+/** Normalized URL of a Host-header authority, or undefined when unparsable. */
+function parseAuthority(authority) {
+	try {
+		return new URL(`http://${authority}`);
+	} catch {
+		return;
+	}
+}
+/** Whether a normalized URL hostname names the local loopback authority. */
+function isLoopbackHostname(hostname) {
+	if (hostname === "localhost" || hostname === "[::1]") return true;
+	const parts = hostname.split(".");
+	return parts.length === 4 && parts[0] === "127" && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+/** Canonical authority form: hostname, or hostname:port when a port was written. */
+function canonicalAuthority(entry, entryUrl) {
+	const port = entryUrl.port !== "" ? entryUrl.port : new URL(`https://${entry}`).port;
+	return port === "" ? entryUrl.hostname : `${entryUrl.hostname}:${port}`;
+}
+/** Whether the request authority matches a trustedHosts entry (exact or port-less). */
+function isTrustedAuthority(hostUrl, trustedHosts) {
+	return trustedHosts.some((entry) => {
+		const entryUrl = parseAuthority(entry);
+		if (entryUrl === void 0) return false;
+		return canonicalAuthority(entry, entryUrl) === entryUrl.hostname ? entryUrl.hostname === hostUrl.hostname : entryUrl.host === hostUrl.host;
+	});
+}
+/**
+* Decide whether one sidebar request may reach the plugin routes.
+* @param request - node HTTP request facts (headers, and the method/url the
+*   media-route exception is scoped to).
+* @param trustedHosts - non-loopback authorities this deployment serves.
+* @returns true when the Host is ours (loopback or trusted) and browser markers are same-origin.
+*/
+function isTrustedApiRequest(request, trustedHosts) {
+	const host = header(request.headers, "host");
+	if (host === void 0) return false;
+	const hostUrl = parseAuthority(host);
+	if (hostUrl === void 0) return false;
+	if (!isLoopbackHostname(hostUrl.hostname) && !isTrustedAuthority(hostUrl, trustedHosts)) return false;
+	if (header(request.headers, "sec-fetch-site") === "cross-site") {
+		const referer = header(request.headers, "referer");
+		if (!(request.method === "GET" && (request.url ?? "").startsWith("/sidebar/file") && header(request.headers, "sec-fetch-mode") === "no-cors" && header(request.headers, "sec-fetch-dest") === "image" && referer !== void 0 && (() => {
+			try {
+				return new URL(referer).host === hostUrl.host;
+			} catch {
+				return false;
+			}
+		})())) return false;
+	}
+	const origin = header(request.headers, "origin");
+	if (origin === void 0) return true;
+	if (origin === SHELL_APP_ORIGIN) return true;
+	try {
+		return new URL(origin).hostname === hostUrl.hostname;
+	} catch {
+		return false;
+	}
+}
+//#endregion
+//#region src/bundle-route.ts
+/**
+* Lazy chunk route: serves the client bundle's chunk scripts
+* (/sidebar/bundle/<name>.js). The official /plugins/<id>/client.js route
+* cannot serve arbitrary file names, so the plugin serves its own split
+* bundles (lib/client-<name>.js) here; the client injects the script on
+* first use of the feature that needs it (see src/client/chunk-loader.ts).
+*
+* Caching contract: every response carries `cache-control: no-cache` plus an
+* ETag (content hash, memoized per file by mtime/size) and honors
+* If-None-Match — the browser revalidates each fetch, but a 304 avoids
+* re-downloading multi-MB chunks that did not change (page refresh, HMR
+* re-activation). Same browser-trust fence as every other /sidebar route;
+* only allowlisted chunk names are servable (no path traversal).
+*/
+/** The chunk names the client may request (mirror of src/client/chunk-loader.ts). */
+const CHUNK_NAMES = [
+	"editor",
+	"mermaid",
+	"locale",
+	"terminal"
+];
+/** Directory of this host-half module (lib/ — the chunk scripts live next to it). */
+const LIB_DIR = dirname(fileURLToPath(import.meta.url));
+/** sha1 content hash shortened to 12 hex chars (same shape as the client-modules rev). */
+function shortHash(input) {
+	return createHash("sha1").update(input).digest("hex").slice(0, 12);
+}
+/** ETag memo: recompute the content hash only when the file's stat changed. */
+const etags = /* @__PURE__ */ new Map();
+/**
+* The chunk file's ETag (quoted hash), or undefined when the file is
+* missing. Hash is recomputed only when mtime/size changed (hashing a
+* multi-MB chunk per request is wasteful).
+*/
+async function etagOf(name, chunkDir) {
+	const path = join(chunkDir, `client-${name}.js`);
+	const key = `${chunkDir}:${name}`;
+	try {
+		const info = await stat(path);
+		const memo = etags.get(key);
+		if (memo !== void 0 && memo.mtimeMs === info.mtimeMs && memo.size === info.size) return memo.etag;
+		const etag = `"${shortHash(await readFile(path))}"`;
+		etags.set(key, {
+			mtimeMs: info.mtimeMs,
+			size: info.size,
+			etag
+		});
+		return etag;
+	} catch {
+		return;
+	}
+}
+/**
+* Build the /sidebar/bundle route handler. `fence` is the shared browser-
+* trust check every /sidebar route applies; `chunkDir` is the directory the
+* chunk scripts live in (overridable for tests).
+*/
+function createBundleRouteHandler(fence, chunkDir = LIB_DIR) {
+	return async (req, res) => {
+		if (!fence(req)) {
+			res.writeHead(403);
+			res.end("forbidden");
+			return;
+		}
+		if (req.method !== "GET" && req.method !== "HEAD") {
+			res.writeHead(405);
+			res.end();
+			return;
+		}
+		const pathname = new URL(req.url ?? "/", "http://dsh.internal").pathname;
+		const name = /^\/sidebar\/bundle\/([a-z0-9-]+)\.js$/.exec(pathname)?.[1];
+		if (name === void 0 || !CHUNK_NAMES.includes(name)) {
+			res.writeHead(404);
+			res.end("not found");
+			return;
+		}
+		const etag = await etagOf(name, chunkDir);
+		if (etag === void 0) {
+			res.writeHead(404);
+			res.end("not found");
+			return;
+		}
+		if (req.headers["if-none-match"] === etag) {
+			res.writeHead(304, {
+				"cache-control": "no-cache",
+				etag
+			});
+			res.end();
+			return;
+		}
+		try {
+			const body = await readFile(join(chunkDir, `client-${name}.js`));
+			res.writeHead(200, {
+				"content-type": "text/javascript; charset=utf-8",
+				"cache-control": "no-cache",
+				etag
+			});
+			res.end(body);
+		} catch {
+			res.writeHead(404);
+			res.end("not found");
+		}
+	};
+}
+/** Register the /sidebar/bundle route (disposed with the fiber). */
+function registerBundleRoute(ctx, fence) {
+	return ctx.webServer.register({
+		kind: "prefix",
+		path: "/sidebar/bundle",
+		handler: createBundleRouteHandler(fence)
+	});
+}
+//#endregion
+//#region src/fs-watch.ts
+/**
+* Directory change watching behind the file tree's live refresh.
+*
+* The tree used to go stale the moment anything wrote to disk outside the
+* plugin (a build, a formatter, the model's own `bash`): a folder was listed
+* once, when it was expanded, and never again. DSH 0.1.7 gave its own tree
+* per-directory watching; this plugin owns its tree (it took the `files` kind
+* over), so it needs its own watcher.
+*
+* One connection watches the directories the reader actually has expanded —
+* not the whole workspace — because `fs.watch` is one OS handle per directory
+* and a deep tree would exhaust them. Collapsing a folder or closing the
+* socket releases its handle.
+*
+* A debounced change also drops the host's listing cache for that directory
+* (`invalidateDirectoryCache`), so the re-list the client is about to ask for
+* cannot be answered from a level cached before the change.
+* @module dsh-better-sidebar/fs-watch
+*/
+/** How long a burst of filesystem events is folded into a single push. */
+const DEBOUNCE_MS = 150;
+/**
+* Directory watchers one connection may hold. The cap is a resource guard,
+* not a policy: a reader with more than this many folders expanded simply
+* stops gaining new watchers, and collapsing any folder frees a slot.
+*/
+const MAX_WATCHES = 64;
+/**
+* Create the watcher set of one connection.
+*
+* `fs.watch` reports a directory's own entry list changing, which is exactly
+* what re-listing that directory needs — file CONTENTS changing inside an
+* expanded folder is not observable this way and is not what the tree shows.
+* @param push - called once per debounced burst with the changed directory.
+* @param onError - called when a directory cannot be watched or its watcher
+*   fails; the directory is dropped either way, so the caller only reports it.
+* @returns the connection's watcher set.
+*/
+function createDirectoryWatchers(push, onError) {
+	const watchers = /* @__PURE__ */ new Map();
+	const drop = (dir) => {
+		const entry = watchers.get(dir);
+		if (entry === void 0) return;
+		watchers.delete(dir);
+		if (entry.timer !== void 0) clearTimeout(entry.timer);
+		entry.watcher.close();
+	};
+	const notify = (dir) => {
+		const entry = watchers.get(dir);
+		if (entry === void 0 || entry.timer !== void 0) return;
+		entry.timer = setTimeout(() => {
+			entry.timer = void 0;
+			if (!watchers.has(dir)) return;
+			invalidateDirectoryCache(dir);
+			push({ dir });
+		}, DEBOUNCE_MS);
+		entry.timer.unref();
+	};
+	return {
+		add(dir) {
+			if (watchers.has(dir)) return true;
+			if (watchers.size >= MAX_WATCHES) return false;
+			let watcher;
+			try {
+				watcher = watch(dir, { persistent: false });
+			} catch (error) {
+				onError(dir, error);
+				return false;
+			}
+			watcher.on("change", () => {
+				notify(dir);
+			});
+			watcher.on("error", (error) => {
+				onError(dir, error);
+				drop(dir);
+			});
+			watchers.set(dir, {
+				watcher,
+				timer: void 0
+			});
+			return true;
+		},
+		remove: drop,
+		close() {
+			for (const dir of [...watchers.keys()]) drop(dir);
+		}
+	};
+}
+//#endregion
+//#region src/open-external.ts
+/**
+* External open actions for the file tree's "open with" menu: hand a path to
+* the OS file manager (reveal/select) or launch a URL scheme's registered
+* handler (vscode://, cursor://, zed://, custom schemes).
+*
+* The client runs in a browser / DSH Desktop renderer where a raw `vscode://`
+* navigation is unreliable, so both actions fan out through this host route
+* and spawn the platform opener with an argv array (no shell interpolation).
+* WSL is special: Node reports `linux`, while the actual desktop handlers live
+* on Windows, so its commands cross the interop boundary explicitly.
+*/
+/** True when this Linux host is backed by Windows Subsystem for Linux. */
+function isWslRuntime() {
+	if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+	try {
+		return /microsoft|wsl/i.test(readFileSync("/proc/version", "utf8"));
+	} catch {
+		return false;
+	}
+}
+/** Run WSL's built-in path translator by absolute path so
+* `appendWindowsPath=false` cannot make the helper disappear from PATH. */
+function wslPath(mode, value) {
+	const translated = execFileSync("/usr/bin/wslpath", [mode, value], { encoding: "utf8" }).trim();
+	if (translated === "") throw new Error(`wslpath returned no translation for ${value}`);
+	return translated;
+}
+/** Linux/WSL absolute path -> Windows path understood by Explorer. */
+function windowsPathOf(path) {
+	return wslPath("-w", path);
+}
+/** Windows executable path -> its WSL mount path, without relying on PATH. */
+function windowsExecutableOf(path) {
+	return wslPath("-u", path);
+}
+/** Reveal/select a path in the OS file manager. On plain Linux there is no
+* common select protocol — the containing directory is opened instead.
+* Under WSL the desktop file manager is Windows Explorer. */
+function revealCommand(path, platform = process.platform, options = {}) {
+	switch (platform) {
+		case "darwin": return {
+			command: "open",
+			args: ["-R", path]
+		};
+		case "win32": return {
+			command: "explorer.exe",
+			args: [`/select,${path}`]
+		};
+		case "android": return {
+			command: "termux-open",
+			args: [parentOf(path) ?? path]
+		};
+		default:
+			if (options.wsl) {
+				const toWindowsPath = options.toWindowsPath ?? windowsPathOf;
+				return {
+					command: (options.windowsExecutable ?? windowsExecutableOf)("C:\\Windows\\explorer.exe"),
+					args: [`/select,${toWindowsPath(path)}`]
+				};
+			}
+			return {
+				command: "xdg-open",
+				args: [parentOf(path) ?? path]
+			};
+	}
+}
+/**
+* Characters `cmd.exe` interprets after Node has quoted each argv element for
+* CreateProcess: `cmd /c` parses the command line AGAIN, so `%VAR%` expands,
+* `&`/`|` split the command, `<`/`>` redirect, `^` escapes the next character,
+* `!` triggers delayed expansion and `"` re-balances the quoting. A URL
+* carrying any of them never reaches the `start` branch — it goes straight to
+* rundll32, which receives the URL as one argv element and interprets nothing.
+*/
+const CMD_METACHARACTERS = /[&%^!|<>"]/;
+/** C0/C1 control characters count as metacharacters too: `cmd.exe` treats a
+*  raw CR/LF as a command separator, and `validateExternalUrl` returns the
+*  RAW string (`new URL` strips those characters, so validation passes). */
+const CMD_CONTROL_CHARACTERS = /\p{Cc}/u;
+/** Whether `cmd.exe` would reinterpret any part of this URL — i.e. the `start`
+*  branch must be skipped and rundll32 used directly. */
+function cmdUnsafe(url) {
+	return CMD_METACHARACTERS.test(url) || CMD_CONTROL_CHARACTERS.test(url);
+}
+/**
+* The URL openers to try, best first — the Windows chain exists because the
+* `start` route and the rundll32 route fail in disjoint situations (#412:
+* rundll32 alone reported `{ started: true }` while nothing opened).
+*
+* Every entry is an argv array (never a shell string). macOS/Linux keep their
+* single opener and WSL keeps its single absolute-path Windows dispatcher (the
+* registered handlers live on the Windows side of the interop boundary): this
+* chain is a Windows fix, so their behavior is unchanged.
+*/
+function urlCommands(url, platform = process.platform, options = {}) {
+	switch (platform) {
+		case "darwin": return [{
+			command: "open",
+			args: [url]
+		}];
+		case "win32": {
+			const chain = [];
+			if (!cmdUnsafe(url)) chain.push({
+				command: options.cmdExecutable ?? "cmd.exe",
+				args: [
+					"/d",
+					"/c",
+					"start",
+					"",
+					url
+				]
+			});
+			chain.push({
+				command: options.rundll32Executable ?? "rundll32.exe",
+				args: ["url.dll,FileProtocolHandler", url]
+			});
+			return chain;
+		}
+		case "android": return [{
+			command: "termux-open-url",
+			args: [url]
+		}];
+		default:
+			if (options.wsl) return [{
+				command: (options.windowsExecutable ?? windowsExecutableOf)("C:\\Windows\\System32\\rundll32.exe"),
+				args: ["url.dll,FileProtocolHandler", url]
+			}];
+			return [{
+				command: "xdg-open",
+				args: [url]
+			}];
+	}
+}
+/** Convert the built-in VSCode-family local-file URL to its Remote-WSL form.
+* A POSIX path produces `scheme://file//...`; keep one leading slash when it
+* moves behind the `wsl+<distro>` authority. Other custom schemes are left
+* alone and merely dispatched through the Windows protocol handler. */
+function wslRemoteEditorUrl(url, distroName) {
+	const match = /^(vscode(?:-insiders)?|cursor):\/\/file(\/\/.*)$/i.exec(url);
+	if (match === null) return url;
+	const scheme = match[1];
+	const remotePath = match[2];
+	if (scheme === void 0 || remotePath === void 0) return url;
+	const distro = distroName.trim();
+	if (distro === "") throw new SidebarError("internal", "WSL_DISTRO_NAME is unavailable; cannot build a Remote-WSL editor URL", 500);
+	return `${scheme}://vscode-remote/wsl+${distro}${remotePath.slice(1)}`;
+}
+/** Validate a URL-scheme open target: a parseable custom-scheme URL (never
+* http/https — those would only dump the URL into a browser tab). */
+function validateExternalUrl(raw) {
+	if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) throw new SidebarError("bad-request", "url must be a custom-scheme URL");
+	let url;
+	try {
+		url = new URL(raw);
+	} catch {
+		throw new SidebarError("bad-request", "invalid url");
+	}
+	if (url.protocol === "http:" || url.protocol === "https:") throw new SidebarError("bad-request", "only custom-scheme urls can be opened externally");
+	return raw;
+}
+function messageOf(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+/** The structured failure of an action whose EVERY opener candidate died:
+* `internal` on the wire, with each command and its underlying message named
+* so the UI (and a bug report) can carry the real cause. */
+function launchFailure(action, failures) {
+	return new SidebarError("internal", `failed to launch external opener for the ${action === "url" ? "url" : "path"}: ${failures.map((f) => `"${f.command}" (${messageOf(f.error)})`).join("; ")}`, 500);
+}
+/**
+* Launch the first candidate that actually starts, in order.
+*
+* Success is reported only after Node emits `spawn`; a synchronous throw or an
+* `error` event (ENOENT, EACCES, …) advances to the next candidate. When every
+* candidate fails the promise rejects with a structured `SidebarError` naming
+* them all — the route must never answer `{ started: true }` for an open that
+* launched nothing (#412: that silent success is why the menu "did nothing").
+*
+* Note what this can and cannot see: a detached candidate that starts but
+* whose handler ignores the URL exits 0 (`start` and rundll32 both do), so the
+* chain reports everything it can observe — the launch itself.
+*/
+function launchChain(action, chain, spawnExternal) {
+	const failures = [];
+	return new Promise((resolve, reject) => {
+		const attempt = (index) => {
+			const spec = chain[index];
+			if (spec === void 0) {
+				reject(launchFailure(action, failures));
+				return;
+			}
+			let child;
+			try {
+				child = spawnExternal(spec.command, spec.args, {
+					detached: true,
+					stdio: "ignore"
+				});
+			} catch (error) {
+				failures.push({
+					command: spec.command,
+					error
+				});
+				attempt(index + 1);
+				return;
+			}
+			let settled = false;
+			child.once("spawn", () => {
+				if (settled) return;
+				settled = true;
+				resolve({ started: true });
+			});
+			child.once("error", (error) => {
+				if (settled) return;
+				settled = true;
+				failures.push({
+					command: spec.command,
+					error
+				});
+				attempt(index + 1);
+			});
+			child.unref();
+		};
+		attempt(0);
+	});
+}
+/**
+* Launch one external open action detached from the host. Both actions fan out
+* through an ordered candidate chain (one entry on macOS/Linux/Android/WSL, the
+* two Windows URL routes on win32) and reject with the aggregated failure when
+* none of them starts.
+*/
+function launchExternal(action, value, options = {}) {
+	const platform = options.platform ?? process.platform;
+	const wsl = options.wsl ?? (platform === "linux" && isWslRuntime());
+	const commandOptions = {
+		...options.commandOptions,
+		wsl
+	};
+	let chain;
+	if (action === "reveal") chain = [revealCommand(requireAbsolute(value), platform, commandOptions)];
+	else {
+		let url = validateExternalUrl(value);
+		if (wsl) url = wslRemoteEditorUrl(url, options.distroName ?? process.env.WSL_DISTRO_NAME ?? "");
+		chain = urlCommands(url, platform, commandOptions);
+	}
+	return launchChain(action, chain, options.spawn ?? spawn);
+}
+/** Default entry-count bound of one archive. */
+const ZIP_MAX_ENTRIES = 1e4;
+/** DOS epoch (1980-01-01) — the smallest representable DOS timestamp. */
+const DOS_YEAR_BASE = 1980;
+/** CRC-32 (IEEE 802.3, the ZIP polynomial), table built once per process. */
+const CRC_TABLE = (() => {
+	const table = /* @__PURE__ */ new Uint32Array(256);
+	for (let i = 0; i < 256; i += 1) {
+		let value = i;
+		for (let bit = 0; bit < 8; bit += 1) value = (value & 1) !== 0 ? 3988292384 ^ value >>> 1 : value >>> 1;
+		table[i] = value >>> 0;
+	}
+	return table;
+})();
+/** CRC-32 of one buffer. */
+function crc32(data) {
+	let crc = 4294967295;
+	for (let i = 0; i < data.length; i += 1) crc = CRC_TABLE[(crc ^ data[i]) & 255] ^ crc >>> 8;
+	return (crc ^ 4294967295) >>> 0;
+}
+const deflateRawAsync = promisify(deflateRaw);
+/** DOS date + time words for one instant (clamped to the 1980 epoch). */
+function dosDateTime(date) {
+	const year = Math.max(date.getFullYear(), DOS_YEAR_BASE);
+	const month = date.getMonth() + 1;
+	const day = date.getDate();
+	const hours = date.getHours();
+	const minutes = date.getMinutes();
+	const seconds = date.getSeconds();
+	return {
+		time: hours << 11 | minutes << 5 | seconds >> 1,
+		date: year - DOS_YEAR_BASE << 9 | month << 5 | day
+	};
+}
+/**
+* Normalize an entry name to a '/'-separated relative archive path.
+*
+* A backslash is NOT a separator here: on POSIX (and on the host half, which
+* builds the names) `a\b.txt` is one legal file name, so converting it would
+* silently split one file into a directory. Windows separators never reach
+* this point — the walk composes names from `basename`/`join` results.
+* Leading slashes are dropped (names are archive-relative by definition) and
+* `..` segments are refused, so a name can never traverse.
+*/
+function archiveName(raw, isDir) {
+	const segments = raw.replace(/^\/+/, "").split("/").filter((segment) => segment !== "" && segment !== ".");
+	if (raw === ".." || segments.length === 0 || segments.includes("..")) throw new SidebarError("bad-request", `invalid archive entry name "${raw}"`);
+	const name = segments.join("/");
+	return isDir ? `${name}/` : name;
+}
+/** The absolute filesystem path shape the builder accepts. */
+function requireSourcePath(raw) {
+	if (raw === "" || raw.includes("\0")) throw new SidebarError("bad-request", "archive entry path is required");
+	return raw;
+}
+/**
+* Read + compress one member (deflate only when it actually shrinks).
+* @param limit - the archive's total uncompressed ceiling (for the message).
+* @param budget - uncompressed bytes still available; the source is stat'ed
+*  FIRST and refused when it cannot fit, so an oversized archive never pulls
+*  the payload into memory (let alone deflates it) before failing.
+*/
+async function prepareFile(name, path, limit, budget) {
+	let size;
+	try {
+		size = (await stat(path)).size;
+	} catch (error) {
+		throw new SidebarError("fs-error", `cannot read "${path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	}
+	if (budget <= 0 || size > budget) throw new SidebarError("fs-error", `archive exceeds the ${limit} byte limit`, 400);
+	let data;
+	try {
+		data = await readFile(path);
+	} catch (error) {
+		throw new SidebarError("fs-error", `cannot read "${path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	}
+	const crc = crc32(data);
+	const deflated = await deflateRawAsync(data);
+	const useDeflate = deflated.byteLength < data.byteLength;
+	return {
+		name: Buffer.from(name, "utf8"),
+		data: useDeflate ? deflated : data,
+		crc,
+		method: useDeflate ? 8 : 0,
+		size: data.byteLength
+	};
+}
+/** One directory member (zero payload, name already carries the '/'). */
+function directoryMember(name) {
+	return {
+		name: Buffer.from(name, "utf8"),
+		data: Buffer.alloc(0),
+		crc: 0,
+		method: 0,
+		size: 0
+	};
+}
+/** Write one local file header + payload into `out`. */
+function writeLocalHeader(out, member, time, date) {
+	const header = Buffer.alloc(30);
+	header.writeUInt32LE(67324752, 0);
+	header.writeUInt16LE(20, 4);
+	header.writeUInt16LE(2048, 6);
+	header.writeUInt16LE(member.method, 8);
+	header.writeUInt16LE(time, 10);
+	header.writeUInt16LE(date, 12);
+	header.writeUInt32LE(member.crc, 14);
+	header.writeUInt32LE(member.data.byteLength, 18);
+	header.writeUInt32LE(member.size, 22);
+	header.writeUInt16LE(member.name.byteLength, 26);
+	header.writeUInt16LE(0, 28);
+	out.push(header, member.name, member.data);
+}
+/**
+* Build one ZIP archive from the given entries.
+* @param entries - files to read and/or directory rows to record; a directory
+*  row contributes its own header, its children are separate entries.
+* @param opts - entry-count and total-byte bounds ({@link ZipOptions}).
+* @returns the ZIP bytes.
+* @throws {SidebarError} bad-request for malformed entry names/paths,
+*  fs-error when an entry cannot be read or a bound is exceeded.
+*/
+async function buildZip(entries, opts = {}) {
+	const maxEntries = opts.maxEntries ?? 1e4;
+	const maxBytes = opts.maxBytes ?? 268435456;
+	if (entries.length > maxEntries) throw new SidebarError("fs-error", `too many entries for one archive (${entries.length} > ${maxEntries})`, 400);
+	const stamp = dosDateTime(/* @__PURE__ */ new Date());
+	const members = [];
+	/** Total uncompressed payload (the bound is checked against it). */
+	let totalBytes = 0;
+	/** Entries finished so far (the progress hook's `done`). */
+	let done = 0;
+	const report = () => {
+		opts.onProgress?.({
+			done,
+			total: entries.length,
+			bytes: totalBytes
+		});
+	};
+	for (const entry of entries) {
+		if (entry.isDir === true) {
+			members.push(directoryMember(archiveName(entry.name, true)));
+			done += 1;
+			report();
+			continue;
+		}
+		const path = requireSourcePath(entry.path);
+		const member = await prepareFile(archiveName(entry.name, false), path, maxBytes, maxBytes - totalBytes);
+		if (totalBytes + member.size > maxBytes) throw new SidebarError("fs-error", `archive exceeds the ${maxBytes} byte limit`, 400);
+		totalBytes += member.size;
+		members.push(member);
+		done += 1;
+		report();
+	}
+	const out = [];
+	const offsets = [];
+	let offset = 0;
+	for (const member of members) {
+		offsets.push(offset);
+		writeLocalHeader(out, member, stamp.time, stamp.date);
+		offset += 30 + member.name.byteLength + member.data.byteLength;
+	}
+	const directoryStart = offset;
+	members.forEach((member, index) => {
+		const isDir = member.name.toString("utf8").endsWith("/");
+		const header = Buffer.alloc(46);
+		header.writeUInt32LE(33639248, 0);
+		header.writeUInt16LE(798, 4);
+		header.writeUInt16LE(20, 6);
+		header.writeUInt16LE(2048, 8);
+		header.writeUInt16LE(member.method, 10);
+		header.writeUInt16LE(stamp.time, 12);
+		header.writeUInt16LE(stamp.date, 14);
+		header.writeUInt32LE(member.crc, 16);
+		header.writeUInt32LE(member.data.byteLength, 20);
+		header.writeUInt32LE(member.size, 24);
+		header.writeUInt16LE(member.name.byteLength, 28);
+		header.writeUInt16LE(0, 30);
+		header.writeUInt16LE(0, 32);
+		header.writeUInt16LE(0, 34);
+		header.writeUInt16LE(0, 36);
+		const mode = isDir ? 16877 : 33188;
+		header.writeUInt32LE(mode * 65536 + (isDir ? 16 : 0), 38);
+		header.writeUInt32LE(offsets[index], 42);
+		out.push(header, member.name);
+		offset += 46 + member.name.byteLength;
+	});
+	const eocd = Buffer.alloc(22);
+	eocd.writeUInt32LE(101010256, 0);
+	eocd.writeUInt16LE(0, 4);
+	eocd.writeUInt16LE(0, 6);
+	eocd.writeUInt16LE(members.length, 8);
+	eocd.writeUInt16LE(members.length, 10);
+	eocd.writeUInt32LE(offset - directoryStart, 12);
+	eocd.writeUInt32LE(directoryStart, 16);
+	eocd.writeUInt16LE(0, 20);
+	out.push(eocd);
+	return Buffer.concat(out);
+}
+/**
+* Sanitize the archive's download name: one flat file name, never a path.
+* Separators, control characters, quotes and leading dots are stripped (a
+* name cannot look like a traversal or hide as a dotfile); an empty result
+* falls back to `archive.zip`, and a `.zip` suffix is applied once.
+*/
+function archiveNameOf(raw) {
+	const trimmed = (raw ?? "").trim();
+	if (trimmed === "" || trimmed === ".zip") return "archive.zip";
+	const cleaned = [...trimmed].filter((char) => {
+		const code = char.codePointAt(0);
+		return char !== "\\" && char !== "/" && char !== "\"" && char !== "'" && code >= 32 && code !== 127;
+	}).join("").trim().replace(/^\.+/, "").slice(0, 120);
+	if (cleaned === "") return "archive.zip";
+	return cleaned.toLowerCase().endsWith(".zip") ? cleaned : `${cleaned}.zip`;
+}
+/**
+* The `content-disposition` value for one archive download.
+*
+* A non-latin1 name (a Chinese folder → `报告.zip`) CANNOT go into the header
+* verbatim: Node's `writeHead` validates header values and rejects anything
+* above U+00FF with `Invalid character in header content` — the route turned
+* that into a 500. So the name is sent twice, exactly like `/sidebar/file`
+* does for a download: an ASCII-only `filename="…"` fallback for old clients
+* and the RFC 5987 `filename*=UTF-8''…` form (percent-encoded, therefore pure
+* ASCII) for everyone else, which wins in every current browser.
+*/
+function contentDispositionOf(name) {
+	return `attachment; filename="${asciiFallbackOf(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+/**
+* The ASCII-only fallback of a download name: characters a quoted header
+* string cannot carry (or that no latin1 client could render) drop out, and a
+* stray quote or backslash does too. A result with no stem left (`''` or a
+* bare extension, as a fully non-latin1 name reduces to) becomes
+* `download.zip`, so the header always names a usable file.
+*/
+function asciiFallbackOf(name) {
+	const ascii = [...name].filter((char) => {
+		const code = char.codePointAt(0);
+		return code >= 32 && code <= 126 && char !== "\"" && char !== "\\";
+	}).join("");
+	const stem = ascii.replace(/\.zip$/i, "");
+	if (stem === "" || /^\.+$/.test(stem)) return "download.zip";
+	return ascii;
+}
+/**
+* The in-archive name of every selection, disambiguated.
+*
+* The common case keeps the intuition "one selection is named by its own
+* basename" — archive `/ws/src` and the entries live under `src/`. Two
+* selections that would collide (multi-select `/ws/a/index.ts` and
+* `/ws/b/index.ts` both wanting `index.ts`) are extended with parent
+* segments until every name is unique, so an extractor cannot silently
+* overwrite one member with another. A path that runs out of ancestors
+* (selecting the filesystem root, or `/a` twice) falls back to the full
+* '/'-joined path, which is unique by construction.
+*
+* @param selections - absolute (already fenced) paths, in selection order.
+* @returns one '/'-separated archive name per selection, same order.
+*/
+function disambiguateArchiveNames(selections) {
+	const segmentsOf = (absolute, depth) => {
+		const parts = [];
+		let current = absolute;
+		for (let level = 0; level < depth; level += 1) {
+			const part = basename(current);
+			const parent = dirname(current);
+			if (part === "" || parent === current) break;
+			parts.unshift(part);
+			current = parent;
+		}
+		return parts.join("/");
+	};
+	const deepEnough = (absolute, name) => {
+		return segmentsOf(absolute, Number.MAX_SAFE_INTEGER) === name ? absolute.replace(/^\/+/, "") : name;
+	};
+	const depth = new Map(selections.map((path) => [path, 1]));
+	for (let round = 0; round < 64; round += 1) {
+		const names = selections.map((path) => segmentsOf(path, depth.get(path)));
+		const counts = /* @__PURE__ */ new Map();
+		for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+		if ([...counts.values()].every((count) => count === 1)) return names;
+		const grown = /* @__PURE__ */ new Set();
+		for (const [index, path] of selections.entries()) {
+			if ((counts.get(names[index]) ?? 0) <= 1) continue;
+			depth.set(path, depth.get(path) + 1);
+			grown.add(path);
+		}
+		if (grown.size === 0) break;
+	}
+	return selections.map((path) => deepEnough(path, segmentsOf(path, depth.get(path))));
+}
+/**
+* Collect one selected path into the archive: a file becomes one entry, a
+* directory is walked depth-first and each level contributes its own entry
+* (a trailing '/' name), files keep their layout under the directory's own
+* name. Symlinks are skipped, never followed. Iterative (an explicit stack)
+* because a deep tree must not blow the JS stack, and the count bound is
+* enforced HERE so a runaway directory fails before its rows pile up.
+*
+* @param absolute - the (already fenced) absolute path of the selection.
+* @param name - the in-archive name of that selection (its basename).
+* @param out - the entry list appended to, in archive order.
+* @param maxEntries - entry-count bound.
+* @throws {SidebarError} fs-error when a row cannot be read or the bound is hit.
+*/
+async function collectZipEntries(absolute, name, out, maxEntries = ZIP_MAX_ENTRIES) {
+	const stack = [{
+		path: absolute,
+		name
+	}];
+	while (stack.length > 0) {
+		const item = stack.pop();
+		if (out.length >= maxEntries) throw new SidebarError("fs-error", `too many entries for one archive (> ${maxEntries})`, 400);
+		const info = await lstat(item.path).catch((error) => {
+			throw new SidebarError("fs-error", `cannot read "${item.path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+		});
+		if (info.isSymbolicLink()) continue;
+		if (!info.isDirectory()) {
+			out.push({
+				path: item.path,
+				name: item.name
+			});
+			continue;
+		}
+		out.push({
+			path: item.path,
+			name: item.name,
+			isDir: true
+		});
+		let level;
+		try {
+			level = await readdir(item.path, { withFileTypes: true });
+		} catch (error) {
+			throw new SidebarError("fs-error", `cannot list "${item.path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+		}
+		for (let index = level.length - 1; index >= 0; index -= 1) {
+			const child = level[index];
+			stack.push({
+				path: join(item.path, child.name),
+				name: `${item.name}/${child.name}`
+			});
+		}
+	}
+}
+/** How long a finished (or failed) archive stays downloadable. */
+const ARCHIVE_TTL_MS = 3e5;
+/**
+* Answer one `GET /sidebar/archive?id=&sessionId=` from the task table.
+*
+* Split out of index.ts because this mapping IS the contract: 400 without
+* both parameters, 403 for another session's task, 409 while it builds, 410
+* for a failed build, 404 for unknown/expired/already-downloaded, 200 with the
+* RFC 5987 disposition otherwise. Kept here so all six branches are testable
+* without a live cordis mount.
+* @param tasks - the plugin's task table.
+* @param query - the request's `sessionId` / `id` values (null = absent).
+* @param res - a minimal response face.
+* @throws {SidebarError} for every non-200 branch (callers turn it into the
+*  JSON error envelope they already use).
+*/
+function respondArchiveDownload(tasks, query, res) {
+	if (query.sessionId === null || query.id === null || query.id === "") throw new SidebarError("bad-request", "sessionId and id are required");
+	const found = tasks.lookup(query.id, query.sessionId);
+	if (!found.ok || found.task.state !== "ready" || found.task.zip === void 0) {
+		if (found.ok) throw new SidebarError("not-found", "archive is gone", 404);
+		if (found.reason === "building") throw new SidebarError("bad-request", found.message, 409);
+		if (found.reason === "forbidden") throw new SidebarError("forbidden", found.message, 403);
+		if (found.reason === "error") throw new SidebarError("fs-error", found.message, 410);
+		throw new SidebarError("not-found", found.message, 404);
+	}
+	const { name, zip } = found.task;
+	tasks.release(found.task.id);
+	res.writeHead(200, {
+		"content-type": "application/zip",
+		"content-disposition": contentDispositionOf(name),
+		"content-length": String(zip.byteLength),
+		"cache-control": "no-cache"
+	});
+	res.end(zip);
+}
+/** Create one archive task table (one per plugin mount). */
+function createArchiveTasks() {
+	const tasks = /* @__PURE__ */ new Map();
+	/** Drop settled tasks past their TTL (called on every access). */
+	const sweep = (now) => {
+		for (const [id, task] of tasks) if (task.state !== "building" && task.expiresAt <= now) tasks.delete(id);
+	};
+	/** The task one (id, sessionId) pair names, or why it cannot be read. */
+	const lookup = (id, sessionId) => {
+		sweep(Date.now());
+		const task = tasks.get(id);
+		if (task === void 0) return {
+			ok: false,
+			reason: "missing",
+			message: "unknown or expired archive"
+		};
+		if (task.sessionId !== sessionId) return {
+			ok: false,
+			reason: "forbidden",
+			message: "archive belongs to another session"
+		};
+		if (task.state === "building") return {
+			ok: false,
+			reason: "building",
+			message: "archive is still being built"
+		};
+		if (task.state === "error") return {
+			ok: false,
+			reason: "error",
+			message: task.error ?? "archive failed"
+		};
+		return {
+			ok: true,
+			task
+		};
+	};
+	return {
+		start({ sessionId, name, entries }) {
+			sweep(Date.now());
+			let building = 0;
+			for (const task of tasks.values()) if (task.state === "building") building += 1;
+			if (building >= 4) throw new SidebarError("bad-request", `too many archives are being built (max 4)`, 409);
+			const task = {
+				id: `ar-${randomUUID()}`,
+				sessionId,
+				name,
+				state: "building",
+				done: 0,
+				total: entries.length,
+				bytes: 0,
+				expiresAt: Number.POSITIVE_INFINITY
+			};
+			tasks.set(task.id, task);
+			buildZip([...entries], { onProgress: (progress) => {
+				task.done = progress.done;
+				task.bytes = progress.bytes;
+			} }).then((zip) => {
+				task.zip = zip;
+				task.state = "ready";
+				task.done = task.total;
+				task.expiresAt = Date.now() + ARCHIVE_TTL_MS;
+			}, (error) => {
+				task.state = "error";
+				task.error = error instanceof Error ? error.message : String(error);
+				task.expiresAt = Date.now() + ARCHIVE_TTL_MS;
+			});
+			return {
+				id: task.id,
+				entries: entries.length
+			};
+		},
+		status(id, sessionId) {
+			sweep(Date.now());
+			const task = tasks.get(id);
+			if (task === void 0) throw new SidebarError("not-found", "unknown or expired archive", 404);
+			if (task.sessionId !== sessionId) throw new SidebarError("forbidden", "archive belongs to another session", 403);
+			return {
+				state: task.state,
+				done: task.done,
+				total: task.total,
+				bytes: task.bytes,
+				...task.error === void 0 ? {} : { error: task.error }
+			};
+		},
+		lookup,
+		release(id) {
+			tasks.delete(id);
+		},
+		size() {
+			sweep(Date.now());
+			return tasks.size;
+		}
+	};
+}
+//#endregion
+//#region src/agent-opens.ts
+/**
+* The model-facing `sidebar_open` tool and its delivery registry.
+*
+* One tool lets the model actively open a local file, a local folder (as a
+* tree rooted there), or an HTTP(S) page in the CALLING session's sidebar.
+* Mirroring the agent-terminal tools, the tool binds to the calling agent's
+* session through `exec.agent.session.id` — the model never passes a
+* sessionId, and opens for non-active sessions are queued until that
+* session's sidebar view is next connected.
+*
+* Delivery is a host→browser push over the dedicated `/sidebar/ws/agent-opens`
+* endpoint (the same pattern as `/sidebar/ws/agent-terminals`): the registry
+* keeps a per-session queue; a push is consumed on send (`delivered: true`
+* means a sidebar view was attached at call time), otherwise the request
+* stays queued and is replayed when a view for that session attaches.
+*
+* Conventions (per plugin-development-guide.md §3):
+*   C1 — parameters schema-validated before `execute` runs.
+*   C4 — `execute` returns one canonical JSON value; `render` is a separate
+*        pure text projection.
+*   C6 — `exec.signal.throwIfAborted()` before any fs work.
+*   C10 — no UI/transport vocabulary in the canonical value.
+*/
+/**
+* Per-session queue of open requests plus the connected sidebar views.
+*
+* Lifecycle: `enqueue` adds a request and — when at least one view for the
+* session is attached — pushes it immediately and removes it from the queue
+* (consume-on-send: a reconnect must never replay an open the client already
+* applied, and the browser tab type has no per-URL dedupe, so replaying
+* would mint duplicate tabs). With no attached view the request stays queued
+* and `attach` replays it on connect. `drainAll` drops every queued request
+* (the feature was turned off); `dispose` also drops every subscriber.
+*/
+var AgentOpenRegistry = class {
+	pending = /* @__PURE__ */ new Map();
+	subscribers = /* @__PURE__ */ new Map();
+	/** Queue one open and deliver it immediately when a view is attached.
+	* @returns the request id and whether a connected view received it now. */
+	enqueue(sessionId, kind, target, title) {
+		const request = {
+			id: randomUUID(),
+			sessionId,
+			kind,
+			target,
+			title
+		};
+		const list = this.pending.get(sessionId) ?? [];
+		list.push(request);
+		this.pending.set(sessionId, list);
+		const views = this.subscribers.get(sessionId);
+		if (views !== void 0 && views.size > 0) {
+			for (const send of views) send(request);
+			this.pending.delete(sessionId);
+			return {
+				id: request.id,
+				delivered: true
+			};
+		}
+		return {
+			id: request.id,
+			delivered: false
+		};
+	}
+	/** Attach one sidebar view (replays queued requests; consume-on-send).
+	* @returns the disposer detaching the view. */
+	attach(sessionId, send) {
+		let views = this.subscribers.get(sessionId);
+		if (views === void 0) {
+			views = /* @__PURE__ */ new Set();
+			this.subscribers.set(sessionId, views);
+		}
+		views.add(send);
+		const queued = this.pending.get(sessionId) ?? [];
+		if (queued.length > 0) {
+			for (const request of queued) send(request);
+			this.pending.delete(sessionId);
+		}
+		return () => {
+			const current = this.subscribers.get(sessionId);
+			current?.delete(send);
+			if (current !== void 0 && current.size === 0) this.subscribers.delete(sessionId);
+		};
+	}
+	/** Drop every queued request (the feature was turned off mid-session). */
+	drainAll() {
+		this.pending.clear();
+	}
+	/** Drop the queue and every subscriber (plugin teardown). */
+	dispose() {
+		this.pending.clear();
+		this.subscribers.clear();
+	}
+};
+/** Extract the calling agent or throw the canonical "no agent" error. */
+function requireAgent(agent) {
+	if (agent === void 0) throw new Error("sidebar_open requires an initiating agent");
+	return agent;
+}
+/** Resolve the calling agent's session id (the queue scope + ownership key). */
+function sessionIdOf(exec) {
+	return requireAgent(exec.agent).session.id;
+}
+/** Pure text projection helper (the canonical value is already structured). */
+function textRender(fn) {
+	return (_args, value) => [{
+		type: "text",
+		text: fn(value)
+	}];
+}
+/** Classify a raw target: http(s) URL or a local path (stat-driven). */
+async function classifyTarget(raw, cwd) {
+	if (/^https?:\/\//i.test(raw)) {
+		let parsed;
+		try {
+			parsed = new URL(raw);
+		} catch {
+			throw new Error(`"${raw}" is not a valid URL`);
+		}
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("sidebar_open only accepts http:// and https:// URLs");
+		return {
+			kind: "url",
+			target: raw,
+			title: parsed.hostname !== "" ? parsed.hostname : raw
+		};
+	}
+	if (!isWindowsDrivePrefix(raw) && /^[a-z][a-z0-9+.-]*:/i.test(raw)) throw new Error("sidebar_open only accepts http:// and https:// URLs; use a local path for files");
+	const target = resolve(isAbsolute(raw) ? raw : join(cwd, raw));
+	let info;
+	try {
+		info = await stat(target);
+	} catch (error) {
+		const code = error.code;
+		if (code === "ENOENT") throw new Error(`"${raw}" does not exist (resolved to "${target}")`, { cause: error });
+		if (code === "EACCES" || code === "EPERM") throw new Error(`"${target}" is not readable`, { cause: error });
+		throw new Error(`cannot open "${target}": ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+	}
+	const title = basenameOf(target);
+	return {
+		kind: info.isDirectory() ? "folder" : "file",
+		target,
+		title: title === "" ? raw : title
+	};
+}
+/** The last path segment (mirror of the client's FileTree baseName). */
+function basenameOf(path) {
+	const trimmed = path.replace(/[\\/]+$/, "");
+	const at = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+	return at === -1 ? trimmed : trimmed.slice(at + 1);
+}
+/** Whether a raw target starts with a Windows drive prefix (`C:\` / `C:/`). */
+function isWindowsDrivePrefix(raw) {
+	return /^[a-zA-Z]:[\\/]/.test(raw);
+}
+/**
+* Register the `sidebar_open` tool against the host tool registry. The tool
+* is gated by the side-card setting `agentOpenTools` (the caller registers
+* and unregisters it); `readPrefs` supplies the live prefs so a disabled
+* target tab type (editor/browser) is reported to the model instead of
+* silently no-oping on the client. `resolveCwd` threads the calling
+* session's live cwd so relative paths resolve the same way the sidebar's
+* own routes do.
+* @param ctx - host plugin context (carries the tools service).
+* @param registry - the open-request registry (per-session queue + views).
+* @param resolveCwd - async cwd resolver for one session id. Resolves through
+*  the session header, the client-supplied cwd, and the persistence index
+*  before falling back to the host process cwd (production always provides
+*  persistence, so the fallback is reached only in tests / stripped-down hosts).
+* @param readPrefs - live resolved side card prefs (for tab enable gates).
+* @returns a disposer that unregisters the tool.
+*/
+function registerOpenTool(ctx, registry, resolveCwd, readPrefs) {
+	return ctx.tools.register(defineTool({
+		name: "sidebar_open",
+		description: "Open a local file, a local folder, or an HTTP(S) page in the sidebar of the calling conversation. A file opens in the sidebar editor (per-path dedupe: an already-open file is focused); a folder opens a file window whose tree is rooted at that folder; a URL opens in the sidebar browser (sandboxed iframe). The panel auto-expands for content opens and the tab title defaults to the file/folder name or the URL hostname. The path may be absolute or relative to the session working directory. The open lands in the CALLING session's sidebar: while that session's sidebar view is not connected (e.g. the session is not the active one), the open is queued and delivered when the session sidebar is next shown — the result reports `delivered` so you know whether it is visible right now. The side card setting \"model opens files/folders/pages in the sidebar\" must be on, and the target tab type must be enabled in that session's settings.",
+		parameters: {
+			target: {
+				type: "string",
+				required: true,
+				description: "Absolute or session-cwd-relative local path, or an http:// / https:// URL."
+			},
+			title: {
+				type: "string",
+				description: "Optional tab title (defaults to the file/folder name or the URL hostname)."
+			}
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: false,
+				properties: {
+					kind: {
+						type: "string",
+						required: true,
+						description: "What was opened: file | folder | url."
+					},
+					target: {
+						type: "string",
+						required: true,
+						description: "The absolute path or URL the open was requested for."
+					},
+					title: {
+						type: "string",
+						required: true,
+						description: "The tab title used (provided title, basename, or hostname)."
+					},
+					delivered: {
+						type: "boolean",
+						required: true,
+						description: "Whether the open was pushed to a connected sidebar at call time (false = queued until the session sidebar is next shown)."
+					}
+				}
+			},
+			render: textRender((v) => v.delivered ? `Opened ${v.kind} "${v.title}" (${v.target}) in the sidebar.` : `Requested opening ${v.kind} "${v.title}" (${v.target}) in the sidebar — the session sidebar is not connected yet, so the open is queued and will appear when it is next shown.`)
+		},
+		execute: async (args, exec) => {
+			exec.signal.throwIfAborted();
+			const sessionId = sessionIdOf(exec);
+			const cwd = await resolveCwd(sessionId);
+			const { kind, target, title: defaultTitle } = await classifyTarget(args.target, cwd);
+			const prefs = readPrefs();
+			const tab = kind === "url" ? "browser" : "editor";
+			if (prefs.tabsEnabled[tab] === false) throw new Error(`the built-in ${tab} tab is disabled in the side card settings; ask the user to enable it (or disable this tool)`);
+			const title = args.title !== void 0 && args.title.trim() !== "" ? args.title : defaultTitle;
+			const { delivered } = registry.enqueue(sessionId, kind, target, title);
+			return {
+				kind,
+				target,
+				title,
+				delivered
+			};
+		}
+	}));
+}
+//#endregion
+//#region src/sidechat-core.ts
+/** The durable thread-label prefix (also the row filter in the client list). */
+const SIDE_LABEL_PREFIX = "Side: ";
+/** The pinned label of a freshly created thread that no prompt has reached
+*  yet (Codex-style immediate create: the tab opens an EMPTY thread, the
+*  first composer message carries the boundary and earns the real label).
+*  The client renders it localized; the prefix keeps the row filter honest. */
+const SIDE_NEW_THREAD_TITLE = "Side: New thread";
+/** The plugin's producer-owned source kind, stamped on the source of
+*  context-injection messages (boundary prompt + parked snapshot) so the
+*  transcript recognizes them structurally — not by text prefix. Session
+*  format v4 retired the bare `kind: 'plugin'` + `plugin` pair; a plugin is
+*  now identified by its own `plugin:<name>` kind, which is exactly what
+*  DSH's own v3→v4 migration derives for rows this plugin wrote earlier, so
+*  both generations read back under one shape. */
+const SIDE_INJECTION_SOURCE_KIND = "plugin:dsh-better-sidebar";
+/**
+* The boundary prompt delivered as the thread's first user message: the
+* inherited seed is reference context only, never active instruction.
+* Model-facing contract — change only with intent, tests pin the sentences.
+*/
+const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
+
+Everything before this boundary is inherited history from the parent session: its completed turns, its pending question, and — if the parent was mid-turn — its in-progress output frozen at the moment this side conversation started. It is reference context only. It is not your current task.
+
+Do not continue, execute, or complete any instructions, plans, tool calls, approvals, edits, or requests from before this boundary. Only messages submitted after this boundary are active user instructions for this side conversation.
+
+Mode: this is a continuable side conversation. Your answers stay in this side thread and are viewed in the side panel; they are never delivered into the parent session.`;
+/**
+* Project buffered live chunks into wire rows.
+* @param chunks - the session's active-attempt chunks, in index order.
+* @param tailSeq - the session's last durable seq (live rows order after it).
+* @returns the rows to append to the transcript feed.
+*/
+function liveEventsOf(chunks, tailSeq) {
+	return chunks.map((delta, position) => ({
+		type: "assistant/live-chunk",
+		seq: tailSeq + 1 + position,
+		time: delta.time,
+		data: {
+			attemptId: delta.attemptId,
+			turn: delta.turn,
+			step: delta.step,
+			index: delta.index,
+			chunk: delta.chunk
+		}
+	}));
+}
+/** The data record of one event (narrowed from the loose face). */
+function dataOf(event) {
+	return event.data;
+}
+/** Copy parent events verbatim (their live seq === array index contract).
+*  The FULL envelope is preserved — stripping `surfaceOp` would make the
+*  seed validator reject every surface-eligible message event. */
+function copyEvents(events) {
+	return events.map((event) => {
+		const source = event;
+		return {
+			type: source.type,
+			seq: source.seq,
+			time: source.time,
+			data: dataOf(source),
+			...source.surfaceOp === void 0 ? {} : { surfaceOp: source.surfaceOp },
+			...source.sourceEventSeqs === void 0 ? {} : { sourceEventSeqs: source.sourceEventSeqs },
+			...source.ignorable === void 0 ? {} : { ignorable: source.ignorable }
+		};
+	});
+}
+/** Index of the last `turn/start` or `turn/end`, or -1. */
+function lastTurnBoundary(events) {
+	for (let index = events.length - 1; index >= 0; index--) {
+		const type = events[index]?.type;
+		if (type === "turn/start" || type === "turn/end") return index;
+	}
+	return -1;
+}
+/** Numeric field of an event's data (turn / step numbers). */
+function numberAt(data, key) {
+	const value = data[key];
+	return typeof value === "number" && Number.isSafeInteger(value) ? value : 0;
+}
+/** The step number still open at the log tail inside the turn starting at
+*  `turnStart` (undefined when no step is open). */
+function openStepInTurn(events, turnStart) {
+	let open;
+	for (let index = turnStart + 1; index < events.length; index++) {
+		const event = events[index];
+		if (event === void 0) continue;
+		if (event.type === "step/start") open = numberAt(dataOf(event), "step");
+		else if (event.type === "step/end") open = void 0;
+	}
+	return open;
+}
+/**
+* Whether the open turn ending the log has a `tool/call` without its paired
+* `tool/result` in the CURRENT open step. Providers reject dangling
+* assistant calls, so such a turn cannot be honestly closed and the
+* inheritance must fall back to the snapshot.
+*/
+function hasDanglingToolCall(events, turnStart) {
+	const pending = /* @__PURE__ */ new Set();
+	for (let index = turnStart + 1; index < events.length; index++) {
+		const event = events[index];
+		if (event === void 0) continue;
+		const data = dataOf(event);
+		if (event.type === "step/end") {
+			pending.clear();
+			continue;
+		}
+		if (event.type === "tool/call") {
+			const callId = data.callId;
+			if (typeof callId === "string") pending.add(callId);
+			continue;
+		}
+		if (event.type === "tool/result") {
+			const callId = data.message?.source?.callId;
+			if (typeof callId === "string") pending.delete(callId);
+		}
+	}
+	return pending.size > 0;
+}
+/**
+* The result content blocks of one tool/result message under BOTH logged
+* shapes: 0.1.6 wrapped them in a single `type: 'tool-result'` content block
+* on a user-role message, 0.1.7's first-class tool-role message carries them
+* at the message's own top level. Historical logs keep the old shape forever,
+* so both are read. Undefined when the message carries no block array.
+*/
+function resultBlocks(content) {
+	if (!Array.isArray(content)) return void 0;
+	for (const block of content) {
+		if (block === null || typeof block !== "object") continue;
+		const wrapper = block;
+		if (wrapper.type === "tool-result" && Array.isArray(wrapper.content)) return wrapper.content;
+	}
+	return content;
+}
+/** The plain text of one tool/result message (its text blocks, under either
+*  of the two shapes {@link resultBlocks} reads). */
+function toolResultText(data) {
+	const message = data.message;
+	const blocks = resultBlocks(message?.content);
+	if (blocks === void 0) return "";
+	const parts = [];
+	for (const item of blocks) {
+		if (item === null || typeof item !== "object") continue;
+		const textItem = item;
+		if (textItem.type === "text" && typeof textItem.text === "string") parts.push(textItem.text);
+	}
+	return parts.join("\n");
+}
+/** Cap applied to one tool-result's text inside a snapshot (prompt budget). */
+const SNAPSHOT_RESULT_CAP = 2e3;
+/** Cap applied to the whole snapshot (prompt budget). */
+const SNAPSHOT_TOTAL_CAP = 8e3;
+/**
+* Build the side-thread inheritance for one parent log: the full event log
+* up to the click moment, honestly closed when it ends inside an open turn.
+* @param events - the parent's log (live or persisted).
+* @param live - the parent's in-flight stream chunks (DSH 0.1.5+ publishes
+*   them outside the log); used only by the snapshot fallback.
+*/
+function buildSidechatInheritance(events, live = []) {
+	if (events.length === 0) return {
+		seed: [],
+		snapshot: null
+	};
+	const boundary = lastTurnBoundary(events);
+	if (boundary < 0 || events[boundary]?.type === "turn/end") return {
+		seed: copyEvents(events),
+		snapshot: null
+	};
+	if (hasDanglingToolCall(events, boundary)) return {
+		seed: copyEvents(events.slice(0, boundary)),
+		snapshot: buildOpenTurnSnapshot(events, live)
+	};
+	const seed = copyEvents(events);
+	const last = events[events.length - 1];
+	const turn = numberAt(dataOf(events[boundary]), "turn");
+	const now = last?.time ?? 0;
+	const openStep = openStepInTurn(events, boundary);
+	if (openStep !== void 0) seed.push({
+		type: "step/end",
+		seq: seed.length,
+		time: now,
+		data: {
+			turn,
+			step: openStep
+		}
+	});
+	seed.push({
+		type: "turn/end",
+		seq: seed.length,
+		time: now,
+		data: {
+			turn,
+			reason: { kind: "interrupted" }
+		}
+	});
+	return {
+		seed,
+		snapshot: null
+	};
+}
+/** One assistant content block reduced to the text the snapshot shows. */
+function messageTexts(message) {
+	const content = message?.content;
+	let text = "";
+	let reasoning = "";
+	if (!Array.isArray(content)) return {
+		text,
+		reasoning
+	};
+	for (const block of content) {
+		if (block === null || typeof block !== "object") continue;
+		const candidate = block;
+		if (typeof candidate.text !== "string" || candidate.text === "") continue;
+		if (candidate.type === "text") text += candidate.text;
+		else if (candidate.type === "reasoning") reasoning += candidate.text;
+	}
+	return {
+		text,
+		reasoning
+	};
+}
+/**
+* Expand one attempt's compact `AssistantStreamRecord[]` (the durable stream
+* DSH 0.1.5 embeds in `assistant/message.stream` and `assistant/attempt.stream`)
+* into the text/reasoning it carried. Tool-call records contribute no text.
+*/
+function streamTexts(stream) {
+	let text = "";
+	let reasoning = "";
+	if (!Array.isArray(stream)) return {
+		text,
+		reasoning
+	};
+	for (const record of stream) {
+		if (record === null || typeof record !== "object") continue;
+		const entry = record;
+		if (entry.type === "text-chunks" || entry.type === "reasoning-chunks") {
+			if (!Array.isArray(entry.texts)) continue;
+			const joined = entry.texts.filter((part) => typeof part === "string").join("");
+			if (entry.type === "text-chunks") text += joined;
+			else reasoning += joined;
+			continue;
+		}
+		if (entry.type === "chunk") {
+			const chunk = entry.chunk;
+			if (chunk === null || typeof chunk !== "object" || typeof chunk.text !== "string") continue;
+			if (chunk.type === "text-delta") text += chunk.text;
+			else if (chunk.type === "reasoning-delta") reasoning += chunk.text;
+		}
+	}
+	return {
+		text,
+		reasoning
+	};
+}
+/** One live delta's contribution to the snapshot. */
+function liveTexts(chunk) {
+	if (typeof chunk.text !== "string" || chunk.text === "") return {
+		text: "",
+		reasoning: ""
+	};
+	if (chunk.type === "text-delta") return {
+		text: chunk.text,
+		reasoning: ""
+	};
+	if (chunk.type === "reasoning-delta") return {
+		text: "",
+		reasoning: chunk.text
+	};
+	return {
+		text: "",
+		reasoning: ""
+	};
+}
+/**
+* Structured text snapshot of the parent's OPEN turn (from its `turn/start`
+* to the log tail): the assistant/reasoning output so far and the tool
+* activity — executed tools with their result text, the still-executing one
+* marked. Returns null when there is no open turn or nothing to show.
+*
+* The in-flight step's text is NOT in the log on DSH 0.1.5 (the model stream
+* is process-local until it settles), so it comes from `live`; settled steps
+* read their durable `assistant/message` content, and a failed attempt reads
+* its embedded `assistant/attempt.stream`.
+* @param events - the parent's log.
+* @param live - the parent's in-flight stream chunks, in index order.
+*/
+function buildOpenTurnSnapshot(events, live = []) {
+	const boundary = lastTurnBoundary(events);
+	if (boundary < 0 || events[boundary]?.type !== "turn/start") return null;
+	const openTurn = numberAt(dataOf(events[boundary]), "turn");
+	let text = "";
+	let reasoning = "";
+	const tools = [];
+	const pendingCalls = /* @__PURE__ */ new Map();
+	for (let index = boundary + 1; index < events.length; index++) {
+		const event = events[index];
+		if (event === void 0) continue;
+		const data = dataOf(event);
+		if (event.type === "step/end") {
+			pendingCalls.clear();
+			continue;
+		}
+		if (event.type === "assistant/message") {
+			const settled = messageTexts(data.message);
+			text += settled.text;
+			reasoning += settled.reasoning;
+			continue;
+		}
+		if (event.type === "assistant/attempt") {
+			const attempt = streamTexts(data.stream);
+			text += attempt.text;
+			reasoning += attempt.reasoning;
+			continue;
+		}
+		if (event.type === "tool/call") {
+			const callId = data.callId;
+			if (typeof callId === "string") pendingCalls.set(callId, {
+				name: typeof data.name === "string" ? data.name : "tool",
+				args: typeof data.arguments === "string" ? data.arguments : ""
+			});
+			continue;
+		}
+		if (event.type === "tool/result") {
+			const source = data.message;
+			const callId = typeof source?.source?.callId === "string" ? source.source.callId : void 0;
+			const name = callId !== void 0 ? pendingCalls.get(callId)?.name : void 0;
+			const args = callId !== void 0 ? pendingCalls.get(callId)?.args : void 0;
+			if (callId !== void 0) pendingCalls.delete(callId);
+			const result = toolResultText(data).slice(0, SNAPSHOT_RESULT_CAP);
+			const failed = data.error !== void 0;
+			const line = [`- \`${name ?? "tool"}\`${failed ? " (failed)" : ""}` + (args !== void 0 && args !== "" ? ` — arguments: \`${args}\`` : ""), ...result === "" ? [] : [`  Result: ${result}`]].join("\n");
+			tools.push(line);
+		}
+	}
+	for (const [, call] of pendingCalls) {
+		const line = `- \`${call.name}\` (executing) — arguments: \`${call.args}\``;
+		tools.push(line);
+	}
+	for (const delta of live) {
+		if (delta.turn !== openTurn) continue;
+		const contribution = liveTexts(delta.chunk);
+		text += contribution.text;
+		reasoning += contribution.reasoning;
+	}
+	const sections = [];
+	if (text.trim() !== "") sections.push(`Assistant output so far:\n\n${text}`);
+	if (reasoning.trim() !== "") sections.push(`Reasoning so far:\n\n${reasoning}`);
+	if (tools.length > 0) sections.push(`Tool activity:\n${tools.join("\n")}`);
+	if (sections.length === 0) return null;
+	const body = sections.join("\n\n");
+	return body.length > SNAPSHOT_TOTAL_CAP ? `Parent session in-progress turn (reference only):\n\n${body.slice(0, SNAPSHOT_TOTAL_CAP)}…` : `Parent session in-progress turn (reference only):\n\n${body}`;
+}
+/** Truncate + prefix a question into a durable thread label. */
+function sideLabel(question) {
+	const flat = question.replace(/\s+/g, " ").trim();
+	const max = Math.max(1, 42);
+	const body = flat.length > max ? `${flat.slice(0, 41)}…` : flat;
+	return `${SIDE_LABEL_PREFIX}${body}`;
+}
+/**
+* Whether the thread log already carries the side boundary message — i.e.
+* the first prompt was delivered. Tolerant to the content shape (block
+* array or bare string) and to inherited seed messages (only an OWN
+* boundary message starts with the prefix; seed messages came from the
+* parent's log, which never contains one).
+*/
+function boundaryDelivered(events) {
+	for (const event of events) {
+		if (event.type !== "user/message") continue;
+		if (messageLeadText(dataOf(event)).startsWith("Side conversation boundary")) return true;
+	}
+	return false;
+}
+/** The leading text of a user/message's content (block array or bare string). */
+function messageLeadText(data) {
+	const content = data.content;
+	const first = Array.isArray(content) ? content[0] : content;
+	return typeof first === "string" ? first : typeof first === "object" && first !== null && "text" in first ? String(first.text) : "";
+}
+/** The events a thread produced itself: everything after the LAST
+*  `session/end-seed` marker (the fork-seed boundary). A log with no marker
+*  (a thread created before seeding existed) is returned whole. */
+function threadOwnLogEvents(events) {
+	for (let index = events.length - 1; index >= 0; index--) if (events[index]?.type === "session/end-seed") return events.slice(index + 1);
+	return [...events];
+}
+/**
+* The agent preset a session actually runs: newest `agent-preset/selected`
+* event wins, else the creation header (mirror of the dsh-agent-presets
+* resolveSessionPreset helper — replicated here to avoid a host dependency
+* on that package).
+*/
+function resolvePresetId(header, events) {
+	for (let index = events.length - 1; index >= 0; index--) {
+		const event = events[index];
+		if (event?.type !== "agent-preset/selected") continue;
+		const preset = dataOf(event).agentPreset;
+		if (typeof preset === "string") return preset;
+	}
+	return header.agentPreset;
+}
+/**
+* The model selection a session CURRENTLY runs, projected from its durable
+* log (mirror of the core `modelSelection` projection — replicated here
+* like resolvePresetId to avoid a host dependency). An explicit
+* `model/selection` event stays PENDING until a same-route `request/header`
+* consumes it; the value the composer's model selector shows is
+* `pending ?? lastUsed`.
+*
+* This is NOT what `agent.options.provider/model` holds: those freeze the
+* creation-time deployment default and are never rewritten by a UI model
+* switch — DSH 0.1.5 routes requests through the session-local selection
+* and its `agent/request` waterfall instead. Anyone inheriting "the
+* parent's current model" must read this projection; inheriting
+* `parent.options` verbatim silently ships the stale creation default
+* (issue #368).
+*
+* A `request/header` contributes provider/model/effort, EXCEPT when its
+* effort is marked as an adapter default (`adapterDefaults.reasoningEffort`)
+* which the core selection getter deliberately does not adopt as a sticky pick.
+*/
+function parentModelSelection(events) {
+	let pending;
+	let lastUsed;
+	for (const event of events) {
+		if (event.type === "model/selection") {
+			const selection = looseSelection(dataOf(event));
+			if (selection !== void 0) pending = selection;
+			continue;
+		}
+		if (event.type !== "request/header") continue;
+		const header = dataOf(event).header;
+		const config = header?.config;
+		if (config === null || typeof config !== "object") continue;
+		const selection = looseSelection(config);
+		if (selection === void 0) continue;
+		const isDefaultEffort = header?.adapterDefaults?.reasoningEffort === true;
+		lastUsed = {
+			provider: selection.provider,
+			model: selection.model,
+			...!isDefaultEffort && selection.reasoningEffort !== void 0 ? { reasoningEffort: selection.reasoningEffort } : {}
+		};
+		if (sameSelection(pending, lastUsed)) pending = void 0;
+	}
+	return pending ?? lastUsed;
+}
+function sameSelection(left, right) {
+	if (left === right) return true;
+	if (left === void 0 || right === void 0) return false;
+	return left.provider === right.provider && left.model === right.model && left.reasoningEffort === right.reasoningEffort;
+}
+/** Narrow one loose record into a model selection (non-empty strings only). */
+function looseSelection(data) {
+	const { provider, model, reasoningEffort } = data;
+	if (typeof provider !== "string" || provider === "") return void 0;
+	if (typeof model !== "string" || model === "") return void 0;
+	return {
+		provider,
+		model,
+		...typeof reasoningEffort === "string" && reasoningEffort !== "" ? { reasoningEffort } : {}
+	};
+}
+/**
+* The host's category map, verbatim (the arms are mutually exclusive, so the
+* order only mirrors the host's for review).
+* @param name - durable tool-call name.
+* @returns the category the main agent's process group counts it under.
+*/
+function activityOf(name) {
+	if (name === "read") return "read";
+	if (name === "read_image") return "readImage";
+	if (name === "grep" || name === "glob" || name.endsWith("_inspect")) return "search";
+	if (name === "write") return "write";
+	if (name === "edit" || name === "apply_patch") return "edit";
+	if ([
+		"bash",
+		"pwsh",
+		"exec_command",
+		"write_stdin"
+	].includes(name) || name.startsWith("terminal_")) return "commands";
+	if (name === "run_code") return "code";
+	if (name === "web_search") return "webSearch";
+	if (name === "web_fetch") return "webFetch";
+	if (name === "subagent" || name.startsWith("subagent_")) return "subagents";
+	if ([
+		"todo_write",
+		"create_goal",
+		"update_goal",
+		"get_goal"
+	].includes(name)) return "plan";
+	if (name === "ask_user_question" || name === "request_user_input") return "questions";
+	return "tools";
+}
+/** The host's live-detail key priority, verbatim. */
+const LIVE_TOOL_DETAIL_KEYS = [
+	"title",
+	"description",
+	"objective",
+	"task",
+	"task_name",
+	"name",
+	"question",
+	"questions",
+	"prompt",
+	"message",
+	"command",
+	"cmd",
+	"queries",
+	"query",
+	"pattern",
+	"url",
+	"uri",
+	"file_path",
+	"path",
+	"target",
+	"action",
+	"status"
+];
+/** Grapheme segmenter when the runtime has one (the host relies on `Intl.Segmenter`). */
+const SEGMENTER = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function" ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : void 0;
+/** Split into user-perceived characters, falling back to code points. */
+function graphemes(text) {
+	if (SEGMENTER === void 0) return Array.from(text);
+	return Array.from(SEGMENTER.segment(text), (part) => part.segment);
+}
+/** Collapse whitespace and truncate on a grapheme boundary (the host's normalize). */
+function normalizeDetail(value) {
+	const flat = (typeof value === "string" ? value : Array.isArray(value) && value.every((item) => typeof item === "string") ? value.join(", ") : "").replace(/\s+/g, " ").trim();
+	const chars = graphemes(flat);
+	if (chars.length <= 160) return flat;
+	return `${chars.slice(0, 159).join("").trimEnd()}…`;
+}
+/** The first `question` string of an `ask_user_question` argument list. */
+function questionDetail(value) {
+	if (!Array.isArray(value)) return "";
+	for (const item of value) {
+		if (item === null || typeof item !== "object") continue;
+		const detail = normalizeDetail(item.question);
+		if (detail !== "") return detail;
+	}
+	return "";
+}
+/**
+* The host's `liveToolDetail`: parse the raw arguments and take the first
+* present key of {@link LIVE_TOOL_DETAIL_KEYS}, falling back to the tool name.
+* @param name - tool-call name.
+* @param argsRaw - the call's raw `arguments` JSON string.
+*/
+function liveToolDetail(name, argsRaw) {
+	let args;
+	try {
+		args = JSON.parse(argsRaw);
+	} catch {
+		return normalizeDetail(name);
+	}
+	if (args === null || typeof args !== "object") return normalizeDetail(name);
+	const record = args;
+	for (const key of LIVE_TOOL_DETAIL_KEYS) {
+		if (!(key in record)) continue;
+		const value = record[key];
+		const detail = key === "questions" ? questionDetail(value) : normalizeDetail(value);
+		if (detail !== "") return detail;
+	}
+	return normalizeDetail(name);
+}
+/**
+* Extract the concatenated plain text of a content-block list (the durable
+* `ContentBlock[]` shape, structurally: blocks with `type: 'text'` carry
+* `text`; anything else — a tool call, an image, … — contributes nothing).
+* @param content - the raw `content` field of a message event.
+* @returns the joined text, or undefined when the message carries no text.
+*/
+function contentText(content) {
+	if (!Array.isArray(content)) return void 0;
+	const parts = [];
+	for (const block of content) {
+		if (block === null || typeof block !== "object") continue;
+		const candidate = block;
+		if (candidate.type === "text" && typeof candidate.text === "string") parts.push(candidate.text);
+	}
+	return parts.length > 0 ? parts.join("\n") : void 0;
+}
+/** A tool-call content block under BOTH durable vocabularies (0.1.7 `tool-call`; older logs `tool_use`). */
+function announcedCalls(content) {
+	if (!Array.isArray(content)) return [];
+	const found = [];
+	for (const block of content) {
+		if (block === null || typeof block !== "object") continue;
+		const candidate = block;
+		if (candidate.type !== "tool-call" && candidate.type !== "tool_use") continue;
+		const rawId = candidate.id ?? candidate.callId;
+		if (typeof rawId !== "string" || typeof candidate.name !== "string") continue;
+		found.push({
+			callId: rawId,
+			name: candidate.name,
+			args: typeof candidate.arguments === "string" ? candidate.arguments : ""
+		});
+	}
+	return found;
+}
+/** The callId of one `tool/result` event under both logged shapes. */
+function resultCallId(data) {
+	const message = data.message;
+	for (const candidate of [
+		data.callId,
+		message?.source?.callId,
+		message?.toolCallId,
+		data.toolCallId
+	]) if (typeof candidate === "string" && candidate !== "") return candidate;
+}
+/** Rank one range's calls into the host's summary shape. */
+function summarize(calls, live) {
+	const counts = /* @__PURE__ */ new Map();
+	let running;
+	let preparing;
+	let runningDetail = "";
+	let runningSeq = -Infinity;
+	const ordered = calls.slice().sort((left, right) => left.seq - right.seq);
+	for (const call of ordered) {
+		const kind = activityOf(call.name);
+		counts.set(kind, (counts.get(kind) ?? 0) + 1);
+		if (call.settled || !live) continue;
+		if (call.seq < runningSeq) continue;
+		runningSeq = call.seq;
+		running = kind;
+		preparing = call.preparing ? true : void 0;
+		runningDetail = call.preparing ? kind === "tools" ? call.name : "" : liveToolDetail(call.name, call.args);
+	}
+	const ranked = [...counts].map(([kind, count]) => ({
+		kind,
+		count
+	}));
+	ranked.sort((left, right) => right.count - left.count);
+	return {
+		counts: ranked,
+		...running === void 0 ? {} : { running },
+		runningDetail,
+		...preparing === true ? { preparing: true } : {}
+	};
+}
+/** Cap one detail line without cutting a surrogate pair in half. */
+function truncateText(text) {
+	const chars = graphemes(text);
+	if (chars.length <= 400) return text;
+	return `${chars.slice(0, 399).join("").trimEnd()}…`;
+}
+/** Start an empty range. */
+function openRange() {
+	return {
+		calls: [],
+		ids: /* @__PURE__ */ new Set()
+	};
+}
+/** Append one call to a range (deduped by callId). */
+function addCall(range, call) {
+	if (range.ids.has(call.callId)) return;
+	range.calls.push(call);
+	range.ids.add(call.callId);
+}
+/**
+* Fold a session event log into the host's merged activity view: the newest
+* range's summary and the newest text line. Scans BACKWARD from the end and
+* stops at the range it reports, so a long history costs only its recent tail.
+*
+* @param events - the session's append-only event log (oldest → newest).
+* @param options - `live` (whether the session is executing; a settled one
+*   reports no running tool, like the host's closed groups) and `maxEvents`.
+* @returns the current summary plus the optional detail fields.
+*/
+function foldProcess(events, options) {
+	const live = options.live;
+	const maxEvents = Math.max(1, options.maxEvents ?? 400);
+	let range = openRange();
+	/** The newest NON-EMPTY range (the fallback when the newest one is empty). */
+	let answer;
+	/** Whether {@link answer} is the newest range (only then can it be running). */
+	let answerLive = false;
+	const settled = /* @__PURE__ */ new Set();
+	let latestText;
+	let lastEventTime;
+	let crossed = 0;
+	for (let index = events.length - 1, scanned = 0; index >= 0; index -= 1) {
+		if (scanned >= maxEvents) break;
+		const event = events[index];
+		if (event === void 0) continue;
+		scanned += 1;
+		lastEventTime ??= event.time;
+		const { type, data } = event;
+		if (type === "tool/result") {
+			const callId = resultCallId(data);
+			if (callId !== void 0) settled.add(callId);
+			continue;
+		}
+		if (type === "tool/call") {
+			const callId = typeof data.callId === "string" && data.callId !== "" ? data.callId : `anon-${event.seq}`;
+			addCall(range, {
+				callId,
+				name: typeof data.name === "string" ? data.name : "tool",
+				args: typeof data.arguments === "string" ? data.arguments : "",
+				seq: event.seq,
+				settled: settled.has(callId),
+				preparing: false
+			});
+			continue;
+		}
+		if (type !== "assistant/message" && type !== "user/message") continue;
+		const message = type === "assistant/message" ? data.message : void 0;
+		if (message !== void 0) for (const announced of announcedCalls(message.content)) {
+			const isSettled = settled.has(announced.callId);
+			addCall(range, {
+				callId: announced.callId,
+				name: announced.name,
+				args: announced.args,
+				seq: event.seq,
+				settled: isSettled,
+				preparing: !isSettled
+			});
+		}
+		const text = message === void 0 ? void 0 : contentText(message.content);
+		if (text !== void 0) latestText ??= text;
+		if (type !== "user/message" && text === void 0) continue;
+		if (range.calls.length > 0) {
+			answer = range.calls;
+			answerLive = crossed === 0;
+			break;
+		}
+		crossed += 1;
+		if (crossed > 1) break;
+		range = openRange();
+	}
+	return {
+		current: summarize(answer ?? range.calls, live && (answer === void 0 ? crossed === 0 : answerLive)),
+		...latestText === void 0 ? {} : { text: truncateText(latestText) },
+		...lastEventTime === void 0 ? {} : { lastEventTime }
+	};
+}
+//#endregion
+//#region src/subagent-live-route.ts
+/**
+* Build the live-preview routes bound to the plugin context.
+* @param ctx - host plugin context.
+*/
+function buildSubagentLiveApi(ctx) {
+	return { async live(payload) {
+		const rootSessionId = requireString(payload, "rootSessionId");
+		const subagents = ctx.get("subagents");
+		if (subagents === void 0 || typeof subagents.listDescendants !== "function") throw new SidebarError("subagents-unavailable", "the subagent service is not mounted in this deployment", 503);
+		let descendants;
+		try {
+			descendants = await subagents.listDescendants(rootSessionId);
+		} catch (error) {
+			throw new SidebarError("subagents-unavailable", `subagent catalog read failed: ${error instanceof Error ? error.message : String(error)}`, 503);
+		}
+		const live = {};
+		/**
+		* Fold one session into the map. `running` is the caller-visible activity
+		* flag: the catalog's for a child, undefined for the topology ROOT (the
+		* host cannot classify it, and the page already knows the answer from the
+		* session list). The fold's own `live` gate is that flag when it exists,
+		* and the LOG's evidence for the root.
+		*/
+		const foldInto = (sessionId, running) => {
+			const view = running === void 0 ? {} : { running };
+			try {
+				const fold = foldProcess(ctx.sessions.get(sessionId)?.snapshotEvents() ?? [], { live: running !== false });
+				if (fold.current.counts.length > 0 || fold.current.running !== void 0) view.summary = fold.current;
+				if (fold.text !== void 0) view.text = fold.text;
+				if (fold.lastEventTime !== void 0) view.lastEventTime = fold.lastEventTime;
+			} catch {}
+			live[sessionId] = view;
+		};
+		foldInto(rootSessionId, void 0);
+		for (const entry of descendants) {
+			if (entry.kind !== "child") continue;
+			if (entry.label?.startsWith("Side: ") ?? false) continue;
+			foldInto(entry.id, entry.activity === "running");
+		}
+		return { live };
+	} };
+}
+//#endregion
+//#region src/team-routes.ts
+/** The CAS actions the wire accepts (mirrors the domain union). */
+const TASK_ACTIONS = /* @__PURE__ */ new Set([
+	"claim",
+	"release",
+	"edit",
+	"set_dependencies",
+	"complete",
+	"reopen",
+	"reassign",
+	"delete"
+]);
+/** The service's stale-revision code (0.1.6 returned it as a result union). */
+const STALE_REVISION_CODE = "TEAM_TASK_STALE_REVISION";
+/** Narrow an unknown payload value to a string array (else undefined). */
+function stringArrayOf(value) {
+	if (!Array.isArray(value)) return void 0;
+	const out = value.filter((item) => typeof item === "string");
+	return out.length === value.length ? out : void 0;
+}
+/**
+* The thrown value's `HarnessError` code, when it carries one. Read
+* structurally: the plugin does not import `@deepseek-ai/dsh-llm` for a
+* string, and a non-TeamError rejection simply has no code to route on.
+*/
+function errorCodeOf(error) {
+	if (typeof error !== "object" || error === null) return void 0;
+	const code = error.code;
+	return typeof code === "string" ? code : void 0;
+}
+/**
+* Build the Agent Teams write routes bound to the plugin context.
+* @param ctx - host plugin context.
+*/
+function buildTeamsApi(ctx) {
+	const teams = ctx.get("agentTeams");
+	const agents = ctx.get("agents");
+	/**
+	* The live lead agent of the requested tree plus its membership check.
+	* Throws 503 when the experimental layer is absent and 404 when the root
+	* simply leads no team (a normal page state, but never for a mutation).
+	*/
+	const membershipOf = async (payload) => {
+		if (teams === void 0) throw new SidebarError("team-error", "the agent-teams layer is not mounted in this deployment", 503);
+		const rootSessionId = requireString(payload, "rootSessionId");
+		const agent = agents?.get(rootSessionId);
+		if (agent === void 0) throw new SidebarError("team-error", "the tree root is not live in this process", 404);
+		try {
+			if (teams.tryMembership(agent) === void 0) throw new SidebarError("team-error", "the tree root leads no team", 404);
+		} catch (error) {
+			if (error instanceof SidebarError) throw error;
+			throw new SidebarError("team-error", error instanceof Error ? error.message : String(error), 404);
+		}
+		return {
+			svc: teams,
+			agent
+		};
+	};
+	/**
+	* Translate one service rejection: a stale revision keeps its own wire code
+	* so the client's task window can say "someone else changed this task"
+	* instead of showing a generic failure.
+	*/
+	const serviceError = (error) => {
+		const message = error instanceof Error ? error.message : String(error);
+		return errorCodeOf(error) === STALE_REVISION_CODE ? new SidebarError("team-conflict", message, 409) : new SidebarError("team-error", message, 400);
+	};
+	return {
+		async taskCreate(payload) {
+			const membership = await membershipOf(payload);
+			const record = payload;
+			const blockedBy = stringArrayOf(record.blockedBy);
+			const writeScopes = stringArrayOf(record.writeScopes);
+			const req = {
+				subject: requireString(payload, "subject"),
+				description: typeof record.description === "string" ? record.description : "",
+				...blockedBy !== void 0 ? { blockedBy } : {},
+				...writeScopes !== void 0 ? { writeScopes } : {}
+			};
+			try {
+				return {
+					ok: true,
+					value: await membership.svc.createTask(membership.agent, req)
+				};
+			} catch (error) {
+				throw serviceError(error);
+			}
+		},
+		async taskUpdate(payload) {
+			const membership = await membershipOf(payload);
+			const record = payload;
+			const expectedRevision = record.expectedRevision;
+			if (typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new SidebarError("bad-request", "missing or invalid \"expectedRevision\"");
+			const action = record.action;
+			if (typeof action !== "string" || !TASK_ACTIONS.has(action)) throw new SidebarError("bad-request", "missing or invalid \"action\"");
+			const blockedBy = stringArrayOf(record.blockedBy);
+			const writeScopes = stringArrayOf(record.writeScopes);
+			const req = {
+				taskId: requireString(payload, "taskId"),
+				expectedRevision,
+				action,
+				...typeof record.subject === "string" ? { subject: record.subject } : {},
+				...typeof record.description === "string" ? { description: record.description } : {},
+				...blockedBy !== void 0 ? { blockedBy } : {},
+				...writeScopes !== void 0 ? { writeScopes } : {},
+				...typeof record.owner === "string" ? { owner: record.owner } : {}
+			};
+			try {
+				return {
+					ok: true,
+					value: await membership.svc.updateTask(membership.agent, req)
+				};
+			} catch (error) {
+				throw serviceError(error);
+			}
+		}
+	};
+}
+//#endregion
+//#region src/workflow-runs.ts
+/** The four recorded event types (prefix match keeps the scan cheap). */
+const EVENT_PREFIX = "tool-workflow/";
+/**
+* Fold one session's event log into its workflow runs, oldest first. Rows
+* referencing an unknown run (a log window that starts mid-run, or a corrupt
+* tail) are skipped — the official panel asserts a leading run-start instead,
+* but the route merges two sources where ordering is guaranteed anyway.
+* @param events - the session's append-only event log (oldest → newest).
+* @param originSessionId - the session the log belongs to.
+* @returns the session's runs in run-start order.
+*/
+function foldWorkflowRuns(events, originSessionId) {
+	const runs = [];
+	const byRunId = /* @__PURE__ */ new Map();
+	for (const event of events) {
+		if (!event.type.startsWith(EVENT_PREFIX)) continue;
+		const data = event.data;
+		switch (event.type) {
+			case "tool-workflow/run-start": {
+				const runId = typeof data.runId === "string" ? data.runId : void 0;
+				if (runId === void 0 || byRunId.has(runId)) break;
+				const fold = {
+					view: {
+						runId,
+						name: typeof data.name === "string" && data.name !== "" ? data.name : runId,
+						originSessionId,
+						status: "running",
+						phases: [],
+						startedSeq: event.seq,
+						startedAt: event.time
+					},
+					memberBySeq: /* @__PURE__ */ new Map()
+				};
+				byRunId.set(runId, fold);
+				runs.push(fold);
+				break;
+			}
+			case "tool-workflow/agent-start": {
+				const fold = runOf(data, byRunId);
+				const seq = seqOf(data);
+				if (fold === void 0 || seq === void 0 || fold.memberBySeq.has(seq)) break;
+				const member = {
+					seq,
+					label: typeof data.label === "string" && data.label !== "" ? data.label : `#${seq}`,
+					...typeof data.phase === "string" ? { phase: data.phase } : {},
+					childId: typeof data.childId === "string" ? data.childId : ""
+				};
+				fold.memberBySeq.set(seq, member);
+				let phase = fold.view.phases.find((candidate) => candidate.title === member.phase);
+				if (phase === void 0) {
+					phase = member.phase === void 0 ? { members: [] } : {
+						title: member.phase,
+						members: []
+					};
+					fold.view.phases.push(phase);
+				}
+				phase.members.push(member);
+				break;
+			}
+			case "tool-workflow/agent-end": {
+				const fold = runOf(data, byRunId);
+				const seq = seqOf(data);
+				const member = fold?.memberBySeq.get(seq ?? -1);
+				if (member === void 0) break;
+				const outcome = data.outcome;
+				if (outcome === "completed" || outcome === "failed" || outcome === "cancelled") member.outcome = outcome;
+				break;
+			}
+			case "tool-workflow/run-end": {
+				const fold = runOf(data, byRunId);
+				if (fold === void 0) break;
+				const stopReason = data.stopReason;
+				if (stopReason === "completed" || stopReason === "cancelled" || stopReason === "error") {
+					fold.view.stopReason = stopReason;
+					fold.view.status = stopReason === "error" ? "failed" : stopReason;
+				} else fold.view.status = "failed";
+				fold.view.finishedAt = event.time;
+				break;
+			}
+		}
+	}
+	return runs.map((fold) => fold.view);
+}
+/** The run a workflow event belongs to (undefined = unknown/orphan row). */
+function runOf(data, byRunId) {
+	const runId = data.runId;
+	return typeof runId === "string" ? byRunId.get(runId) : void 0;
+}
+/** The member sequence number of one agent-start/agent-end row. */
+function seqOf(data) {
+	const seq = data.seq;
+	return typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0 ? seq : void 0;
+}
+//#endregion
+//#region src/workflow-routes.ts
+/** Per-session cap of mirrored live workflow events (a bounded, lossy ring). */
+const MIRROR_MAX_ENTRIES = 500;
+/**
+* The live workflow-event mirror: subscribes to the session append feed and
+* caches `tool-workflow/*` rows the session store's own log can lag behind
+* (the same rehydration-boundary gap the job-output mirror exists for).
+*/
+function createWorkflowEventMirror(ctx) {
+	const perSession = /* @__PURE__ */ new Map();
+	if (typeof ctx.on !== "function") return { entries: () => [] };
+	const dispose = ctx.on("session/event", (session, event) => {
+		const sessionId = session?.id;
+		if (typeof sessionId !== "string" || !event.type.startsWith("tool-workflow/")) return;
+		let list = perSession.get(sessionId);
+		if (list === void 0) perSession.set(sessionId, list = []);
+		const minimal = {
+			type: event.type,
+			seq: event.seq,
+			time: event.time,
+			data: event.data
+		};
+		list.push(minimal);
+		if (list.length > MIRROR_MAX_ENTRIES) list.splice(0, list.length - MIRROR_MAX_ENTRIES);
+	});
+	ctx.effect(() => dispose, "dsh-better-sidebar: workflow event mirror");
+	return { entries: (sessionId) => perSession.get(sessionId) ?? [] };
+}
+/**
+* Build the workflow-runs route bound to the plugin context. The tree walk
+* reuses the host subagent runtime (`ctx.get('subagents')`); without it the
+* route still folds the root session alone (a degraded but honest tree of
+* one), matching the Subagent page's own fallback lineage.
+* @param ctx - host plugin context.
+*/
+function buildWorkflowsApi(ctx) {
+	const mirror = createWorkflowEventMirror(ctx);
+	/** The tree's session ids: the root plus every descendant the catalog knows. */
+	const treeSessionIds = async (rootSessionId) => {
+		const subagents = ctx.get("subagents");
+		if (subagents === void 0 || typeof subagents.listDescendants !== "function") return [rootSessionId];
+		try {
+			return [rootSessionId, ...(await subagents.listDescendants(rootSessionId)).map((entry) => entry.id)];
+		} catch {
+			return [rootSessionId];
+		}
+	};
+	return { async list(payload) {
+		const rootSessionId = requireString(payload, "rootSessionId");
+		const runs = [];
+		for (const sessionId of await treeSessionIds(rootSessionId)) try {
+			const bySeq = /* @__PURE__ */ new Map();
+			for (const event of ctx.sessions.get(sessionId)?.snapshotEvents() ?? []) if (event.type.startsWith("tool-workflow/")) bySeq.set(event.seq, event);
+			for (const event of mirror.entries(sessionId)) bySeq.set(event.seq, event);
+			if (bySeq.size === 0) continue;
+			const ordered = [...bySeq.values()].sort((left, right) => left.seq - right.seq);
+			runs.push(...foldWorkflowRuns(ordered, sessionId));
+		} catch {}
+		runs.sort((left, right) => left.startedSeq - right.startedSeq);
+		return { runs };
+	} };
+}
+//#endregion
+//#region src/session-store.ts
+/**
+* Read one persisted session's header and full event log.
+* @param persistence - the live `sessionPersistence` service.
+* @param sessionId - the stored session to read.
+* @returns the header and log; rejects when the session does not exist.
+*/
+async function readPersistedSession(persistence, sessionId) {
+	const handle = await persistence.open(sessionId, "read");
+	try {
+		const { events } = await handle.read();
+		return {
+			header: handle.header,
+			events,
+			inheritedEventCount: handle.inheritedEventCount ?? 0
+		};
+	} finally {
+		await handle.close();
+	}
+}
+/**
+* Resolve the service and read one persisted session, or `undefined` when
+* the service is absent or the session cannot be read.
+* @param ctx - host plugin context.
+* @param sessionId - the stored session to read.
+* @returns the persisted session, or `undefined`.
+*/
+async function readPersistedSessionOf(ctx, sessionId) {
+	const persistence = ctx.get("sessionPersistence");
+	if (persistence === void 0) return void 0;
+	try {
+		return await readPersistedSession(persistence, sessionId);
+	} catch {
+		return;
+	}
+}
+//#endregion
+//#region src/sidechat-routes.ts
+/**
+* Side Chat routes of the /sidebar JSON API ('sidechat.start' /
+* 'sidechat.prompt' / 'sidechat.cancel' / 'sidechat.dispose' /
+* 'sidechat.info' / 'sidechat.events').
+*
+* A side thread is a child session the plugin creates ITSELF with a custom
+* seed — the parent's full event log up to the click moment, honestly closed
+* at an in-progress turn (see sidechat-core.ts). The child is marked
+* `origin: 'subagent'` so the main session list hides it, and EVERY
+* operation goes through these routes because the generic session RPCs are
+* fenced away from subagent-origin identities (the api-remotes
+* agent-lookup ownership fence). No DSH source is touched:
+*
+* - creation uses the public AgentRegistry.create seam (the same one
+*   api-proxy's session.fork and the subagent fork provider use), with the
+*   parent's preset composition and provider/model selection so the child's
+*   first request shares the parent's token prefix (provider-side prefix
+*   cache reuse);
+* - the first prompt (boundary + question) and every follow-up are admitted
+*   with the stock `agent.followup`;
+* - a cold thread (DSH restart, or a closed thread) is resumed with
+*   AgentRegistry.resume, composing the preset the child recorded.
+*/
+/** Timeout guarding the create call (the registry detaches it before the
+*  handle becomes visible, so the child is never cancelled by it). */
+const CREATE_TIMEOUT_MS = 15e3;
+/** Head cap of one `sidechat.events` response (the ceiling the old
+*  client-side walk could load: 40 pages × 200 events). A pathological
+*  thread beyond it renders its tail window — the same degradation the
+*  capped walk had, never a failed poll. */
+const EVENTS_CAP = 8e3;
+/** Per-activation disposers of created thread agents (the dispose route
+*  releases them; the session and its history always stay persisted). */
+const threadDisposers = /* @__PURE__ */ new Map();
+/** The in-progress-turn snapshot captured at creation of an EMPTY thread,
+*  waiting to ride the first prompt (lost on a host restart — the boundary
+*  prompt is then delivered alone, a logged degradation). */
+const pendingSnapshots = /* @__PURE__ */ new Map();
+/** Resolve the parent's preset and build the child's composition setup
+*  (mirror of api-proxy's composeAgent minus the model-selection install —
+*  the child carries the parent's provider/model in agentOptions). */
+async function composeChildSetup(ctx, presetId) {
+	const presets = ctx.get("agentPresets");
+	if (presets === void 0) return { setup: () => Promise.resolve() };
+	const resolved = await presets.resolve(presetId);
+	return {
+		agentPreset: resolved.id,
+		setup: async (agentCtx) => {
+			await presets.mount(agentCtx, resolved.id);
+		}
+	};
+}
+/** Build the cold-resume setup from the thread's PERSISTED record (the
+*  recorded preset wins, newest selection event first). */
+async function composePersistedSetup(ctx, childId) {
+	const persistence = ctx.get("sessionPersistence");
+	if (persistence === void 0) return () => Promise.resolve();
+	const inspected = await readPersistedSession(persistence, childId);
+	const presetId = resolvePresetId(inspected.header, inspected.events);
+	const presets = ctx.get("agentPresets");
+	if (presets === void 0 || presetId === void 0) return () => Promise.resolve();
+	const resolved = await presets.resolve(presetId);
+	return async (agentCtx) => {
+		await presets.mount(agentCtx, resolved.id);
+	};
+}
+/** One text-block prompt (the thread boundary + question, or a follow-up). */
+function textPrompt(text) {
+	return [{
+		type: "text",
+		text
+	}];
+}
+/** Admit one user message to a live agent through the stock followup path. */
+function admitFollowup(agent, blocks) {
+	const message = createUserMessage({
+		content: blocks,
+		source: { kind: "user" }
+	});
+	agent.followup(message);
+}
+/**
+* Deliver the thread's FIRST contact as TWO log-separated messages: the
+* boundary prompt (+ the parked in-progress snapshot) rides `agent.inject`
+* — queued model-facing context that does NOT wake the driver and is
+* claimed FIRST at the opening step (Inbox.claim drains next-step before
+* next-turn) — and the user's question is the follow-up that wakes it. The
+* log therefore records two user/message events (injection, then question)
+* instead of one wrapped blob: the transcript shows the question as a user
+* bubble and collapses the injection as a context row. The injection source
+* carries the plugin's producer-owned kind (`plugin:dsh-better-sidebar` —
+* session format v4 refuses the retired bare `kind: 'plugin'`) so recognition
+* is structural; its text still opens with SIDE_BOUNDARY_PREFIX, keeping
+* boundaryDelivered intact.
+*/
+function admitFirstContact(agent, injectionText, question) {
+	agent.inject(createUserMessage({
+		content: textPrompt(injectionText),
+		source: { kind: SIDE_INJECTION_SOURCE_KIND }
+	}));
+	admitFollowup(agent, textPrompt(question));
+}
+/** The live thread agent, or undefined (cold — the caller resumes). */
+function liveThreadAgent(ctx, childId) {
+	return ctx.get("agents")?.get(childId);
+}
+/**
+* The thread's event log (seed + its own events, already expanded): the live
+* agent's in-memory log while the thread is attached — the freshest read,
+* including events not yet flushed — else the persisted logical log. Both
+* DSH generations expose these seams with the same shape (the 0.1.2
+* persistence layer packs chunk rows on disk but expands them on inspect;
+* the live log is `Session.snapshotEvents()`, the 0.1.2-alpha.4 rename of
+* the `Session.events` property), which is why the transcript reads here
+* instead of the client's session-history RPC: that face
+* (`ctx.connection.api`) was removed in 0.1.2-alpha.1's Remote-gateway
+* migration.
+*/
+async function threadLogEvents(ctx, childId) {
+	const agent = liveThreadAgent(ctx, childId);
+	if (agent !== void 0) return agent.session.snapshotEvents();
+	const persistence = ctx.get("sessionPersistence");
+	if (persistence === void 0) throw new SidebarError("sidechat-error", "the session persistence service is unavailable", 503);
+	try {
+		return (await readPersistedSession(persistence, childId)).events;
+	} catch (error) {
+		throw new SidebarError("not-found", `thread "${childId}" is not available: ${error instanceof Error ? error.message : String(error)}`, 404);
+	}
+}
+/** Build the Side Chat routes (all optional services degrade to a wire
+*  error the tab surfaces inline). The record keys are the FULL wire method
+*  names the /sidebar/api dispatcher looks up (`api[method]`).
+*  @param ctx - host plugin context.
+*  @param live - the live assistant stream buffer; absent only in tests that
+*    never exercise streaming (then every `live` response is empty). */
+function buildSidechatApi(ctx, live) {
+	return {
+		"sidechat.start": async (payload) => {
+			const sessionId = requireString(payload, "sessionId");
+			const rawQuestion = payload.question;
+			const question = typeof rawQuestion === "string" ? rawQuestion.trim() : "";
+			const parent = liveThreadAgent(ctx, sessionId);
+			if (parent === void 0) throw new SidebarError("sidechat-error", `parent session "${sessionId}" is not running`, 409);
+			const parentSession = parent.session;
+			const parentSelection = parentModelSelection(parentSession.snapshotEvents());
+			const routeProvider = parentSelection?.provider ?? parent.options.provider;
+			const routeModel = parentSelection?.model ?? parent.options.model;
+			const inheritance = buildSidechatInheritance(parentSession.snapshotEvents(), live?.chunksFor(sessionId) ?? []);
+			const { agentPreset, setup } = await composeChildSetup(ctx, resolvePresetId(parentSession.header, parentSession.snapshotEvents()));
+			const childId = `session-${randomUUID()}`;
+			const label = question === "" ? SIDE_NEW_THREAD_TITLE : sideLabel(question);
+			const descriptor = snapshotSubagentDescriptor({
+				mode: "continuable",
+				provider: "sidechat",
+				label,
+				...routeProvider === void 0 ? {} : { agentProvider: routeProvider },
+				...routeModel === void 0 ? {} : { agentModel: routeModel }
+			});
+			const descriptorEvent = {
+				type: "subagent/descriptor",
+				seq: inheritance.seed.length,
+				time: Date.now(),
+				data: descriptor
+			};
+			const seed = [...inheritance.seed, descriptorEvent];
+			const targetEffort = parentSelection !== void 0 ? parentSelection.reasoningEffort === void 0 ? void 0 : ReasoningEffortId(parentSelection.reasoningEffort) : parent.options.reasoningEffort;
+			const childAgentOptions = {
+				...parent.options,
+				...routeProvider === void 0 ? {} : { provider: routeProvider },
+				...routeModel === void 0 ? {} : { model: routeModel }
+			};
+			if (targetEffort !== void 0) childAgentOptions.reasoningEffort = targetEffort;
+			else delete childAgentOptions.reasoningEffort;
+			const options = {
+				sessionId: childId,
+				meta: {
+					...parentSession.header.cwd === void 0 ? {} : { cwd: parentSession.header.cwd },
+					parentSession: parentSession.id,
+					isSeeded: true,
+					origin: "subagent",
+					delegationDepth: (parentSession.header.delegationDepth ?? 0) + 1,
+					...agentPreset === void 0 ? {} : { agentPreset }
+				},
+				seed,
+				inheritedEventCount: seed.length,
+				agentOptions: childAgentOptions,
+				setup,
+				signal: AbortSignal.timeout(CREATE_TIMEOUT_MS)
+			};
+			const agents = ctx.get("agents");
+			if (agents?.create === void 0) throw new SidebarError("sidechat-error", "the agents service is unavailable", 503);
+			let handle;
+			try {
+				handle = await agents.create(options);
+			} catch (error) {
+				throw new SidebarError("sidechat-error", `thread creation failed: ${error instanceof Error ? error.message : String(error)}`, 500);
+			}
+			threadDisposers.set(childId, () => handle.dispose());
+			handle.agent.inbox.clear();
+			const titles = ctx.get("sessionTitle");
+			const pinTitle = (label) => {
+				if (titles === void 0) return;
+				try {
+					titles.rename(handle.agent.session, label);
+				} catch {}
+			};
+			if (question === "") {
+				if (inheritance.snapshot !== null) pendingSnapshots.set(childId, inheritance.snapshot);
+				pinTitle(SIDE_NEW_THREAD_TITLE);
+			} else {
+				const promptParts = [SIDE_BOUNDARY_PROMPT];
+				if (inheritance.snapshot !== null) promptParts.push(inheritance.snapshot);
+				admitFirstContact(handle.agent, promptParts.join("\n\n"), question);
+				pinTitle(sideLabel(question));
+			}
+			return { childId };
+		},
+		"sidechat.prompt": async (payload) => {
+			const childId = requireString(payload, "childId");
+			const text = requireString(payload, "text").trim();
+			if (text === "") throw new SidebarError("bad-request", "text is required");
+			let agent = liveThreadAgent(ctx, childId);
+			if (agent === void 0) {
+				const agents = ctx.get("agents");
+				if (agents?.resume === void 0) throw new SidebarError("sidechat-error", "the agents service is unavailable", 503);
+				const setup = await composePersistedSetup(ctx, childId);
+				try {
+					const handle = await agents.resume({
+						resumeSessionId: childId,
+						setup
+					});
+					threadDisposers.set(childId, () => handle.dispose());
+					agent = handle.agent;
+				} catch (error) {
+					throw new SidebarError("sidechat-error", `thread resume failed: ${error instanceof Error ? error.message : String(error)}`, 500);
+				}
+			}
+			if (boundaryDelivered(agent.session.snapshotEvents())) admitFollowup(agent, textPrompt(text));
+			else {
+				const parts = [SIDE_BOUNDARY_PROMPT];
+				const snapshot = pendingSnapshots.get(childId);
+				pendingSnapshots.delete(childId);
+				if (snapshot !== void 0) parts.push(snapshot);
+				admitFirstContact(agent, parts.join("\n\n"), text);
+				const titles = ctx.get("sessionTitle");
+				if (titles !== void 0) try {
+					titles.rename(agent.session, sideLabel(text));
+				} catch {}
+			}
+			return { accepted: true };
+		},
+		"sidechat.cancel": async (payload) => {
+			const agent = liveThreadAgent(ctx, requireString(payload, "childId"));
+			if (agent !== void 0) agent.cancel({ kind: "user" }, { keepInbox: true });
+			return { accepted: true };
+		},
+		"sidechat.dispose": async (payload) => {
+			const childId = requireString(payload, "childId");
+			pendingSnapshots.delete(childId);
+			const dispose = threadDisposers.get(childId);
+			if (dispose !== void 0) {
+				threadDisposers.delete(childId);
+				try {
+					await dispose();
+				} catch {}
+			}
+			return { accepted: true };
+		},
+		"sidechat.info": async (payload) => {
+			const childId = requireString(payload, "childId");
+			const agent = liveThreadAgent(ctx, childId);
+			if (agent !== void 0) {
+				const preset = agent.session.header.agentPreset;
+				return {
+					live: true,
+					status: agent.status,
+					...agent.options.provider === void 0 ? {} : { provider: agent.options.provider },
+					...agent.options.model === void 0 ? {} : { model: agent.options.model },
+					...preset === void 0 ? {} : { preset }
+				};
+			}
+			const persistence = ctx.get("sessionPersistence");
+			if (persistence !== void 0) try {
+				const inspected = await readPersistedSession(persistence, childId);
+				const preset = resolvePresetId(inspected.header, inspected.events);
+				return {
+					live: false,
+					...preset === void 0 ? {} : { preset }
+				};
+			} catch {}
+			return { live: false };
+		},
+		"sidechat.events": async (payload) => {
+			const childId = requireString(payload, "childId");
+			const rawAfter = payload.afterSeq;
+			if (rawAfter !== void 0 && (typeof rawAfter !== "number" || !Number.isSafeInteger(rawAfter) || rawAfter < 0)) throw new SidebarError("bad-request", "afterSeq must be a non-negative integer");
+			const own = threadOwnLogEvents(await threadLogEvents(ctx, childId));
+			const fresh = rawAfter === void 0 ? own : own.filter((event) => event.seq > rawAfter);
+			const tailSeq = own.at(-1)?.seq ?? -1;
+			return {
+				events: fresh.length > EVENTS_CAP ? fresh.slice(fresh.length - EVENTS_CAP) : fresh,
+				live: liveEventsOf(live?.chunksFor(childId) ?? [], tailSeq)
+			};
+		}
+	};
+}
+//#endregion
+//#region src/assistant-live.ts
+/** Per-attempt buffer ceiling; beyond it the oldest deltas are dropped. */
+const LIVE_CHUNK_CAP = 4e3;
+/** A frame's `chunk` payload must be a JSON record to be worth buffering. */
+function chunkOf(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+/** A finite non-negative integer, or undefined. */
+function countOf(value) {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : void 0;
+}
+/**
+* Fold `agent/assistant-stream` frames into per-session live buffers.
+*
+* Frames arrive for every attached agent, so the buffer is keyed by the
+* emitting session and ignores anything it cannot identify. An out-of-order
+* or mismatched chunk drops the attempt rather than splicing a gap: a
+* transcript with a hole is worse than one that settles at the next durable
+* event.
+* @param ctx - host plugin context (its `on` subscribes the session feed).
+* @param cap - per-attempt chunk ceiling.
+* @returns the read face and a disposer unbinding the listener.
+*/
+function createAssistantLiveBuffer(ctx, cap = LIVE_CHUNK_CAP) {
+	const attempts = /* @__PURE__ */ new Map();
+	const off = ctx.on("agent/assistant-stream", (payload) => {
+		const record = payload;
+		const frame = record?.frame;
+		if (frame === void 0) return;
+		const session = (record?.agent)?.session;
+		const sessionId = typeof session?.id === "string" ? session.id : void 0;
+		if (sessionId === void 0) return;
+		const type = frame["type"];
+		if (type === "end") {
+			attempts.delete(sessionId);
+			return;
+		}
+		const attemptId = typeof frame["attemptId"] === "string" ? frame.attemptId : void 0;
+		if (attemptId === void 0) return;
+		if (type === "start") {
+			const turn = countOf(frame["turn"]);
+			const step = countOf(frame["step"]);
+			if (turn === void 0 || step === void 0) return;
+			const known = attempts.has(sessionId);
+			attempts.delete(sessionId);
+			if (!known && attempts.size >= 64) {
+				const oldest = attempts.keys().next().value;
+				if (oldest !== void 0) attempts.delete(oldest);
+			}
+			attempts.set(sessionId, {
+				attemptId,
+				turn,
+				step,
+				chunks: [],
+				nextIndex: 0
+			});
+			return;
+		}
+		if (type !== "chunk") return;
+		const attempt = attempts.get(sessionId);
+		if (attempt === void 0 || attempt.attemptId !== attemptId) return;
+		const index = countOf(frame["index"]);
+		const chunk = chunkOf(frame["chunk"]);
+		if (index === void 0 || chunk === void 0 || index !== attempt.nextIndex) {
+			attempts.delete(sessionId);
+			return;
+		}
+		attempt.nextIndex = index + 1;
+		const time = countOf(frame["time"]) ?? 0;
+		attempt.chunks.push({
+			attemptId,
+			turn: attempt.turn,
+			step: attempt.step,
+			index,
+			time,
+			chunk
+		});
+		if (attempt.chunks.length > cap) attempt.chunks.splice(0, attempt.chunks.length - cap);
+	});
+	return {
+		chunksFor: (sessionId) => attempts.get(sessionId)?.chunks ?? [],
+		dispose: () => {
+			off();
+		}
+	};
+}
+//#endregion
+//#region src/commit-message.ts
+/**
+* Commit-message suggestion: the prompt contract and the model-route
+* vocabulary shared by the `git.suggest-message` host route (src/index.ts)
+* and its tests. Deliberately free of cordis, git and the LLM service, so
+* the wording and the route parse stay unit-testable without a host.
+*
+* The generation itself runs through the harness LLM service (`ctx.llm`) with
+* the route the CONVERSATION runs on by default, or a route the user pinned in
+* the Git card's settings (see {@link parseModelRoute}). The plugin never
+* touches a credential: the harness resolves provider endpoints and keys.
+*/
+/** Max diff characters fed to the model. A huge change set is truncated (with
+*  an explicit marker) so bulk renames or generated-file diffs cannot flood
+*  the model context. */
+const SUGGEST_DIFF_LIMIT = 12e3;
+/** Narrow an untrusted language value to the supported pair. */
+function normalizeLanguage(value) {
+	return value === "zh" ? "zh" : "en";
+}
+/** Truncate one diff to {@link SUGGEST_DIFF_LIMIT}, marking the cut. */
+function truncateDiff(diff) {
+	if (diff.length <= 12e3) return diff;
+	return `${diff.slice(0, SUGGEST_DIFF_LIMIT)}\n...(diff truncated)`;
+}
+/**
+* Parse a pinned route of the form `provider/model`. The FIRST slash splits:
+* a model id may carry its own slashes (e.g. a vendor-prefixed id), the
+* provider never does. Anything malformed (empty half, no slash) yields
+* undefined so the caller falls back to the conversation's own route.
+*/
+function parseModelRoute(value) {
+	if (typeof value !== "string") return void 0;
+	const trimmed = value.trim();
+	const slash = trimmed.indexOf("/");
+	if (slash <= 0 || slash === trimmed.length - 1) return void 0;
+	const provider = trimmed.slice(0, slash).trim();
+	const model = trimmed.slice(slash + 1).trim();
+	if (provider === "" || model === "") return void 0;
+	return {
+		provider,
+		model
+	};
+}
+/** First non-empty string among the candidates (unknown-shape reads). */
+function firstString(...values) {
+	for (const value of values) if (typeof value === "string" && value.trim() !== "") return value.trim();
+	return "";
+}
+/**
+* One provider entry of the harness LLM catalog, read tolerantly: the
+* adapter-registration shape is not part of this plugin's contract, so every
+* plausible field is probed and an entry that yields no route is dropped
+* (never guessed) — a wrong route would fail at generation time instead.
+* @param entry - one `listProviders()` element.
+* @returns the provider route and a display label, or undefined.
+*/
+function providerEntryOf(entry) {
+	if (entry === null || typeof entry !== "object") return void 0;
+	const record = entry;
+	const provider = firstString(record.provider, record.route, record.id);
+	if (provider === "") return void 0;
+	return {
+		provider,
+		label: firstString(record.name, record.displayName, record.label, record.title, provider)
+	};
+}
+/**
+* One model entry of a provider's advertised catalog (same tolerant read as
+* {@link providerEntryOf}).
+* @param entry - one `listModels()` element.
+* @returns the model id and a display name, or undefined.
+*/
+function modelEntryOf(entry) {
+	if (entry === null || typeof entry !== "object") return void 0;
+	const record = entry;
+	const id = firstString(record.id, record.model, record.name);
+	if (id === "") return void 0;
+	return {
+		id,
+		name: firstString(record.name, record.displayName, record.label, record.title, id)
+	};
+}
+/**
+* The reasoning-effort ladder, lowest first. Effort ids are adapter-owned, so
+* this is only a RANKING hint: an id outside the ladder still forms a valid
+* route, it just cannot be ordered against these.
+*/
+const REASONING_LEVEL_ORDER = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max"
+];
+/**
+* The lowest reasoning effort a model advertises, from the `efforts` list of
+* its resolved model info. Commit-message drafting is a one-line generation:
+* the highest default (DSH's DeepSeek adapter defaults to `high` unless the
+* connection configures otherwise) spends the output budget on thinking and
+* can leave no text at all, so the cheapest supported level is requested
+* explicitly. Mirrors pi-web's generate-commit.
+*
+* An UNKNOWN effort id never outranks a known one; when every id is unknown
+* the adapter's own first entry wins (its declared order is the only signal
+* available).
+* @param efforts - `modelInfo.reasoning.efforts` (unknown shape).
+* @returns the effort id to request, or undefined when the model advertises
+* none (passing an effort to a non-reasoning model is rejected by the
+* harness, so the caller must omit the field entirely).
+*/
+function lowestReasoningEffortOf(efforts) {
+	if (!Array.isArray(efforts)) return void 0;
+	const ids = [];
+	for (const entry of efforts) {
+		const id = entry !== null && typeof entry === "object" ? entry.id : void 0;
+		if (typeof id === "string" && id !== "") ids.push(id);
+	}
+	const first = ids[0];
+	if (first === void 0) return void 0;
+	let best = first;
+	let bestRank = REASONING_LEVEL_ORDER.indexOf(best);
+	for (const id of ids.slice(1)) {
+		const rank = REASONING_LEVEL_ORDER.indexOf(id);
+		if (rank < 0) continue;
+		if (bestRank < 0 || rank < bestRank) {
+			best = id;
+			bestRank = rank;
+		}
+	}
+	return best;
+}
+/**
+* The harness's default model selection (settings namespace
+* `agent-default-model`), read tolerantly: it is the route a NEW conversation
+* would use, so it is available before any message is sent — unlike the
+* conversation-derived history.
+* @param selection - `agentDefaultModel.currentSelection()`.
+* @returns the default route, or undefined when the service or its value is
+* unavailable.
+*/
+function defaultRouteOf(selection) {
+	if (selection === null || typeof selection !== "object") return void 0;
+	const record = selection;
+	const provider = firstString(record.provider);
+	const model = firstString(record.model);
+	if (provider === "" || model === "") return void 0;
+	return {
+		provider,
+		model
+	};
+}
+/**
+* Every provider/model route a session's log has actually USED, newest first
+* and de-duplicated: the newest `request/header` event wins, so the list is
+* the routes this deployment really dispatched on — the fallback a pinned
+* model picker can always offer, even when the harness advertises no catalog.
+* @param events - the session's log events (newest last).
+* @param limit - max routes to return.
+* @returns the distinct routes, newest first.
+*/
+function collectModelRoutes(events, limit = 20) {
+	const routes = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (let index = events.length - 1; index >= 0 && routes.length < limit; index--) {
+		const event = events[index];
+		if (event === void 0 || event.type !== "request/header") continue;
+		const config = event.data?.header?.config;
+		if (config === null || typeof config !== "object") continue;
+		const provider = config.provider;
+		const model = config.model;
+		if (typeof provider !== "string" || provider === "") continue;
+		if (typeof model !== "string" || model === "") continue;
+		const key = `${provider}/${model}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		routes.push({
+			provider,
+			model
+		});
+	}
+	return routes;
+}
+/**
+* The Conventional-Commits prompt for one pending change set. Staged wins
+* upstream (it is exactly what `git commit` records); `files` is the matching
+* path list and `diff` the already-truncated patch text.
+* @param language - the panel locale ('zh' | 'en').
+* @param files - the changed paths the diff covers (repo-root relative).
+* @param diff - the patch text (truncate with {@link truncateDiff} first).
+* @returns the system and user halves, in that language.
+*/
+function buildCommitPrompt(language, files, diff) {
+	const fileList = files.join("\n");
+	if (language === "zh") return {
+		system: "你是 git 提交信息生成助手。根据给定的文件清单与差异，生成一行 Conventional Commits 风格的中文提交信息（类型前缀：feat/fix/refactor/chore/docs/test/perf/style，必要时可附简短正文）。只输出提交信息本身，不要解释。",
+		user: `改动的文件：\n${fileList}\n\n差异：\n${diff}`
+	};
+	return {
+		system: "You are a git commit message assistant. Based on the given file list and diff, write a one-line Conventional Commits style commit message in English (type prefix: feat/fix/refactor/chore/docs/test/perf/style, with a short body when needed). Output only the commit message itself, no explanation.",
+		user: `Changed files:\n${fileList}\n\nDiff:\n${diff}`
+	};
+}
+/** Drop the model's prose scaffolding: fenced blocks, quotes and blank runs.
+*  Models routinely wrap a one-line commit message in a code fence despite
+*  the instruction; the panel inserts the text straight into the commit box,
+*  so anything but the message itself would land in the commit. */
+function cleanSuggestion(text) {
+	return text.split("\n").filter((line) => !line.trimStart().startsWith("```")).join("\n").replace(/\r/g, "").split("\n").map((line) => line.trimEnd()).join("\n").trim();
+}
+//#endregion
+//#region src/fs-batch.ts
+/**
+* Row bound of ONE `fs.trees` batch request.
+*
+* Shared by both halves so they cannot drift: the host refuses a larger batch
+* outright (`too many paths (max N)`), and the client splits the visible set on
+* the same number — a session whose persisted expansion set reaches the cap
+* used to blank its WHOLE file tree on every mount/refresh. Kept free of
+* runtime dependencies so the browser bundle pulls nothing in with it.
+*/
+const FS_TREES_MAX_PATHS = 64;
+//#endregion
+//#region src/active-worktree.ts
+/**
+* Follow the linked git worktree a session is ACTUALLY working in.
+*
+* The explorer is rooted at the session's stored header cwd, which never
+* changes. A session can move into a linked git worktree (`git worktree add`)
+* during its life  including a worktree of a repository that is not the one
+* the header cwd points at  and the sidebar should follow it.
+*
+* The active root is derived from the session's own `tool/call` arguments:
+* absolute paths are collected newest-event-first (structured `cwd` / `workdir`
+* / `path` / ... fields weigh more than free-form mentions, repeated mentions
+* accumulate), each path's git top level is resolved with
+* `git rev-parse --show-toplevel` (falling back to its directory for files),
+* and only top levels whose `--absolute-git-dir` differs from their
+* `--git-common-dir` (i.e. real LINKED worktrees, not the main checkout and
+* not submodules) are adopted. The highest-scoring linked worktree of the
+* newest event that has one wins; when there is no evidence the session cwd is
+* kept (lifted to the repository top level for subdirectory sessions).
+*
+* Resolutions are cached process-wide, so the client's periodic re-ask is
+* cheap after the first scan.
+*/
+/** How long one computed root is reused before the event log is scanned again. */
+const ACTIVE_ROOT_TTL_MS = 3e3;
+/** Only the newest slice of the event log is considered. */
+const ACTIVE_ROOT_MAX_EVENTS = 4e3;
+/** Upper bound on git probes per scan (cache misses are what cost). */
+const ACTIVE_ROOT_MAX_PROBES = 24;
+/** Explicit override, mainly for tests and manual pinning. */
+const ACTIVE_ROOT_OVERRIDE_ENV = "DSH_SIDEBAR_WORKTREE_ROOT";
+/** Keys whose string values describe where a tool actually ran. */
+const ACTIVE_ROOT_STRUCTURED_FIELD = /^(cwd|workdir|work_dir|workingdirectory|path|file_path|filepath|target|root)$/i;
+/** Absolute Windows paths embedded in free-form command text. */
+const ACTIVE_ROOT_PATH_PATTERN = /[A-Za-z]:(?:\\|\/)[^\\/\s"'\x60,;|)<>*?]+(?:[\\/][^\\/\s"'\x60,;|)<>*?]+)*/g;
+/**
+* One computed root per session, reused for {@link ACTIVE_ROOT_TTL_MS}. `base`
+* is the RAW base the caller passed (not the lifted one), because the entry has
+* to be usable BEFORE the git probe below: that probe is a real process spawn
+* (measured ~7 ms), and the repeated asks  every debounced watch frame, every
+* route call, the client's 5 s poll  are exactly what the TTL exists to keep
+* free.
+*/
+const activeWorktreeRootCache = /* @__PURE__ */ new Map();
+const pathTopCache = /* @__PURE__ */ new Map();
+const linkedWorktreeCache = /* @__PURE__ */ new Map();
+/**
+* Normalized IDENTITY of a path (case- and separator-insensitive), for
+* comparisons and cache keys only: it lowercases, so it must never be handed
+* back to the filesystem. On Linux (case-sensitive) `…/iHpOqm` → `…/ihpoqm`
+* is a different, usually non-existent path, and probing it silently drops
+* the candidate; macOS and Windows mask that because their filesystems fold
+* case. Keep the real path next to its key.
+*/
+function pathKeyOf(value) {
+	return value.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+/** Whether `target` is `base` itself or lives under it. */
+function pathUnderOf(base, target) {
+	const b = pathKeyOf(base);
+	const t = pathKeyOf(target);
+	return t === b || t.startsWith(`${b}/`);
+}
+/** `git rev-parse --show-toplevel` of an existing directory, or undefined. */
+async function gitTopLevelOf(cwd) {
+	if (cwd === "" || !isAbsolute(cwd)) return void 0;
+	try {
+		if (!(await stat(cwd)).isDirectory()) return void 0;
+		return (await runGitRaw(cwd, ["rev-parse", "--show-toplevel"])).trim();
+	} catch {
+		return;
+	}
+}
+/** Collapse duplicated separators without destroying a UNC prefix. */
+function normalizeActivePath(value) {
+	const trimmed = value.replace(/[\\/]+$/, "");
+	if (trimmed.startsWith("\\\\")) return `\\\\${trimmed.slice(2).replace(/[\\/]+/g, "\\")}`;
+	return trimmed.replace(/[\\/]+/g, sep);
+}
+function addActivePath(map, value, weight) {
+	if (typeof value !== "string") return;
+	const normalized = normalizeActivePath(value);
+	if (normalized === "" || !isAbsolute(normalized)) return;
+	const key = pathKeyOf(normalized);
+	const entry = map.get(key);
+	if (entry === void 0) map.set(key, {
+		path: normalized,
+		score: weight
+	});
+	else entry.score += weight;
+}
+/**
+* Collect every absolute path one tool call mentions.
+* @param value - JSON-decoded tool arguments (nested values are walked).
+* @param map - accumulator keyed by normalized path identity.
+* @param structured - whether the current value sits in a cwd/workdir/path field.
+*/
+function collectActivePaths(value, map, structured) {
+	if (typeof value === "string") {
+		if (isAbsolute(value)) {
+			addActivePath(map, value, structured ? 8 : 1);
+			return;
+		}
+		const head = value.charCodeAt(0);
+		if (head === 123 || head === 91) try {
+			collectActivePaths(JSON.parse(value), map, structured);
+		} catch {}
+		for (const match of value.match(ACTIVE_ROOT_PATH_PATTERN) ?? []) addActivePath(map, match, 1);
+		return;
+	}
+	if (Array.isArray(value)) {
+		for (const item of value) collectActivePaths(item, map, structured);
+		return;
+	}
+	if (value !== null && typeof value === "object") for (const [key, item] of Object.entries(value)) {
+		const isStructured = ACTIVE_ROOT_STRUCTURED_FIELD.test(key);
+		collectActivePaths(item, map, structured || isStructured);
+	}
+}
+/** git top level for one path (its directory when the path names a file). */
+async function topOfActivePath(value) {
+	const key = pathKeyOf(value);
+	if (pathTopCache.has(key)) return pathTopCache.get(key);
+	let top = await gitTopLevelOf(value);
+	if (top === void 0) top = await gitTopLevelOf(dirname(value));
+	const result = top === void 0 ? void 0 : requireAbsolute(top);
+	pathTopCache.set(key, result);
+	return result;
+}
+/**
+* Whether a git top level is a LINKED worktree: its git dir lives under the
+* common dir (`<main>/.git/worktrees/<name>`) instead of being it. Submodules
+* report the same dir for both, so they are excluded.
+*/
+async function isLinkedWorktree(top) {
+	const key = pathKeyOf(top);
+	const cached = linkedWorktreeCache.get(key);
+	if (cached !== void 0) return cached;
+	let linked = false;
+	try {
+		const out = (await runGitRaw(top, [
+			"rev-parse",
+			"--absolute-git-dir",
+			"--git-common-dir"
+		])).trim().split(/\r?\n/);
+		const gitDir = out[0];
+		const commonRaw = out[1] ?? "";
+		if (gitDir !== void 0 && gitDir !== "" && commonRaw !== "") {
+			const common = isAbsolute(commonRaw) ? commonRaw : join(top, commonRaw);
+			linked = pathKeyOf(requireAbsolute(gitDir)) !== pathKeyOf(requireAbsolute(common));
+		}
+	} catch {
+		linked = false;
+	}
+	linkedWorktreeCache.set(key, linked);
+	return linked;
+}
+/** The newest linked worktree the session's tool/call paths resolve to. */
+async function activeRootFromEvents(events, base) {
+	if (events.length === 0) return void 0;
+	const baseKey = pathKeyOf(base);
+	const start = Math.max(0, events.length - ACTIVE_ROOT_MAX_EVENTS);
+	let probes = 0;
+	for (let index = events.length - 1; index >= start; index -= 1) {
+		const event = events[index];
+		if (event === void 0 || event.type !== "tool/call") continue;
+		const weights = /* @__PURE__ */ new Map();
+		collectActivePaths(event.data, weights, false);
+		if (weights.size === 0) continue;
+		const ordered = [...weights.values()].sort((left, right) => right.score - left.score);
+		const scores = /* @__PURE__ */ new Map();
+		for (const candidate of ordered) {
+			if (probes >= ACTIVE_ROOT_MAX_PROBES) break;
+			probes += 1;
+			const top = await topOfActivePath(candidate.path);
+			if (top === void 0) continue;
+			const topKey = pathKeyOf(top);
+			if (topKey === baseKey) continue;
+			if (!await isLinkedWorktree(top)) continue;
+			const entry = scores.get(topKey);
+			if (entry === void 0) scores.set(topKey, {
+				top,
+				score: candidate.score
+			});
+			else entry.score += candidate.score;
+		}
+		if (scores.size > 0) {
+			let best;
+			let bestScore = -1;
+			for (const entry of scores.values()) if (entry.score > bestScore) {
+				best = entry.top;
+				bestScore = entry.score;
+			}
+			if (best !== void 0) return best;
+		}
+		if (probes >= ACTIVE_ROOT_MAX_PROBES) return void 0;
+	}
+}
+/** The session's live event log, or the persisted one while it is detached. */
+async function sessionEventsOf(ctx, sessionId) {
+	const live = ctx.sessions.get(sessionId);
+	const events = typeof live?.snapshotEvents === "function" ? live.snapshotEvents() : void 0;
+	if (events !== void 0) return events;
+	return (await readPersistedSessionOf(ctx, sessionId))?.events ?? [];
+}
+/**
+* The directory the sidebar should treat as the session's root.
+* @param ctx - host plugin context.
+* @param sessionId - session whose tool calls are inspected.
+* @param base - the authoritative session cwd (already resolved by the caller).
+* @returns the active linked worktree, the repository top level, or `base`.
+*/
+async function activeWorktreeRootOf(ctx, sessionId, base) {
+	if (base === "") return base;
+	const override = (process.env[ACTIVE_ROOT_OVERRIDE_ENV] ?? "").trim();
+	if (override !== "" && isAbsolute(override)) return requireAbsolute(override);
+	const cached = activeWorktreeRootCache.get(sessionId);
+	if (cached !== void 0 && cached.expires > Date.now() && cached.base === base) return cached.root;
+	const top = await gitTopLevelOf(base);
+	if (top === void 0) {
+		activeWorktreeRootCache.set(sessionId, {
+			root: base,
+			base,
+			expires: Date.now() + ACTIVE_ROOT_TTL_MS
+		});
+		return base;
+	}
+	const canonicalTop = requireAbsolute(top);
+	const effectiveBase = pathUnderOf(base, canonicalTop) ? base : canonicalTop;
+	const root = await activeRootFromEvents(await sessionEventsOf(ctx, sessionId), effectiveBase) ?? effectiveBase;
+	activeWorktreeRootCache.set(sessionId, {
+		root,
+		base,
+		expires: Date.now() + ACTIVE_ROOT_TTL_MS
+	});
+	return root;
+}
+//#endregion
+//#region src/text-encoding.ts
+/**
+* Text encoding detection/round-trip helpers for the host filesystem API.
+*
+* The editor transports JavaScript strings, but Windows script/config files
+* are still commonly stored as the active ANSI code page (CP936/GBK) or
+* UTF-16. Detect before decoding and re-detect the on-disk file before save
+* so editing never silently converts an existing file to UTF-8.
+*/
+const UTF8_BOM = Buffer.from([
+	239,
+	187,
+	191
+]);
+const UTF16LE_BOM = Buffer.from([255, 254]);
+const UTF16BE_BOM = Buffer.from([254, 255]);
+const UTF32LE_BOM = Buffer.from([
+	255,
+	254,
+	0,
+	0
+]);
+const UTF32BE_BOM = Buffer.from([
+	0,
+	0,
+	254,
+	255
+]);
+const ENCODING_SNIFF_LIMIT = 65536;
+/** Sample the line-ending vote reads (characters, not bytes). Same window as
+*  the host backend's `detectLineEndings`, so the plugin and the host reach the
+*  same verdict about the same file. */
+const EOL_SNIFF_LIMIT = 4096;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+const GBK_DECODER = new TextDecoder("gbk", { fatal: true });
+const GB18030_DECODER = new TextDecoder("gb18030", { fatal: true });
+const GB18030_LOOSE_DECODER = new TextDecoder("gb18030");
+const GB18030_POINTERS = 1587600;
+function startsWith(bytes, prefix) {
+	if (bytes.length < prefix.length) return false;
+	for (let i = 0; i < prefix.length; i += 1) if (bytes[i] !== prefix[i]) return false;
+	return true;
+}
+function decodeUtf16(bytes, littleEndian) {
+	const length = bytes.length - bytes.length % 2;
+	const body = Buffer.from(bytes.subarray(0, length));
+	if (!littleEndian) body.swap16();
+	return body.toString("utf16le");
+}
+function encodeUtf16(text, littleEndian) {
+	const body = Buffer.from(text, "utf16le");
+	if (!littleEndian) body.swap16();
+	return body;
+}
+function decodeUtf32(bytes, littleEndian) {
+	const length = bytes.length - bytes.length % 4;
+	let content = "";
+	for (let offset = 0; offset < length; offset += 4) {
+		const codePoint = littleEndian ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
+		content += codePoint <= 1114111 && !(codePoint >= 55296 && codePoint <= 57343) ? String.fromCodePoint(codePoint) : "�";
+	}
+	return content;
+}
+function encodeUtf32(text, littleEndian) {
+	const codePoints = [...text].map((char) => char.codePointAt(0) ?? 65533);
+	const body = Buffer.allocUnsafe(codePoints.length * 4);
+	codePoints.forEach((codePoint, index) => {
+		if (littleEndian) body.writeUInt32LE(codePoint, index * 4);
+		else body.writeUInt32BE(codePoint, index * 4);
+	});
+	return body;
+}
+/** Detect BOM-less UTF-16 from the NUL-byte lane typical of scripts/config. */
+function bomlessUtf16(bytes) {
+	if (bytes.length < 4) return void 0;
+	const pairs = Math.min(Math.floor(bytes.length / 2), 1024);
+	let evenZeros = 0;
+	let oddZeros = 0;
+	for (let i = 0; i < pairs; i += 1) {
+		if (bytes[i * 2] === 0) evenZeros += 1;
+		if (bytes[i * 2 + 1] === 0) oddZeros += 1;
+	}
+	const minimumZeros = Math.max(2, Math.floor(pairs * .2));
+	if (oddZeros >= minimumZeros && oddZeros >= evenZeros * 4) return "utf16le";
+	if (evenZeros >= minimumZeros && evenZeros >= oddZeros * 4) return "utf16be";
+}
+function tryDecode(decoder, bytes) {
+	try {
+		return decoder.decode(bytes);
+	} catch {
+		return;
+	}
+}
+/** Detect the GB18030 four-byte sequences that are outside the GBK subset. */
+function hasGb18030FourByteSequence(bytes) {
+	for (let i = 0; i + 3 < bytes.length; i += 1) {
+		const b1 = bytes[i];
+		const b2 = bytes[i + 1];
+		const b3 = bytes[i + 2];
+		const b4 = bytes[i + 3];
+		if (b1 >= 129 && b1 <= 254 && b2 >= 48 && b2 <= 57 && b3 >= 129 && b3 <= 254 && b4 >= 48 && b4 <= 57) return true;
+	}
+	return false;
+}
+/**
+* Whether a fatally-undecodable buffer fails only because the cap cut a
+* multi-byte character in half.
+*
+* A capped read (`readLimit` here, {@link ENCODING_SNIFF_LIMIT} on the save
+* side) may stop anywhere, and a partial CJK sequence is exactly what the
+* GB18030 decoder below accepts: two trailing bytes of a three-byte character
+* decode as one legacy glyph, so a >cap UTF-8 file used to come back as
+* mojibake on open and could be saved back under the wrong encoding. The
+* longest UTF-8 sequence is four bytes, so at most three are missing; the tail
+* is a read artifact rather than file content, which leaves the prefix — the
+* only bytes actually known — to decide the encoding.
+*/
+function hasIncompleteUtf8Tail(bytes) {
+	for (let start = Math.max(0, bytes.length - 3); start < bytes.length; start += 1) {
+		const lead = bytes[start];
+		const size = lead >= 240 && lead <= 244 ? 4 : lead >= 224 && lead <= 239 ? 3 : lead >= 194 && lead <= 223 ? 2 : 0;
+		if (size === 0 || start + size <= bytes.length) continue;
+		let incomplete = true;
+		for (let i = start + 1; i < bytes.length; i += 1) {
+			const trail = bytes[i];
+			if (trail < 128 || trail > 191) {
+				incomplete = false;
+				break;
+			}
+		}
+		if (incomplete && tryDecode(UTF8_DECODER, bytes.subarray(0, start)) !== void 0) return true;
+	}
+	return false;
+}
+/**
+* Decode a text buffer, or `null` when it looks binary (NUL-bearing and not
+* UTF-16/32). `truncated` says the buffer is a prefix of a larger file, which
+* lets a read cap cut mid-character without flipping the detected encoding.
+*/
+function decodeTextBytes(bytes, truncated = false) {
+	if (startsWith(bytes, UTF32LE_BOM)) return {
+		content: decodeUtf32(bytes.subarray(4), true),
+		encoding: "utf32le-bom"
+	};
+	if (startsWith(bytes, UTF32BE_BOM)) return {
+		content: decodeUtf32(bytes.subarray(4), false),
+		encoding: "utf32be-bom"
+	};
+	if (startsWith(bytes, UTF8_BOM)) return {
+		content: bytes.subarray(3).toString("utf8"),
+		encoding: "utf8-bom"
+	};
+	if (startsWith(bytes, UTF16LE_BOM)) return {
+		content: decodeUtf16(bytes.subarray(2), true),
+		encoding: "utf16le-bom"
+	};
+	if (startsWith(bytes, UTF16BE_BOM)) return {
+		content: decodeUtf16(bytes.subarray(2), false),
+		encoding: "utf16be-bom"
+	};
+	const utf16 = bomlessUtf16(bytes);
+	if (utf16 !== void 0) return {
+		content: decodeUtf16(bytes, utf16 === "utf16le"),
+		encoding: utf16
+	};
+	if (bytes.includes(0)) return null;
+	const utf8 = tryDecode(UTF8_DECODER, bytes);
+	if (utf8 !== void 0) return {
+		content: utf8,
+		encoding: "utf8"
+	};
+	if (truncated && hasIncompleteUtf8Tail(bytes)) return {
+		content: bytes.toString("utf8"),
+		encoding: "utf8"
+	};
+	const gb18030 = tryDecode(GB18030_DECODER, bytes);
+	if (gb18030 !== void 0 && hasGb18030FourByteSequence(bytes)) return {
+		content: gb18030,
+		encoding: "gb18030"
+	};
+	const gbk = tryDecode(GBK_DECODER, bytes);
+	if (gbk !== void 0) return {
+		content: gbk,
+		encoding: "gbk"
+	};
+	if (gb18030 !== void 0) return {
+		content: gb18030,
+		encoding: "gb18030"
+	};
+	return {
+		content: bytes.toString("utf8"),
+		encoding: "utf8"
+	};
+}
+let gbkEncodeMap;
+function getGbkEncodeMap() {
+	if (gbkEncodeMap !== void 0) return gbkEncodeMap;
+	const map = /* @__PURE__ */ new Map();
+	for (let byte = 0; byte <= 127; byte += 1) map.set(String.fromCharCode(byte), byte);
+	map.set("€", 128);
+	for (let lead = 129; lead <= 254; lead += 1) for (let trail = 64; trail <= 254; trail += 1) {
+		if (trail === 127) continue;
+		const char = tryDecode(GBK_DECODER, Uint8Array.of(lead, trail));
+		if (char !== void 0 && [...char].length === 1 && !map.has(char)) map.set(char, lead << 8 | trail);
+	}
+	gbkEncodeMap = map;
+	return map;
+}
+function gb18030PointerBytes(pointer) {
+	let value = pointer;
+	const fourth = value % 10;
+	value = Math.floor(value / 10);
+	const third = value % 126;
+	value = Math.floor(value / 126);
+	const second = value % 10;
+	value = Math.floor(value / 10);
+	return [
+		value + 129,
+		second + 48,
+		third + 129,
+		fourth + 48
+	];
+}
+const gb18030PointerCache = /* @__PURE__ */ new Map();
+function resolveGb18030Pointers(chars) {
+	const pending = new Set([...chars].filter((char) => !gb18030PointerCache.has(char)));
+	if (pending.size === 0) return;
+	const bytes = Buffer.allocUnsafe(GB18030_POINTERS * 4);
+	for (let pointer = 0; pointer < GB18030_POINTERS; pointer += 1) bytes.set(gb18030PointerBytes(pointer), pointer * 4);
+	const decoded = GB18030_LOOSE_DECODER.decode(bytes);
+	let pointer = 0;
+	for (const char of decoded) {
+		if (char !== "�" && pending.has(char)) {
+			gb18030PointerCache.set(char, pointer);
+			pending.delete(char);
+			if (pending.size === 0) break;
+		}
+		pointer += 1;
+	}
+	if (pending.size > 0) throw new RangeError(`text contains characters not representable in GB18030: ${JSON.stringify([...pending])}`);
+}
+function encodeLegacy(text, gb18030) {
+	const map = getGbkEncodeMap();
+	const chars = [...text];
+	if (gb18030) resolveGb18030Pointers(new Set(chars.filter((char) => !map.has(char))));
+	const bytes = [];
+	for (const char of chars) {
+		const gbk = map.get(char);
+		if (gbk !== void 0) {
+			if (gbk <= 255) bytes.push(gbk);
+			else bytes.push(gbk >> 8, gbk & 255);
+			continue;
+		}
+		if (!gb18030) throw new RangeError(`text contains a character not representable in GBK: ${JSON.stringify(char)}`);
+		const pointer = gb18030PointerCache.get(char);
+		if (pointer === void 0) throw new RangeError(`text contains a character not representable in GB18030: ${JSON.stringify(char)}`);
+		bytes.push(...gb18030PointerBytes(pointer));
+	}
+	return Buffer.from(bytes);
+}
+function encodeText(text, encoding) {
+	switch (encoding) {
+		case "utf8": return Buffer.from(text, "utf8");
+		case "utf8-bom": return Buffer.concat([UTF8_BOM, Buffer.from(text, "utf8")]);
+		case "utf16le": return encodeUtf16(text, true);
+		case "utf16le-bom": return Buffer.concat([UTF16LE_BOM, encodeUtf16(text, true)]);
+		case "utf16be": return encodeUtf16(text, false);
+		case "utf16be-bom": return Buffer.concat([UTF16BE_BOM, encodeUtf16(text, false)]);
+		case "utf32le-bom": return Buffer.concat([UTF32LE_BOM, encodeUtf32(text, true)]);
+		case "utf32be-bom": return Buffer.concat([UTF32BE_BOM, encodeUtf32(text, false)]);
+		case "gbk": return encodeLegacy(text, false);
+		case "gb18030": return encodeLegacy(text, true);
+	}
+}
+/**
+* Majority vote over the leading {@link EOL_SNIFF_LIMIT} characters: CRLF wins
+* only when the CRLF pairs outnumber the bare LFs. A file with a single trailing
+* CRLF among many LF lines therefore reads as LF, and a `\r`-only (classic Mac)
+* file reads as LF without its bytes being touched — both the same verdict the
+* host backend reaches, so a plugin save and a model `edit` agree.
+*/
+function detectEol(text) {
+	const sample = text.slice(0, EOL_SNIFF_LIMIT);
+	const crlf = sample.split("\r\n").length - 1;
+	return crlf > sample.split("\n").length - 1 - crlf ? "crlf" : "lf";
+}
+/**
+* Convert the editor's LF document back to the file's own style before
+* encoding. CRLF content is normalized first (unlike a naive `split('\n').join`
+* this can never turn an existing pair into `\r\r\n`) — the same guard the host
+* backend's `restoreLineEndings` documents. Everything else, including a lone
+* `\r`, is passed through untouched.
+*/
+function restoreEol(text, eol) {
+	if (eol === "lf") return text;
+	return text.replaceAll("\r\n", "\n").split("\n").join("\r\n");
+}
+/**
+* Detect the on-disk format a save has to round-trip: byte encoding AND line
+* endings, from one sniff read. Called before the temp write on every save, so
+* the editor never silently converts GBK / UTF-16 / BOM'd UTF-8 bytes — nor a
+* CRLF file to LF, which for a one-line edit would land as a whole-file diff
+* (#871). A missing file yields UTF-8 + LF (see the comment below).
+*/
+async function fileFormatOf(path) {
+	let handle;
+	try {
+		handle = await open(path, "r");
+	} catch (error) {
+		if (error.code === "ENOENT") return {
+			encoding: "utf8",
+			eol: "lf"
+		};
+		throw error;
+	}
+	try {
+		const info = await handle.stat();
+		const truncated = info.size > ENCODING_SNIFF_LIMIT;
+		const bytes = Buffer.alloc(Math.min(info.size, ENCODING_SNIFF_LIMIT));
+		const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+		const decoded = decodeTextBytes(bytes.subarray(0, bytesRead), truncated);
+		return {
+			encoding: decoded?.encoding ?? "utf8",
+			eol: decoded === null ? "lf" : detectEol(decoded.content)
+		};
+	} finally {
+		await handle.close();
+	}
+}
+//#endregion
+//#region src/index.ts
+/**
+* dsh-better-sidebar host half: the /sidebar JSON API (explorer listing, file
+* read/write, git), the /sidebar/file media route (images), the /sidebar/html
+* preview route, the /sidebar/bundle lazy-chunk route (client code splits),
+* and the two WebSocket upgrades (sidebar_open pushes). Every route passes the same
+* browser-trust fence as the /api gateway — Host-header loopback or the
+* web runtime's `trustedHosts` (LAN IP literals sampled at boot plus
+* `--trusted-host` authorities), read per request from the live service
+* value so the fence tracks the same trust source the /api gateway derives
+* its list from.
+*
+* All operations are conversation-scoped: requests carry a sessionId and the
+* session's authoritative cwd comes from the session store.
+*/
+/** Plugin identity for cordis.yml rows. */
+const name = "dsh-better-sidebar";
+/** Services required before mounting: the webserver routes, the session store, the web runtime's trusted hosts, and the tool registry. */
+const inject = [
+	"webServer",
+	"sessions",
+	"webStartup",
+	"tools"
+];
+/** Content types for the media route, by extension. */
+const MEDIA_TYPES = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".svg": "image/svg+xml",
+	".bmp": "image/bmp",
+	".ico": "image/x-icon",
+	".avif": "image/avif",
+	".pdf": "application/pdf",
+	".html": "text/html",
+	".htm": "text/html"
+};
+/** Content type served by /sidebar/file (binary-safe fallback for unknowns). */
+function mediaTypeForPath(path) {
+	return MEDIA_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream";
+}
+/**
+* Resolve a session's authoritative working directory. The attached session
+* header wins; while the session is still hydrating from persistence (the
+* web client attaches the current conversation a moment after page load, so
+* the very first sidebar requests can arrive detached) the caller's own
+* list-summary cwd is used; the session-persistence index is queried as a
+* last resort for cold (not-yet-attached) sessions so a detached first
+* request still resolves the correct project instead of the host process
+* cwd (which on Windows is the DSH source root after `dsh.cmd`'s `pushd`,
+* causing every user-project path to be misclassified as "outside
+* workspace"). The host process cwd is the FINAL fallback for deployments
+* without persistence (tests / stripped-down hosts); production always
+* provides persistence, so the bug-fix path (header → client → persistence)
+* always resolves the real session cwd before reaching it.
+*/
+async function sessionCwdOf(ctx, sessionId, clientCwd) {
+	const headerCwd = ctx.sessions.get(sessionId)?.header.cwd;
+	if (headerCwd !== void 0 && headerCwd !== "") return headerCwd;
+	if (clientCwd !== void 0 && clientCwd !== "") try {
+		return requireAbsolute(clientCwd);
+	} catch {
+		throw new SidebarError("bad-request", `invalid working directory "${clientCwd}"`);
+	}
+	const persistence = ctx.get("sessionPersistence");
+	if (persistence !== void 0) {
+		const metaCwd = (await readPersistedSession(persistence, sessionId)).header.cwd;
+		if (metaCwd !== void 0 && metaCwd !== "") try {
+			return requireAbsolute(metaCwd);
+		} catch {
+			throw new SidebarError("bad-request", `invalid working directory "${metaCwd}"`);
+		}
+	}
+	return process.cwd();
+}
+/** Optional repository selected by the Git panel when cwd is a container. */
+function selectedRepoOf(payload) {
+	if (payload.repoRoot === void 0) return void 0;
+	return requireAbsolute(requireString(payload, "repoRoot"));
+}
+/** One required 1-based line number of a `git blame -L` request. */
+function requireLineNumber(payload, key) {
+	const value = payload?.[key];
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new SidebarError("bad-request", `"${key}" must be a positive integer line number`);
+	return value;
+}
+/**
+* Resolve a relative path an EDITOR surface carried (the file tree, the
+* editor buffer, and `fs.read`, which the untracked-diff fallback reads
+* through): the session-relative interpretation wins when it names an
+* existing path, with the repository root as the fallback. Git's
+* status/diff ROWS deliberately do NOT come through here — they are
+* repository-root-relative by construction, see {@link resolveStatusPath}.
+*/
+async function resolveGitPath(cwd, raw, selected) {
+	if (isAbsolute(raw)) return requireAbsolute(resolveSessionPath(cwd, raw));
+	const sessionPath = requireAbsolute(join(cwd, raw));
+	if (await stat(sessionPath).then(() => true).catch(() => false)) return sessionPath;
+	const root = await repoRoot(cwd, selected).catch(() => cwd);
+	return requireAbsolute(join(root, raw));
+}
+/** Max providers / per-provider models the `git.models` catalog answers with.
+*  The catalog only feeds the Git card's pinned-model dropdown, so a huge
+*  deployment still resolves to a bounded, fast reply. */
+const MODEL_CATALOG_PROVIDER_LIMIT = 20;
+const MODEL_CATALOG_MODEL_LIMIT = 50;
+/** The Git card's plugin-owned settings key holding the pinned
+*  `provider/model` route ('' or absent = follow the conversation). */
+const COMMIT_MODEL_SETTING_KEY = "commitModel";
+/**
+* The provider/model route the user PINNED for commit-message generation
+* (the Git card's settings write `pluginSettings.git.commitModel`). Absent,
+* empty or malformed means "follow the conversation" — a bad value must
+* never lock the feature out, it falls back.
+*/
+function pinnedCommitRouteOf(getSettings) {
+	const value = getSettings()?.get().value;
+	if (value === null || typeof value !== "object") return void 0;
+	const pluginSettings = value.pluginSettings;
+	if (pluginSettings === null || typeof pluginSettings !== "object") return void 0;
+	const blob = pluginSettings.git;
+	if (blob === null || typeof blob !== "object") return void 0;
+	return parseModelRoute(blob[COMMIT_MODEL_SETTING_KEY]);
+}
+/**
+* The provider/model route the CURRENT conversation runs on, read without
+* spawning anything: the live agent's own options are authoritative, and a
+* session that has not attached yet still carries its newest `request/header`
+* event (the record the agent loop writes). Undefined while neither is
+* available — a cold conversation with no request yet has no route to follow.
+*/
+function conversationModelRoute(ctx, sessionId) {
+	const options = ctx.get("agents")?.get(sessionId)?.options;
+	if (options !== void 0 && typeof options.provider === "string" && options.provider !== "" && typeof options.model === "string" && options.model !== "") return {
+		provider: options.provider,
+		model: options.model
+	};
+	const events = ctx.sessions.get(sessionId)?.snapshotEvents();
+	if (events === void 0) return void 0;
+	for (let index = events.length - 1; index >= 0; index--) {
+		const event = events[index];
+		if (event === void 0 || event.type !== "request/header") continue;
+		const config = event.data?.header?.config;
+		if (config === null || typeof config !== "object") continue;
+		const provider = config.provider;
+		const model = config.model;
+		if (typeof provider === "string" && provider !== "" && typeof model === "string" && model !== "") return {
+			provider,
+			model
+		};
+	}
+}
+/**
+* The harness's DEFAULT model route (settings namespace `agent-default-model`):
+* the route a brand-new conversation would use, so the suggestion still works
+* on a session that has not sent its first message (no `request/header` yet)
+* and in a deployment whose LLM adapters advertise no catalog.
+*/
+function defaultModelRoute(ctx) {
+	return defaultRouteOf(ctx.get("agentDefaultModel")?.currentSelection());
+}
+/** Output budget of one suggestion: enough for a subject plus a short body,
+*  and (with reasoning pinned to the lowest level) no more. */
+const SUGGEST_MAX_TOKENS = 512;
+/** Hard deadline of one suggestion (the panel shows the model as busy while
+*  it runs, so a stalled provider must not leave it spinning forever). */
+const SUGGEST_TIMEOUT_MS = 3e4;
+/**
+* The reasoning effort to request for one route: the LOWEST the model
+* advertises, or undefined when it advertises none. A one-line commit message
+* needs no deliberation, while a high default (the DeepSeek adapter defaults
+* to `high` unless the connection says otherwise) both delays the answer and
+* can consume the whole output budget, yielding an empty message.
+*/
+async function commitReasoningEffort(llm, route) {
+	if (llm.resolveModelInfo === void 0) return void 0;
+	return lowestReasoningEffortOf((await Promise.resolve(llm.resolveModelInfo(route.provider, route.model)).catch(() => void 0))?.reasoning?.efforts);
+}
+/**
+* One generation stream through the harness LLM service. The service is not
+* injected (the plugin must not require it), so it is read through `ctx.get`
+* and checked: a deployment without the LLM surface gets a clean 503 instead
+* of a TypeError. Chunks are assembled with the harness's own BlockAssembler
+* — the same chunk-to-message algorithm the agent loop uses.
+*/
+async function streamCommitMessage(ctx, route, system, user) {
+	const llm = ctx.get("llm");
+	if (llm === void 0) throw new SidebarError("git-suggest-error", "the harness LLM service is unavailable", 503);
+	const effort = await commitReasoningEffort(llm, route);
+	const assembler = new BlockAssembler();
+	try {
+		for await (const chunk of llm.stream({
+			provider: route.provider,
+			model: route.model,
+			messages: [createUserMessage({
+				content: [{
+					type: "text",
+					text: user
+				}],
+				source: { kind: "plugin:dsh-better-sidebar" }
+			})],
+			system,
+			maxTokens: SUGGEST_MAX_TOKENS,
+			signal: AbortSignal.timeout(SUGGEST_TIMEOUT_MS),
+			...effort === void 0 ? {} : { reasoningEffort: effort }
+		})) assembler.push(chunk);
+	} catch (error) {
+		if (error instanceof Error && error.name === "AbortError") throw new SidebarError("git-suggest-error", `the model did not answer within ${Math.round(SUGGEST_TIMEOUT_MS / 1e3)}s`, 504);
+		throw error;
+	}
+	const message = cleanSuggestion(assembler.blocks().map((block) => block.type === "text" ? block.text : "").join(""));
+	if (message === "") {
+		const finish = assembler.finish?.kind;
+		throw new SidebarError("git-suggest-error", `the model returned an empty message (finish=${typeof finish === "string" ? finish : "unknown"})`, 500);
+	}
+	return message;
+}
+/**
+* Resolve a path a git status/diff ROW carried: the changes tree's rows and
+* every action they offer (the inline diff preview, and the destructive
+* discard). Git prints those paths RELATIVE TO THE REPO TOP LEVEL, which may
+* sit above the session cwd, and the client forwards them verbatim — so a
+* relative name ALWAYS joins the repository root. Joining the session cwd
+* first instead hit a same-named file in the subdirectory the session sits
+* in (#765: `git.discard` on the row `README.md` restored the `pkg/README.md`
+* one level down and left the root `README.md` — the file the row names —
+* dirty). Absolute paths pass through; a cwd outside any repository falls
+* back to itself, where the git command fails exactly as it did before.
+*/
+async function resolveStatusPath(cwd, raw, selected) {
+	if (isAbsolute(raw)) return requireAbsolute(resolveSessionPath(cwd, raw));
+	const root = await repoRoot(cwd, selected).catch(() => cwd);
+	return requireAbsolute(join(root, raw));
+}
+/** How many leading bytes a binary read returns for client-side detect sniffing. */
+const READ_HEAD_LIMIT = 4096;
+/** Text read of a file with the size cap; text encoding is detected before
+*  the NUL-based binary fallback so UTF-16/UTF-32 text remains editable.
+*  Binary reads also return the first {@link READ_HEAD_LIMIT} bytes (base64)
+*  so the client can re-match viewers by content (`detect`). */
+async function readText(path, readLimit) {
+	const info = await stat(path).catch((error) => {
+		throw new SidebarError("fs-error", `cannot read "${path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	});
+	if (info.isDirectory()) throw new SidebarError("fs-error", `"${path}" is a directory`, 400);
+	const size = info.size;
+	const truncated = size > readLimit;
+	const handle = await open(path, "r").catch((error) => {
+		throw new SidebarError("fs-error", `cannot read "${path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+	});
+	try {
+		const buffer = Buffer.alloc(Math.min(size, readLimit));
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		const slice = buffer.subarray(0, bytesRead);
+		const decoded = decodeTextBytes(slice, truncated);
+		const binary = decoded === null;
+		const head = binary ? slice.subarray(0, Math.min(slice.length, READ_HEAD_LIMIT)).toString("base64") : void 0;
+		return {
+			content: decoded?.content ?? "",
+			truncated,
+			binary,
+			size,
+			mtimeMs: info.mtimeMs,
+			head
+		};
+	} finally {
+		await handle.close();
+	}
+}
+function buildApi(ctx, resolved, getSettings, assistantLive, archiveTasks) {
+	const cwdOf = async (payload) => {
+		const sessionId = requireString(payload, "sessionId");
+		const record = payload;
+		return {
+			sessionId,
+			cwd: await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId, typeof record?.cwd === "string" && record.cwd !== "" ? record.cwd : void 0))
+		};
+	};
+	/** Resolve the optional Git-panel checkout selector against the selected
+	* session repository. Unlike `cwd`, `worktree` is never trusted directly. */
+	const gitCwdOf = async (payload) => {
+		const base = await cwdOf(payload);
+		const record = payload;
+		const requested = typeof record?.worktree === "string" && record.worktree !== "" ? record.worktree : void 0;
+		if (requested === void 0) return base;
+		const root = await repoRoot(base.cwd, selectedRepoOf(payload));
+		return {
+			sessionId: base.sessionId,
+			cwd: await resolveWorktree(root, requested)
+		};
+	};
+	const subagentLiveApi = buildSubagentLiveApi(ctx);
+	const workflowsApi = buildWorkflowsApi(ctx);
+	const teamsApi = buildTeamsApi(ctx);
+	return {
+		"session.phase": async (payload) => {
+			const sessionId = requireString(payload, "sessionId");
+			const session = ctx.sessions.get(sessionId);
+			if (session === void 0) return { blank: false };
+			return { blank: !session.snapshotEvents().some((event) => event.type === "user/message" || event.type === "assistant/message") };
+		},
+		"session.cwd": async (payload) => {
+			const { sessionId, cwd } = await cwdOf(payload);
+			return {
+				sessionId,
+				cwd,
+				root: rootLabel(cwd),
+				parent: parentOf(cwd) ?? null
+			};
+		},
+		"fs.tree": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			const record = payload;
+			const target = record.path === void 0 ? cwd : await ensureWorkspacePath(cwd, requireString(payload, "path"));
+			const exclude = compileExcludePatterns(record.exclude, cwd);
+			return listDirectory(target, resolved.listLimit, exclude);
+		},
+		"fs.trees": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			const record = payload;
+			const paths = Array.isArray(record?.paths) ? record.paths.filter((value) => typeof value === "string" && value !== "") : [];
+			if (paths.length === 0) throw new SidebarError("bad-request", "paths must be a non-empty array");
+			if (paths.length > 64) throw new SidebarError("bad-request", `too many paths (max 64)`);
+			const exclude = compileExcludePatterns(record?.exclude, cwd);
+			return { levels: await Promise.all(paths.map(async (raw) => {
+				const homeRelative = raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\");
+				const requested = isAbsolute(raw) || homeRelative ? raw : `${cwd}${sep}${raw}`;
+				try {
+					return await listDirectory(await ensureWorkspacePath(cwd, requested), resolved.listLimit, exclude);
+				} catch (error) {
+					return {
+						path: requested,
+						entries: [],
+						truncated: false,
+						error: messageOf$1(error)
+					};
+				}
+			})) };
+		},
+		"fs.search": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			const record = payload;
+			return searchFiles(cwd, requireString(payload, "query"), { exclude: compileExcludePatterns(record.exclude, cwd) });
+		},
+		"fs.read": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			const selected = selectedRepoOf(payload);
+			const { content, truncated, binary, size, mtimeMs, head } = await readText(await ensureWorkspacePath(cwd, await resolveGitPath(cwd, requireString(payload, "path"), selected)), resolved.readLimit);
+			if (binary) return {
+				kind: "binary",
+				size,
+				truncated,
+				mtimeMs,
+				head
+			};
+			return {
+				kind: "text",
+				content,
+				truncated,
+				mtimeMs
+			};
+		},
+		"fs.write": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			const path = await ensureWorkspaceWritePath(cwd, requireString(payload, "path"));
+			const content = requireString(payload, "content");
+			const { encoding, eol } = await fileFormatOf(path);
+			const record = payload;
+			const expected = typeof record?.expectedMtimeMs === "number" && Number.isFinite(record.expectedMtimeMs) ? record.expectedMtimeMs : void 0;
+			if (expected !== void 0) {
+				const current = await stat(path).then((info) => info.mtimeMs).catch(() => void 0);
+				if (current !== void 0 && current !== expected) throw new SidebarError("fs-conflict", `"${path}" changed on disk since it was loaded (expected mtime ${expected}, found ${current})`, 409);
+			}
+			const tmp = join(dirname(path), `.${basename(path)}.dsh-sidebar-tmp-${randomUUID()}.tmp`);
+			try {
+				await mkdir(dirname(path), { recursive: true });
+				await writeFile(tmp, encodeText(restoreEol(content, eol), encoding), { flag: "wx" });
+				await rename(tmp, path);
+			} catch (error) {
+				await rm(tmp, { force: true }).catch(() => {});
+				throw new SidebarError("fs-error", `cannot write "${path}": ${error instanceof Error ? error.message : String(error)}`, 400);
+			}
+			invalidateDirectoryCache(dirname(path));
+			const mtimeMs = await stat(path).then((info) => info.mtimeMs).catch(() => void 0);
+			return {
+				ok: true,
+				...mtimeMs !== void 0 ? { mtimeMs } : {}
+			};
+		},
+		"fs.rename": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			return renameWorkspaceEntry({
+				cwd,
+				path: requireString(payload, "path"),
+				name: requireString(payload, "name")
+			});
+		},
+		"fs.mkdir": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			return mkdirWorkspaceEntry({
+				cwd,
+				path: requireString(payload, "path"),
+				name: requireString(payload, "name")
+			});
+		},
+		"fs.createFile": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			return createWorkspaceFile({
+				cwd,
+				path: requireString(payload, "path"),
+				name: requireString(payload, "name")
+			});
+		},
+		"fs.remove": async (payload) => {
+			const { cwd } = await cwdOf(payload);
+			return removeWorkspaceEntry({
+				cwd,
+				path: requireString(payload, "path")
+			});
+		},
+		"git.worktrees": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			const selected = selectedRepoOf(payload);
+			return worktrees(selected !== void 0 ? await repoRoot(cwd, selected).catch(() => cwd) : cwd);
+		},
+		"git.status": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			return status(cwd, selectedRepoOf(payload));
+		},
+		"git.diff": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			const record = payload;
+			const repoRoot = selectedRepoOf(payload);
+			return { diff: await diff(cwd, record.path === void 0 ? void 0 : await resolveStatusPath(cwd, requireString(payload, "path"), repoRoot), record.staged === true, repoRoot) };
+		},
+		"git.diff-head": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			const repoRoot = selectedRepoOf(payload);
+			return { diff: await diffHead(cwd, await ensureWorkspacePath(cwd, await resolveGitPath(cwd, requireString(payload, "path"), repoRoot)), repoRoot) };
+		},
+		"git.stage": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await stage(cwd, payload.path === void 0 ? void 0 : requireString(payload, "path"), selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.unstage": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await unstage(cwd, payload.path === void 0 ? void 0 : requireString(payload, "path"), selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.commit": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await commit(cwd, requireString(payload, "message"), selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.push": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await push(cwd, selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.pull": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await pull(cwd, selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.branch": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			return branches(cwd, selectedRepoOf(payload));
+		},
+		"git.checkout": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await checkout(cwd, requireString(payload, "branch"), selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.log": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			const record = payload;
+			return log(cwd, typeof record.count === "number" && Number.isInteger(record.count) && record.count > 0 ? record.count : void 0, typeof record.skip === "number" && Number.isInteger(record.skip) && record.skip >= 0 ? record.skip : void 0, selectedRepoOf(payload));
+		},
+		"git.commit-diff": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			return { diff: await commitDiff(cwd, requireString(payload, "hash"), selectedRepoOf(payload)) };
+		},
+		"git.discard": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			const repoRoot = selectedRepoOf(payload);
+			await discard(cwd, await resolveStatusPath(cwd, requireString(payload, "path"), repoRoot), repoRoot);
+			return { ok: true };
+		},
+		"git.revert": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await revert(cwd, requireString(payload, "hash"), selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.cherry-pick": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			await cherryPick(cwd, requireString(payload, "hash"), selectedRepoOf(payload));
+			return { ok: true };
+		},
+		"git.show": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			const repoRoot = selectedRepoOf(payload);
+			const path = requireString(payload, "path");
+			return { content: await show(cwd, requireString(payload, "rev"), path, repoRoot) };
+		},
+		"git.blame": async (payload) => {
+			const { cwd } = await gitCwdOf(payload);
+			const repoRoot = selectedRepoOf(payload);
+			const path = await ensureWorkspacePath(cwd, await resolveGitPath(cwd, requireString(payload, "path"), repoRoot));
+			const startLine = requireLineNumber(payload, "startLine");
+			const endLine = requireLineNumber(payload, "endLine");
+			if (endLine < startLine) throw new SidebarError("bad-request", "\"endLine\" must not precede \"startLine\"");
+			return { lines: await blame(cwd, path, startLine, endLine, repoRoot) };
+		},
+		"git.suggest-message": async (payload) => {
+			const { cwd, sessionId } = await gitCwdOf(payload);
+			const repoRoot = selectedRepoOf(payload);
+			const language = normalizeLanguage(payload.language);
+			const route = pinnedCommitRouteOf(getSettings) ?? conversationModelRoute(ctx, sessionId) ?? defaultModelRoute(ctx);
+			if (route === void 0) throw new SidebarError("git-suggest-error", "cannot resolve a model route for this conversation", 503);
+			const status$1 = await status(cwd, repoRoot);
+			const staged = status$1.entries.filter((entry) => entry.xy[0] !== " " && entry.xy[0] !== "?");
+			const untracked = status$1.entries.filter((entry) => entry.xy === "??");
+			const unstaged = status$1.entries.filter((entry) => entry.xy !== "??" && entry.xy[1] !== " " && entry.xy[1] !== "?");
+			if (staged.length === 0 && unstaged.length === 0 && untracked.length === 0) throw new SidebarError("git-suggest-empty", "no pending changes", 400);
+			const focus = staged.length > 0 ? {
+				diff: await diff(cwd, void 0, true, repoRoot),
+				files: staged
+			} : unstaged.length > 0 ? {
+				diff: await diff(cwd, void 0, false, repoRoot),
+				files: unstaged
+			} : {
+				diff: "",
+				files: untracked
+			};
+			const prompt = buildCommitPrompt(language, focus.files.map((entry) => entry.path), truncateDiff(focus.diff));
+			return {
+				message: await streamCommitMessage(ctx, route, prompt.system, prompt.user),
+				provider: route.provider,
+				model: route.model
+			};
+		},
+		"git.commit-model": (payload) => {
+			const record = payload ?? {};
+			const pinned = pinnedCommitRouteOf(getSettings);
+			const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
+			const route = pinned ?? (sessionId === "" ? void 0 : conversationModelRoute(ctx, sessionId)) ?? defaultModelRoute(ctx);
+			return {
+				...route === void 0 ? {} : { route },
+				/** Whether the route above is a PINNED one (the panel may want to
+				*  label it differently from the conversation's own model). */
+				pinned: pinned !== void 0
+			};
+		},
+		"git.models": async (payload) => {
+			const record = payload ?? {};
+			const llm = ctx.get("llm");
+			const providers = llm === void 0 ? [] : await Promise.resolve(llm.listProviders()).then((listed) => Array.isArray(listed) ? listed.slice(0, MODEL_CATALOG_PROVIDER_LIMIT) : []).then((entries) => Promise.all(entries.map(async (entry) => {
+				const parsed = providerEntryOf(entry);
+				if (parsed === void 0) return {
+					provider: "",
+					name: "",
+					models: []
+				};
+				const models = await Promise.resolve(llm.listModels(parsed.provider)).then((list) => Array.isArray(list) ? list.slice(0, MODEL_CATALOG_MODEL_LIMIT) : []).catch(() => []);
+				return {
+					provider: parsed.provider,
+					name: parsed.label,
+					models: models.flatMap((model) => {
+						const item = modelEntryOf(model);
+						return item === void 0 ? [] : [{
+							id: item.id,
+							name: item.name
+						}];
+					})
+				};
+			}))).catch(() => []);
+			const events = typeof record.sessionId === "string" ? ctx.sessions.get(record.sessionId)?.snapshotEvents() ?? [] : [];
+			return {
+				llm: llm !== void 0,
+				providers: providers.filter((provider) => provider.provider !== ""),
+				recent: collectModelRoutes(events),
+				default: defaultModelRoute(ctx)
+			};
+		},
+		"changes.ops": async (payload) => {
+			const sessionId = requireString(payload, "sessionId");
+			const rawAfter = payload?.afterSeq;
+			if (rawAfter !== void 0 && (typeof rawAfter !== "number" || !Number.isSafeInteger(rawAfter) || rawAfter < 0)) throw new SidebarError("bad-request", "afterSeq must be a non-negative integer");
+			const afterSeq = rawAfter ?? -1;
+			let events = ctx.sessions.get(sessionId)?.snapshotEvents();
+			if (events === void 0) {
+				const persistence = ctx.get("sessionPersistence");
+				if (persistence !== void 0) try {
+					events = (await readPersistedSession(persistence, sessionId)).events;
+				} catch {}
+			}
+			if (events === void 0) return {
+				events: [],
+				lastSeq: Math.max(afterSeq, 0)
+			};
+			const CHANGES_EVENTS_CAP = 4e3;
+			const filtered = events.filter((event) => (event.type === "tool/call" || event.type === "tool/result") && event.seq > afterSeq);
+			const window = filtered.length > CHANGES_EVENTS_CAP ? filtered.slice(filtered.length - CHANGES_EVENTS_CAP) : filtered;
+			return {
+				events: window,
+				lastSeq: window.at(-1)?.seq ?? afterSeq
+			};
+		},
+		"subagents.live": (payload) => subagentLiveApi.live(payload),
+		"workflows.list": (payload) => workflowsApi.list(payload),
+		"teams.taskCreate": (payload) => teamsApi.taskCreate(payload),
+		"teams.taskUpdate": (payload) => teamsApi.taskUpdate(payload),
+		"settings.get": () => {
+			const settings = getSettings();
+			return settings === void 0 ? {
+				value: void 0,
+				revision: void 0,
+				externalDisable: false
+			} : {
+				...settings.get(),
+				externalDisable: settings.externalDisable()
+			};
+		},
+		"settings.update": async (payload) => {
+			const settings = getSettings();
+			if (settings === void 0) throw new SidebarError("settings-rejected", "the settings service is not mounted in this deployment", 503);
+			const record = payload;
+			const patch = record?.patch;
+			if (patch === null || typeof patch !== "object" || Array.isArray(patch)) throw new SidebarError("bad-request", "patch must be a plain object");
+			const expectedRevision = typeof record?.expectedRevision === "number" ? record.expectedRevision : void 0;
+			try {
+				return await settings.update(patch, expectedRevision);
+			} catch (error) {
+				if (error instanceof SettingsConflictError) throw new SidebarError("settings-conflict", error.message, 409);
+				throw new SidebarError("settings-rejected", error instanceof Error ? error.message : String(error), 400);
+			}
+		},
+		"open.external": (payload) => {
+			const action = payload?.action;
+			if (action === "reveal") return launchExternal("reveal", requireString(payload, "path"));
+			if (action === "url") return launchExternal("url", requireString(payload, "url"));
+			throw new SidebarError("bad-request", "action must be \"reveal\" or \"url\"");
+		},
+		"archive.build": async (payload) => {
+			const { sessionId, cwd } = await cwdOf(payload);
+			const record = payload;
+			const paths = Array.isArray(record?.paths) ? record.paths.filter((value) => typeof value === "string" && value !== "") : [];
+			if (paths.length === 0) throw new SidebarError("bad-request", "paths must be a non-empty array");
+			const name = archiveNameOf(typeof record?.name === "string" ? record.name : null);
+			const selected = [];
+			for (const raw of paths) selected.push(await ensureWorkspacePath(cwd, raw));
+			const entries = [];
+			const names = disambiguateArchiveNames(selected);
+			for (const [index, absolute] of selected.entries()) await collectZipEntries(absolute, names[index], entries);
+			return archiveTasks.start({
+				sessionId,
+				name,
+				entries
+			});
+		},
+		"archive.status": (payload) => archiveTasks.status(requireString(payload, "id"), requireString(payload, "sessionId")),
+		...buildSidechatApi(ctx, assistantLive)
+	};
+}
+/** The npm package name of this plugin, exactly as its Loader row declares it. */
+const SIDEBAR_PACKAGE_NAME = "dsh-better-sidebar";
+/**
+* Profile entry id of the sibling `dsh-web-ui` right panel this sidebar yields
+* to when it is the active provider. Kept as a literal: it is that plugin's
+* own mount choice, not a contract this plugin can derive.
+*/
+const AIONUI_PANEL_ENTRY = "aionui-panel";
+/** The file-backed settings document DSH 0.1.7 retired. */
+const LEGACY_SETTINGS_FILE = "settings.yaml";
+/**
+* The Loader entry id of this plugin's own row.
+*
+* DSH 0.1.7 addresses settings forms by profile entry id, and that id is a
+* mount choice rather than a package property: this bundle's patch uses
+* `better-sidebar`, while an aggregate bundle mounts the same package under
+* its own id. The row is therefore identified by the package name plus fiber
+* identity, with an enabled same-name row as the fallback for the moment
+* before the fiber is attached.
+* @param ctx - the plugin's own context.
+* @returns the row's configured id, or undefined when no row can be identified.
+*/
+function ownEntryId(ctx) {
+	let fallback;
+	try {
+		for (const entry of ctx.loader.entries()) {
+			const id = entry.options.id;
+			if (entry.options.name !== SIDEBAR_PACKAGE_NAME || typeof id !== "string" || id === "") continue;
+			if (entry.fiber === ctx.fiber) return id;
+			if (entry.disabled !== true && fallback === void 0) fallback = id;
+		}
+	} catch {
+		return;
+	}
+	return fallback;
+}
+/**
+* Read this plugin's preference section out of the retired `settings.yaml`.
+*
+* Both names are tried: the settings service renames the document before it
+* imports any section, so on a host that already booted once only the
+* `.imported` copy is left, while a host migrated for the first time may still
+* be mid-import.
+* @param home - the harness home the retired document lives under.
+* @returns the section's own fields, or undefined when no usable section exists.
+*/
+async function readLegacyPrefs(home) {
+	const declared = new Set(Object.keys(Config.dict ?? {}));
+	for (const name of [`${LEGACY_SETTINGS_FILE}.imported`, LEGACY_SETTINGS_FILE]) {
+		let text;
+		try {
+			text = await readFile(join(home, name), "utf8");
+		} catch {
+			continue;
+		}
+		let document;
+		try {
+			document = parse(text);
+		} catch {
+			continue;
+		}
+		if (document === null || typeof document !== "object" || Array.isArray(document)) continue;
+		const section = document[SIDEBAR_PREFS_NS];
+		if (section === null || typeof section !== "object" || Array.isArray(section)) continue;
+		const filtered = Object.fromEntries(Object.entries(section).filter(([key]) => declared.has(key)));
+		if (Object.keys(filtered).length > 0) return filtered;
+	}
+}
+/**
+* One-time import of the Side card preferences a pre-0.1.7 release persisted.
+*
+* The 0.1.6 line stored them through the file-backed settings provider, in
+* `$DSH_HOME/settings.yaml` under a `dsh-better-sidebar` section. This release
+* deletes that provider; its migration renames the document to
+* `settings.yaml.imported` and re-imports each section into the entry of the
+* SAME id — and because a section key is the package name while the row id is
+* a mount choice, DSH warns and leaves this section behind. Without this
+* import every existing user would silently lose their preferences.
+*
+* The import runs only while the row's user layer is still empty, so it can
+* never overwrite a value set after the upgrade, and re-running it is a no-op.
+* @param ctx - host plugin context (profile home, logger).
+* @param settings - the settings forms service.
+* @param ns - this plugin row's entry id.
+* @returns which outcome the import reached.
+*/
+async function importLegacyPrefs(ctx, settings, ns) {
+	const home = ctx.profileContext?.home;
+	if (home === void 0) return "no-profile-home";
+	const row = settings.describe().find((candidate) => candidate.ns === ns);
+	if (row === void 0) return "no-form";
+	const user = row.user;
+	if (user !== null && typeof user === "object" && Object.keys(user).length > 0) return "already-configured";
+	const section = await readLegacyPrefs(home);
+	if (section === void 0) return "no-legacy-section";
+	await settings.update(ns, section);
+	return "imported";
+}
+/**
+* Plugin body: mount the fenced routes and the sidebar_open push socket.
+* @param ctx - host plugin context (webServer, sessions, webRuntime).
+* @param config - deployment-provided limits; the Loader validates against
+* {@link Config} and fills defaults, direct callers get them from
+* {@link resolveSidebarConfig}.
+*/
+function apply(ctx, config) {
+	const resolved = resolveSidebarConfig(config);
+	const fence = (req) => isTrustedApiRequest(req, ctx.webStartup.trustedHosts);
+	const agentOpenRegistry = new AgentOpenRegistry();
+	let settingsFace;
+	let openToolsDisposers = null;
+	ctx.inject(["settings"], (sctx) => {
+		const ns = ownEntryId(ctx);
+		if (ns === void 0) {
+			ctx.logger?.warn?.("dsh-better-sidebar: no loader row for this package; Side card preferences stay at defaults");
+			return;
+		}
+		ctx.effect(() => sctx.settings.configure({ auto: false }, ctx.fiber), "dsh-better-sidebar: settings page policy");
+		const viewOf = () => {
+			const descriptor = sctx.settings.describe({ redactSecrets: true }).find((candidate) => candidate.ns === ns);
+			return descriptor === void 0 ? {
+				value: void 0,
+				revision: void 0
+			} : {
+				value: descriptor.value,
+				revision: descriptor.revision
+			};
+		};
+		const externalDisable = () => {
+			return (sctx.settings.describe({ redactSecrets: true }).find((candidate) => candidate.ns === AIONUI_PANEL_ENTRY)?.value)?.rightPanel === "aionui-panel";
+		};
+		const prefsOf = () => {
+			const value = viewOf().value;
+			return value !== null && typeof value === "object" ? value : SIDEBAR_PREFS_DEFAULTS;
+		};
+		const syncOpenToolsGate = () => {
+			if (prefsOf().agentOpenTools === true) {
+				if (openToolsDisposers === null) openToolsDisposers = registerOpenTool(ctx, agentOpenRegistry, (sessionId) => sessionCwdOf(ctx, sessionId), prefsOf);
+			} else if (openToolsDisposers !== null) {
+				openToolsDisposers();
+				openToolsDisposers = null;
+				agentOpenRegistry.drainAll();
+			}
+		};
+		settingsFace = {
+			get: () => {
+				syncOpenToolsGate();
+				return viewOf();
+			},
+			externalDisable,
+			update: async (patch, expectedRevision) => {
+				await sctx.settings.update(ns, patch, expectedRevision);
+				return viewOf();
+			}
+		};
+		syncOpenToolsGate();
+		Promise.resolve(ctx.loader?.await?.()).then(() => importLegacyPrefs(ctx, sctx.settings, ns)).then((outcome) => {
+			if (outcome === "no-profile-home" || outcome === "no-form") {
+				ctx.logger.warn("dsh-better-sidebar: legacy preference import could not run (%s)", outcome);
+				return;
+			}
+			ctx.logger.info("dsh-better-sidebar: legacy preference import: %s", outcome);
+		}).catch((error) => {
+			ctx.logger.warn("dsh-better-sidebar: legacy preference import was rejected");
+			ctx.logger.warn(error);
+		});
+	});
+	const assistantLive = createAssistantLiveBuffer(ctx);
+	ctx.effect(() => () => {
+		assistantLive.dispose();
+	}, "dsh-better-sidebar: live assistant stream buffer");
+	const archiveTasks = createArchiveTasks();
+	const api = buildApi(ctx, resolved, () => settingsFace, assistantLive, archiveTasks);
+	ctx.effect(() => ctx.webServer.register({
+		kind: "prefix",
+		path: "/sidebar/api",
+		handler: async (req, res) => {
+			if (!fence(req)) {
+				writeJson(res, 403, {
+					ok: false,
+					error: {
+						code: "forbidden",
+						message: "forbidden"
+					}
+				});
+				return;
+			}
+			if (req.method !== "POST") {
+				writeJson(res, 405, {
+					ok: false,
+					error: {
+						code: "method-error",
+						message: "method not allowed"
+					}
+				});
+				return;
+			}
+			const pathname = new URL(req.url ?? "/", "http://dsh.internal").pathname;
+			const method = pathname.startsWith("/sidebar/api/") ? pathname.slice(13) : void 0;
+			if (method === void 0 || method.includes("/")) {
+				writeError(res, new SidebarError("not-found", "unknown sidebar API method", 404));
+				return;
+			}
+			try {
+				const payload = await readJsonBody(req);
+				const handler = Object.hasOwn(api, method) ? api[method] : void 0;
+				if (typeof handler !== "function") throw new SidebarError("not-found", `unknown sidebar API method "${method}"`, 404);
+				writeOk(res, await handler(payload));
+			} catch (error) {
+				writeError(res, error);
+			}
+		}
+	}), "dsh-better-sidebar: /sidebar/api routes");
+	ctx.effect(() => ctx.webServer.register({
+		kind: "exact",
+		path: "/sidebar/upload",
+		handler: async (req, res) => {
+			if (!fence(req)) {
+				writeJson(res, 403, {
+					ok: false,
+					error: {
+						code: "forbidden",
+						message: "forbidden"
+					}
+				});
+				return;
+			}
+			if (req.method !== "POST") {
+				writeJson(res, 405, {
+					ok: false,
+					error: {
+						code: "method-error",
+						message: "method not allowed"
+					}
+				});
+				return;
+			}
+			try {
+				const url = new URL(req.url ?? "/", "http://dsh.internal");
+				const sessionId = url.searchParams.get("sessionId");
+				const dir = url.searchParams.get("dir");
+				const relativePath = url.searchParams.get("relativePath");
+				if (sessionId === null || dir === null || relativePath === null || relativePath.trim() === "") throw new SidebarError("bad-request", "sessionId, dir, and relativePath are required");
+				const { path, size } = await writeWorkspaceUpload({
+					cwd: await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId, url.searchParams.get("cwd") ?? void 0)),
+					dir,
+					relativePath,
+					chunks: req,
+					limit: resolved.uploadLimit
+				});
+				writeOk(res, {
+					path,
+					size
+				});
+			} catch (error) {
+				writeError(res, error);
+			}
+		}
+	}), "dsh-better-sidebar: /sidebar/upload route");
+	ctx.effect(() => registerBundleRoute(ctx, fence), "dsh-better-sidebar: /sidebar/bundle chunk route");
+	ctx.effect(() => ctx.webServer.register({
+		kind: "exact",
+		path: "/sidebar/archive",
+		handler: async (req, res) => {
+			if (!fence(req)) {
+				writeJson(res, 403, {
+					ok: false,
+					error: {
+						code: "forbidden",
+						message: "forbidden"
+					}
+				});
+				return;
+			}
+			if (req.method !== "GET") {
+				writeJson(res, 405, {
+					ok: false,
+					error: {
+						code: "method-error",
+						message: "method not allowed"
+					}
+				});
+				return;
+			}
+			try {
+				const url = new URL(req.url ?? "/", "http://dsh.internal");
+				respondArchiveDownload(archiveTasks, {
+					sessionId: url.searchParams.get("sessionId"),
+					id: url.searchParams.get("id")
+				}, res);
+			} catch (error) {
+				writeError(res, error);
+			}
+		}
+	}), "dsh-better-sidebar: /sidebar/archive route");
+	ctx.effect(() => ctx.webServer.register({
+		kind: "prefix",
+		path: "/sidebar/file",
+		handler: async (req, res) => {
+			if (!fence(req)) {
+				res.writeHead(403);
+				res.end("forbidden");
+				return;
+			}
+			if (req.method !== "GET") {
+				res.writeHead(405);
+				res.end();
+				return;
+			}
+			try {
+				const url = new URL(req.url ?? "/", "http://dsh.internal");
+				const sessionId = url.searchParams.get("sessionId");
+				const raw = url.searchParams.get("path");
+				if (sessionId === null || raw === null) throw new SidebarError("bad-request", "sessionId and path are required");
+				const path = await ensureWorkspacePath(await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId, url.searchParams.get("cwd") ?? void 0)), raw);
+				const info = await stat(path);
+				if (!info.isFile() || info.size > resolved.mediaLimit) throw new SidebarError("fs-error", "not a file or too large", 400);
+				const type = mediaTypeForPath(path);
+				const body = await readFile(path);
+				const headers = {
+					"content-type": type,
+					"cache-control": "no-cache"
+				};
+				if (type === "image/svg+xml") {
+					headers["content-security-policy"] = "sandbox; object-src 'none'";
+					headers["x-content-type-options"] = "nosniff";
+					headers["referrer-policy"] = "no-referrer";
+				}
+				if (url.searchParams.get("download") === "1") headers["content-disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(basename(path))}`;
+				res.writeHead(200, headers);
+				res.end(body);
+			} catch (error) {
+				writeError(res, error);
+			}
+		}
+	}), "dsh-better-sidebar: /sidebar/file media route");
+	ctx.effect(() => ctx.webServer.register({
+		kind: "prefix",
+		path: "/sidebar/html",
+		handler: async (req, res) => {
+			if (!fence(req)) {
+				res.writeHead(403);
+				res.end("forbidden");
+				return;
+			}
+			if (req.method !== "GET") {
+				res.writeHead(405);
+				res.end();
+				return;
+			}
+			try {
+				const decoded = decodeHtmlUrl(new URL(req.url ?? "/", "http://dsh.internal").pathname);
+				if (!decoded.ok) {
+					writeError(res, new SidebarError("bad-request", decoded.message, decoded.status));
+					return;
+				}
+				const { sessionId, path } = decoded.ref;
+				const absolute = await ensureWorkspacePath(await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId)), path);
+				const info = await stat(absolute);
+				if (!info.isFile() || info.size > resolved.mediaLimit) throw new SidebarError("fs-error", "not a file or too large", 400);
+				const type = mediaTypeForPath(absolute);
+				const body = await readFile(absolute);
+				res.writeHead(200, {
+					"content-type": type === "text/html" ? "text/html; charset=utf-8" : type,
+					"cache-control": "no-cache",
+					"x-content-type-options": "nosniff",
+					"referrer-policy": "no-referrer",
+					"content-security-policy": "sandbox allow-scripts allow-popups allow-downloads allow-modals; object-src 'none'"
+				});
+				res.end(body);
+			} catch (error) {
+				writeError(res, error);
+			}
+		}
+	}), "dsh-better-sidebar: /sidebar/html preview route");
+	const agentOpenWss = new WebSocketServer({ noServer: true });
+	ctx.effect(() => ctx.webServer.registerUpgrade({
+		path: "/sidebar/ws/agent-opens",
+		handler: (req, socket, head) => {
+			if (!fence(req)) {
+				socket.destroy();
+				return;
+			}
+			agentOpenWss.handleUpgrade(req, socket, head, (ws) => {
+				attachAgentOpen(agentOpenRegistry, ws, req);
+			});
+		}
+	}), "dsh-better-sidebar: agent-opens push WebSocket");
+	const fsWatchWss = new WebSocketServer({ noServer: true });
+	ctx.effect(() => ctx.webServer.registerUpgrade({
+		path: "/sidebar/ws/fs-watch",
+		handler: (req, socket, head) => {
+			if (!fence(req)) {
+				socket.destroy();
+				return;
+			}
+			fsWatchWss.handleUpgrade(req, socket, head, (ws) => {
+				attachFsWatch(ctx, ws, req);
+			});
+		}
+	}), "dsh-better-sidebar: file-tree watch WebSocket");
+	ctx.effect(() => () => {
+		openToolsDisposers?.();
+		agentOpenRegistry.dispose();
+		agentOpenWss.close();
+		fsWatchWss.close();
+	}, "dsh-better-sidebar: teardown");
+}
+/**
+* Serve one session's directory-watch socket until it closes.
+*
+* Frames are `{ op: 'watch' | 'unwatch', path }`, where `path` is relative to
+* the session's workspace exactly like `fs.tree`'s. A path that fails
+* resolution, or a rejection past the watcher cap, is answered with
+* `{ dir, ok: false }` so the client can stop asking rather than retry.
+* @param ctx - host plugin context (session cwd).
+* @param ws - the accepted socket.
+* @param req - the upgrade request carrying `?sessionId=`.
+*/
+async function attachFsWatch(ctx, ws, req) {
+	try {
+		const sessionId = new URL(req.url ?? "/", "http://dsh.internal").searchParams.get("sessionId");
+		if (sessionId === null) {
+			ws.close(1008, "sessionId is required");
+			return;
+		}
+		const watchers = createDirectoryWatchers((event) => {
+			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ dir: event.dir }));
+		}, (dir, error) => {
+			ctx.logger.warn("dsh-better-sidebar: cannot watch %s", dir);
+			ctx.logger.warn(error);
+			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({
+				dir,
+				ok: false
+			}));
+		});
+		ws.on("close", () => {
+			watchers.close();
+		});
+		ws.on("error", () => {
+			watchers.close();
+		});
+		ws.on("message", (data) => {
+			handleFsWatchFrame(ctx, ws, watchers, sessionId, data);
+		});
+	} catch (error) {
+		ws.close(1011, error instanceof Error ? error.message : String(error));
+	}
+}
+/**
+* Apply one watch frame.
+* @param ctx - host plugin context.
+* @param ws - the owning socket.
+* @param watchers - the socket's watcher set.
+* @param sessionId - the session the socket was opened for.
+* @param data - the raw frame text.
+*/
+async function handleFsWatchFrame(ctx, ws, watchers, sessionId, data) {
+	let frame;
+	try {
+		frame = JSON.parse(typeof data === "string" ? data : String(data));
+	} catch {
+		return;
+	}
+	const path = typeof frame.path === "string" ? frame.path : void 0;
+	if (path === void 0 || path === "") return;
+	try {
+		const dir = await ensureWorkspacePath(await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId)), path);
+		if (frame.op === "unwatch") {
+			watchers.remove(dir);
+			return;
+		}
+		if (frame.op !== "watch") return;
+		const ok = watchers.add(dir);
+		if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({
+			dir,
+			ok
+		}));
+	} catch (error) {
+		if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({
+			dir: path,
+			ok: false,
+			reason: error instanceof Error ? error.message : String(error)
+		}));
+	}
+}
+/** Push queued `sidebar_open` requests for one session to a connected view. */
+async function attachAgentOpen(registry, ws, req) {
+	try {
+		const sessionId = new URL(req.url ?? "/", "http://dsh.internal").searchParams.get("sessionId");
+		if (sessionId === null) {
+			ws.close(1008, "sessionId is required");
+			return;
+		}
+		const send = (request) => {
+			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(request));
+		};
+		const unsubscribe = registry.attach(sessionId, send);
+		ws.on("close", () => {
+			unsubscribe();
+		});
+		ws.on("error", () => {
+			unsubscribe();
+		});
+	} catch (error) {
+		ws.close(1011, error instanceof Error ? error.message : String(error));
+	}
+}
+//#endregion
+export { Config, FS_TREES_MAX_PATHS, apply, archiveNameOf, collectZipEntries, contentDispositionOf, disambiguateArchiveNames, inject, mediaTypeForPath, name };

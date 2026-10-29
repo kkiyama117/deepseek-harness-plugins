@@ -1,0 +1,15 @@
+{
+  "name": "@local/dsh-cordis-kura-preset",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "description": "Cordis + Kura: preserved local behavior with current master subagent controls",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-agent-preset": "0.2.1-rc.3"
+  }
+}

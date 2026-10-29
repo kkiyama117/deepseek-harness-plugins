@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Zotero MCP",
+    "description": "ローカルのZoteroライブラリを検索・閲覧します。MCP設定は独立させ、検索用の埋め込みを自動更新しません。"
+  }
+}

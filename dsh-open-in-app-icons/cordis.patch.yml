@@ -1,0 +1,6 @@
+- insert:
+    - id: local-open-in-app-icons
+      name: '@local/dsh-open-in-app-icons'
+      config:
+        applicationIds: [filemanager, cursor, vscode]
+        cacheMaxAgeSeconds: 3600

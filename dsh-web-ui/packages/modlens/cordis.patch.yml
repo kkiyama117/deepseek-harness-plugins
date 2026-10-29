@@ -1,0 +1,6 @@
+# LOCAL FORK of @liustack/modlens — bundle patch, same row id, local package
+# name. Mounts the modlens vision plugin (dsh/index.js via the package root
+# export; bin stays the CLI, nothing imports the root otherwise).
+- insert:
+    - id: modlens
+      name: '@dsh-local/modlens'

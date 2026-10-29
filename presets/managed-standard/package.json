@@ -1,0 +1,15 @@
+{
+  "name": "@local/dsh-managed-standard-preset",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "description": "标准模式（managed-standard 互換）: preserved local behavior with current master subagent controls",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-agent-preset": "0.2.1-rc.3"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Chrome DevTools接続",
+    "description": "Chrome側の許可後、起動中のChromeのページ・Console・通信を調べます。ローカルDSHに導入済みのChrome DevTools MCPを使用します。"
+  }
+}

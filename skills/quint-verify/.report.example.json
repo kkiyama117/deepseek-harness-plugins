@@ -1,0 +1,119 @@
+{
+  "configuration": {
+    "module": "implTaskGate",
+    "parameters": {}
+  },
+  "invariants": {
+    "total": 8,
+    "satisfied": 8,
+    "violated": 0,
+    "details": [
+      {
+        "name": "fixRoundCap",
+        "result": "satisfied"
+      },
+      {
+        "name": "planRequiresClarify",
+        "result": "satisfied"
+      },
+      {
+        "name": "reviewOnlyAfterVerify",
+        "result": "satisfied"
+      },
+      {
+        "name": "reportRequiresReview",
+        "result": "satisfied"
+      },
+      {
+        "name": "noImplementBeforeApproval",
+        "result": "satisfied"
+      },
+      {
+        "name": "approveRequiresPlan",
+        "result": "satisfied"
+      },
+      {
+        "name": "reportHonesty",
+        "result": "satisfied"
+      },
+      {
+        "name": "workHappensInWorkers",
+        "result": "satisfied"
+      }
+    ]
+  },
+  "witnesses": {
+    "total": 11,
+    "violated": 11,
+    "satisfied": 0,
+    "details": [
+      {
+        "name": "reachedClarify",
+        "result": "violated",
+        "traces": 1000,
+        "explored": 1000
+      },
+      {
+        "name": "clarifyUsed",
+        "result": "violated",
+        "traces": 501,
+        "explored": 1000
+      },
+      {
+        "name": "reachedImplement",
+        "result": "violated",
+        "traces": 1000,
+        "explored": 1000
+      },
+      {
+        "name": "reachedVerify",
+        "result": "violated",
+        "traces": 1000,
+        "explored": 1000
+      },
+      {
+        "name": "reachedReview",
+        "result": "violated",
+        "traces": 964,
+        "explored": 1000
+      },
+      {
+        "name": "reachedReport",
+        "result": "violated",
+        "traces": 752,
+        "explored": 1000
+      },
+      {
+        "name": "fixLoopUsed",
+        "result": "violated",
+        "traces": 474,
+        "explored": 1000
+      },
+      {
+        "name": "capReachedOpenItems",
+        "result": "violated",
+        "traces": 18,
+        "explored": 1000
+      },
+      {
+        "name": "fallbackOccurred",
+        "result": "violated",
+        "traces": 645,
+        "explored": 1000
+      },
+      {
+        "name": "delegationUsed",
+        "result": "violated",
+        "traces": 1000,
+        "explored": 1000
+      },
+      {
+        "name": "parallelChunks",
+        "result": "violated",
+        "traces": 797,
+        "explored": 1000
+      }
+    ]
+  },
+  "verdict": "pass"
+}

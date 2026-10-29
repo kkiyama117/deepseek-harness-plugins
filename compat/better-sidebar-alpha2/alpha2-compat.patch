@@ -1,0 +1,20 @@
+--- npm-0.25.0/lib/index.js
++++ lib/index.js
+@@ -6041,7 +6041,7 @@
+ const inject = [
+ 	"webServer",
+ 	"sessions",
+-	"webRuntime",
++	"webStartup",
+ 	"tools"
+ ];
+ /** Content types for the media route, by extension. */
+@@ -6794,7 +6794,7 @@
+ */
+ function apply(ctx, config) {
+ 	const resolved = resolveSidebarConfig(config);
+-	const fence = (req) => isTrustedApiRequest(req, ctx.webRuntime.trustedHosts);
++	const fence = (req) => isTrustedApiRequest(req, ctx.webStartup.trustedHosts);
+ 	const agentOpenRegistry = new AgentOpenRegistry();
+ 	let settingsFace;
+ 	let openToolsDisposers = null;

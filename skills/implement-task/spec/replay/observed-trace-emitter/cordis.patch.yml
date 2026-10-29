@@ -1,0 +1,8 @@
+# @kkiyama117/dsh-observed-trace-emitter bundle layer.
+# Installed with `dsh plugin --profile <name> add <this directory>` (then restart
+# the harness). The layer inserts the observed-trace-emitter row, which listens
+# to the Cordis `tools/result` event and appends each observed tool call to the
+# implement-task replay gate's observed log. Additive; touches no other row.
+- insert:
+    - id: observed-trace-emitter
+      name: '@kkiyama117/dsh-observed-trace-emitter'

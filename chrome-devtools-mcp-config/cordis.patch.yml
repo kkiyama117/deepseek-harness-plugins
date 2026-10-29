@@ -1,0 +1,16 @@
+- insert:
+    - id: mcp-chrome-devtools
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: chrome-devtools
+        transport: stdio
+        command: node
+        args:
+          - /data/softwares/deepseek-harness/packages/experimental/browser-use-chrome-devtools-mcp/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js
+          - --autoConnect
+          - --no-usage-statistics
+          - --no-performance-crux
+        env:
+          CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: '1'
+        toolCallTimeoutMs: 90000
+        failOnStartupError: true

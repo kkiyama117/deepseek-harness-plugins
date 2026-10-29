@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "flow": "single",
+  "task": {
+    "originalRequest": "Classify the synthetic request 'fix a typo in one known README' without executing it.",
+    "goal": "Return a concise routing-only recommendation for the synthetic request.",
+    "context": "The exact replacement and target file are known. No files need to be inspected for this rehearsal.",
+    "acceptance": ["Recommend direct single-agent execution and explain why delegation adds no demonstrated benefit."],
+    "constraints": ["Do not call tools, modify files, delegate or execute the synthetic request."],
+    "writeScope": []
+  },
+  "units": [],
+  "batches": [],
+  "options": { "concurrency": 1, "repairRounds": 0 }
+}

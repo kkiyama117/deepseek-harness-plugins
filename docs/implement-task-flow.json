@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "implement-task Lifecycle",
+    "quality_profile": "showcase",
+    "viewBox": [1000, 640],
+    "views": [
+      {
+        "id": "main-lifecycle",
+        "label": "Main lifecycle",
+        "focus": ["scope", "plan", "implement", "review", "report"],
+        "note": "Follow the ordered phases from scope to the final report."
+      },
+      {
+        "id": "approval-gate",
+        "label": "User approval gate",
+        "focus": ["plan", "gate", "implement"],
+        "note": "Approve, adjust back to plan, or skip when pre-approved."
+      },
+      {
+        "id": "verify-and-fix",
+        "label": "Verify and fix loops",
+        "focus": ["implement", "verify", "review", "fix", "report"],
+        "note": "Verify fail does not consume a round; review FAIL does, up to 3."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "Task phases" },
+    { "id": "waiting", "label": "User gate" },
+    { "id": "checks", "label": "Verification" },
+    { "id": "recovery", "label": "Fix loop" }
+  ],
+  "states": [
+    { "id": "scope", "type": "start", "label": "SCOPE", "sublabel": "coordinator", "lane": "main", "col": 0, "step": "01" },
+    { "id": "plan", "type": "active", "label": "PLAN", "sublabel": "FRONTIER planner", "lane": "main", "col": 1, "step": "02", "tag": "frontier" },
+    { "id": "implement", "type": "active", "label": "IMPLEMENT", "sublabel": "worker chunks", "lane": "main", "col": 2, "step": "03", "tag": "worker" },
+    { "id": "review", "type": "decision", "label": "REVIEW", "sublabel": "FRONTIER oracle", "lane": "main", "col": 3, "step": "04", "tag": "frontier" },
+    { "id": "report", "type": "success", "label": "REPORT", "sublabel": "summary + evidence", "lane": "main", "col": 4, "step": "05" },
+    { "id": "gate", "type": "waiting", "label": "GATE", "sublabel": "approve · adjust · skip", "lane": "waiting", "col": 0, "tag": "user" },
+    { "id": "verify", "type": "active", "label": "VERIFY", "sublabel": "deterministic checks", "lane": "checks", "col": 1, "tag": "worker" },
+    { "id": "fix", "type": "failure", "label": "FIX", "sublabel": "cap 3", "lane": "recovery", "col": 2, "tag": "retryable" }
+  ],
+  "transitions": [
+    { "id": "scope-plan", "from": "scope", "to": "plan", "route": "straight" },
+    { "id": "plan-gate", "from": "plan", "to": "gate" },
+    { "id": "plan-implement", "from": "plan", "to": "implement", "label": "pre-approved", "variant": "dashed", "route": "straight", "labelAt": [270, 108] },
+    { "id": "gate-implement", "from": "gate", "to": "implement", "label": "approved", "fromSide": "top", "toSide": "bottom", "route": "straight", "labelAt": [370, 268] },
+    { "id": "gate-plan", "from": "gate", "to": "plan", "label": "adjust", "fromSide": "left", "toSide": "bottom", "labelAt": [230, 250] },
+    { "id": "implement-verify", "from": "implement", "to": "verify", "fromSide": "right", "toSide": "top" },
+    { "id": "verify-review", "from": "verify", "to": "review", "fromSide": "top", "toSide": "bottom", "route": "straight" },
+    { "id": "verify-implement", "from": "verify", "to": "implement", "label": "fail → fix", "variant": "dashed", "fromSide": "left", "toSide": "bottom", "labelAt": [500, 248] },
+    { "id": "review-report", "from": "review", "to": "report", "label": "PASS", "route": "straight" },
+    { "id": "review-fix", "from": "review", "to": "fix", "label": "FAIL" },
+    { "id": "fix-implement", "from": "fix", "to": "implement", "label": "fix < 3", "variant": "emphasis", "fromSide": "right", "toSide": "top", "via": [[820, 307], [820, 70], [402, 70]], "labelAt": [820, 188] },
+    { "id": "fix-report", "from": "fix", "to": "report", "label": "open items", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "route": "straight", "labelDx": 48 }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Roles",
+      "items": [
+        "Coordinator: delegates, tracks, lands — never implements or verifies",
+        "FRONTIER (kimi-k3): judgment only — plan + review",
+        "Workers: implement chunks + deterministic verification"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Rules",
+      "items": [
+        "Review only after verify; no implementation before approval",
+        "Fix loop capped at 3 rounds, then open items in REPORT",
+        "Verify failure loops back without consuming a fix round"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Fallback",
+      "items": [
+        "kimi-k3 → cursor/grok-4.6 → deepseek",
+        "Limitation must be stated in REPORT — never silent"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+# LOCAL FORK of @linxin666/dsh-client-ui-web-ui-settings — bundle patch, same
+# row id, local package name. The browser half registers the group card in
+# the plugin-configuration section and declares the child slot the dsh-web-ui
+# family plugins contribute their cards to.
+- insert:
+    - id: ui-web-ui-settings
+      name: '@dsh-local/dsh-web-ui-settings'

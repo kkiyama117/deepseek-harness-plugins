@@ -1,0 +1,11 @@
+# @kkiyama117/dsh-web-search bundle layer.
+# Installed with `dsh plugin --profile <name> add <this directory>`; the layer
+# applies after the base bundle's, so the `web` row override wins. A patch
+# replaces the target row's whole `config`, so every key the row needs is
+# restated.
+- id: web
+  config:
+    searchProvider: pi-web-access
+- insert:
+    - id: web-search-pi-web-access
+      name: '@kkiyama117/dsh-web-search'

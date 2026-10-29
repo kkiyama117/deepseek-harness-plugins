@@ -1,0 +1,11 @@
+{
+  "name": "@local/dsh-slack-worker-config",
+  "version": "1.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Tracked invocation configuration for the existing Slack Intake worker using the master-compatible shared adapter.",
+  "exports": { "./daemon.patch.yml": "./daemon.patch.yml", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg" },
+  "files": ["cordis.patch.yml", "daemon.patch.yml", "locale", "icon.svg", "README.md"],
+  "peerDependencies": { "@kkiyama117/dsh-slack-intake": "0.2.1-local.3" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

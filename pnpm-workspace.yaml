@@ -1,0 +1,57 @@
+packages:
+  - 'dsh-web-search'
+  - 'dsh-llm-cursor'
+  # Local fork of the dsh-web-ui family (aionui-panel, ssh, git-graph,
+  # web-ui-settings) plus the modlens vision plugin, until the loopback-fence
+  # fixes land upstream; the fork aggregator (dsh-web-ui/packages/dsh-web-ui-all)
+  # is NOT a member — the web profile links it directly and the remaining
+  # family packages stay registry deps.
+  - 'dsh-web-ui/packages/dsh-aionui-panel'
+  - 'dsh-web-ui/packages/dsh-ssh'
+  - 'dsh-web-ui/packages/dsh-git-graph'
+  - 'dsh-web-ui/packages/dsh-web-ui-settings'
+  - 'dsh-web-ui/packages/modlens'
+
+allowBuilds:
+  cpu-features: true
+  esbuild: true
+  ssh2: true
+
+# The workspace plugins peer on @deepseek-ai/* packages (declared as "*").
+# The root dependencies declare the versions the harness itself runs
+# (dsh@0.1.0-rc.8 line: cordis ^4.0.1, schemastery ^3.18.1, dsh-* ^0.1.0-rc.8);
+# the manifests stay caret-ranged and pnpm-lock.yaml is what resolves them to
+# exactly those releases. autoInstallPeers stays off: the peer ranges are "*",
+# so auto-install would resolve the stale latest dist-tag (0.0.1-rc.1) for
+# the dsh-* packages instead of the rc.8 line the lockfile resolves.
+autoInstallPeers: false
+
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/dsh-api-remotes@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-atomic-write@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-connection@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-locale@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-runtime@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-ui-conversation@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-ui-primitives@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-ui-settings@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-ui-sidebar@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-client-ui-slots@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-credentials-local@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-credentials@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-home-paths@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-host-webserver@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-invariants@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-launch-environment@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-llm@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-scope@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-settings-file@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-settings@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-subprocess@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-system-prompt@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-timeout@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-tools@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-typert-protocol@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-web@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-workspace@0.1.0-rc.8'
+  - '@deepseek-ai/dsh-session@0.1.0-rc.8'

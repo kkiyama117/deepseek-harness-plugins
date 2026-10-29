@@ -1,0 +1,7 @@
+# dsh-aionui-panel bundle patch. The package is retired: apply() registers
+# only the 'aionui-panel' settings namespace and the client Side Card card.
+# It does not mount /aionui-panel/* routes or Explorer/Preview columns.
+# LOCAL FORK of @linxin666/dsh-client-ui-aionui-panel — same row id, local package name.
+- insert:
+    - id: ui-dsh-aionui-panel
+      name: '@dsh-local/dsh-aionui-panel'

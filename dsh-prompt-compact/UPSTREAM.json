@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "commit": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
+  "version": "0.2.1-alpha.1",
+  "changes": "Scoped Workflow and Ralph prompt alternatives. Upstream owns Cordis and Subagent guidance; the legacy dynamic-plugin Skill is not registered."
+}

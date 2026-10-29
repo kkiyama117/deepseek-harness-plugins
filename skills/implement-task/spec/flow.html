@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>implement-task — フロー（USER / COORDINATOR 分離, 改訂版）</title>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "dark" });
+  </script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color-scheme: dark; color: #e6edf3; background: #0d1117; }
+    h1 { font-size: 1.3rem; }
+    h2 { font-size: 1.05rem; margin-top: 2rem; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin: 1rem 0; }
+    th, td { border: 1px solid #30363d; padding: 0.4rem 0.6rem; text-align: left; }
+    code { font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <h1>implement-task フロー — Quint spec 対応表</h1>
+  <p>9 ステップは <code>spec/implementTask.qnt</code> に位相状態機械として 1:1 でモデル化（<code>spec/README.md</code> が対応表と実行手順）。検証は <code>quint run</code> / <code>quint test</code>。USER はゲート決定と最終レポートの受領のみを担い、COORDINATOR はオーケストレーションのみ（自分では実装も検証もしない）。</p>
+
+  <h2>メインフロー（9 ステップ）— USER と COORDINATOR の分離</h2>
+  <pre class="mermaid">
+flowchart TD
+  subgraph user["USER — human, client person"]
+    T["Task in"]
+    G{"4 GATE<br/>approve / adjust<br/>skipGate if pre-approved"}
+    R(["Report out"])
+  end
+
+  subgraph coord["COORDINATOR — orchestrates only, never implements or verifies"]
+    S1["1 SCOPE<br/>read task and code, trace the real flow<br/>state completion condition"]
+    S2["2 CLARIFY<br/>pi-clarify vagueness check<br/>one ask_user_question round if vague"]
+    S3["3 PLAN — FRONTIER planner<br/>goal, file-level steps, verification list, risks"]
+    S5["5 IMPLEMENT — WORKER subagents<br/>parallel chunks, tracked with todo_write"]
+    S6["6 VERIFY — VERIFY subagent<br/>deterministic checks only, no model opinion"]
+    S7["7 REVIEW — FRONTIER oracle<br/>verdict on diff and evidence"]
+    S9["9 REPORT — files, evidence, verdict, open items<br/>honest fallback reporting"]
+    S1 --> S2
+    S2 -->|"clear"| S3
+    S2 -->|"vague: questions → USER answers"| S2
+    S3 --> G
+    G -->|"adjust"| S3
+    S5 --> S6
+    S6 -->|"not ok"| S5
+    S6 -->|"ok"| S7
+    S7 -->|"FAIL, round left"| S5
+    S7 -->|"PASS"| S9
+    S7 -->|"FAIL, cap reached"| S9
+  end
+
+  T -->|"hands over the task"| S1
+  G -->|"approve / go-ahead"| S5
+  S9 -->|"delivers"| R
+  </pre>
+
+  <h2>ロールとモデルルート（フォールバック）</h2>
+  <pre class="mermaid">
+flowchart LR
+  U["USER<br/>task in, gate decision, report out<br/>never talks to subagents directly"]
+  C["COORDINATOR<br/>scope, delegate, land, report<br/>the only interface into the subagents"]
+  U -->|"task, approve, adjust"| C
+  C -->|"plan, report"| U
+
+  subgraph frontier["FRONTIER — judgment only"]
+    F1["kimi-coding / kimi-k3"] -->|"fallback"| F2["cursor / grok-4.6"] -->|"fallback"| F3["plain subagent"]
+  end
+
+  subgraph worker["WORKER — impl + fixes"]
+    W1["ollama-cloud / deepseek-v4-flash:0731"] -->|"fallback"| W2["cursor / composer-2.5"]
+  end
+
+  subgraph verify["VERIFY — deterministic"]
+    V1["ollama-cloud / deepseek-v4-flash:0731"] -->|"fallback"| V2["plain subagent"]
+  end
+
+  C -->|"PLAN / REVIEW via subagent_frontier"| F1
+  C -->|"IMPLEMENT / ITERATE via subagent_worker"| W1
+  C -->|"VERIFY via subagent_verify"| V1
+  </pre>
+
+  <table>
+    <tr><th>Phase</th><th>SKILL.md</th><th>Quint action</th><th>Role / tool</th><th>Model route (fallback)</th></tr>
+    <tr><td>Task in</td><td>—</td><td>— (external)</td><td>USER</td><td>—</td></tr>
+    <tr><td>SCOPE</td><td>Step 1</td><td><code>scopeDone</code></td><td>COORDINATOR</td><td>session default</td></tr>
+    <tr><td>CLARIFY</td><td>Step 2</td><td><code>clarify(clear)</code> / <code>clarifyAnswered</code></td><td>COORDINATOR (asks), USER (answers)</td><td>session default</td></tr>
+    <tr><td>PLAN</td><td>Step 3</td><td><code>plan(frontierOk)</code></td><td>FRONTIER (<code>subagent_frontier</code>)</td><td><code>kimi-coding/kimi-k3</code> → <code>cursor/grok-4.6</code> → plain <code>subagent</code></td></tr>
+    <tr><td>GATE</td><td>Step 4</td><td><code>approve</code> / <code>adjust</code> / <code>skipGate</code></td><td>USER (decision), COORDINATOR (presents)</td><td>—</td></tr>
+    <tr><td>IMPLEMENT</td><td>Step 5</td><td><code>delegate(w, ImplementTask)</code> + <code>workerDone</code></td><td>WORKER (<code>subagent_worker</code>)</td><td><code>ollama-cloud/deepseek-v4-flash:0731</code> → <code>cursor/composer-2.5</code></td></tr>
+    <tr><td>VERIFY</td><td>Step 6</td><td><code>delegate(w, VerifyTask)</code> + <code>workerDone</code></td><td>VERIFY (<code>subagent_verify</code>)</td><td><code>ollama-cloud/deepseek-v4-flash:0731</code> → plain <code>subagent</code></td></tr>
+    <tr><td>REVIEW</td><td>Step 7</td><td><code>review(v)</code></td><td>FRONTIER (<code>subagent_frontier</code>)</td><td>same as PLAN</td></tr>
+    <tr><td>ITERATE</td><td>Step 8</td><td><code>review(FAIL)</code> → IMPLEMENT</td><td>WORKER → VERIFY → FRONTIER</td><td>per role, cap 3 fix rounds then REPORT with open items</td></tr>
+    <tr><td>REPORT</td><td>Step 9</td><td><code>report</code></td><td>COORDINATOR → USER</td><td>honest fallback reporting</td></tr>
+  </table>
+
+  <table>
+    <tr><th>Rule (SKILL.md)</th><th>Quint invariant</th></tr>
+    <tr><td>PLAN only after the clarify step resolved (steps 2 → 3)</td><td><code>planRequiresClarify</code></td></tr>
+    <tr><td>Cap at 3 fix rounds (step 8)</td><td><code>fixRoundCap</code></td></tr>
+    <tr><td>REVIEW only after VERIFY; missing evidence is FAIL</td><td><code>reviewOnlyAfterVerify</code></td></tr>
+    <tr><td>REPORT only after an oracle verdict (steps 7 → 9)</td><td><code>reportRequiresReview</code></td></tr>
+    <tr><td>No implementation before approval (steps 4 → 5)</td><td><code>noImplementBeforeApproval</code></td></tr>
+    <tr><td>The gate presents a validated plan</td><td><code>approveRequiresPlan</code></td></tr>
+    <tr><td>Completed REPORT states the fallback limitation iff one was used</td><td><code>reportHonesty</code></td></tr>
+    <tr><td>Coordinator never implements or verifies itself</td><td><code>workHappensInWorkers</code></td></tr>
+  </table>
+</body>
+</html>

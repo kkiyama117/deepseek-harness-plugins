@@ -1,0 +1,18 @@
+# llm-fallback profile patch layer (bundle `dsh-llm-fallback`, host insert).
+# Applied after every in-box bundle and the profile's own cordis.patch.yml.
+#
+# One-hop fallback: only ollama-cloud/glm-5.3-flash (the root default agent
+# model) re-issues a call on QUOTA/RATE_LIMIT before content, onto
+# openrouter/deepseek/deepseek-v4-flash-0731. Every other model and provider
+# keeps its direct path. No chains-of-chains: a single route only.
+- insert:
+    - id: llm-fallback
+      name: dsh-llm-fallback
+      config:
+        chains:
+          ollama-cloud:
+            sourceModel: glm-5.3-flash
+            routes:
+              - provider: openrouter
+                model: deepseek/deepseek-v4-flash-0731
+        fallbackOn: [QUOTA, RATE_LIMIT]

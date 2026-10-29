@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "flow": "custom",
+  "task": {
+    "originalRequest": "Demonstrate a custom graph using two independent read-only viewpoints and one final synthesis.",
+    "goal": "Produce a finite graph that collects the supplied viewpoints and synthesizes a qualified recommendation.",
+    "context": "Topic: task routing should be flexible while flow transitions should be explicit. This is a synthetic demonstration, not a request to install or change software.",
+    "acceptance": ["Both viewpoints are considered and the final response distinguishes deterministic control from nondeterministic model output."],
+    "constraints": ["No tools, external data, file changes, recursive delegation or claims of measured performance."],
+    "writeScope": []
+  },
+  "units": [
+    { "id": "flexibility", "prompt": "Give one concrete reason task classification should remain model-driven.", "writeScope": [] },
+    { "id": "control", "prompt": "Give one concrete reason sequencing and budgets should be code-owned.", "writeScope": [] }
+  ],
+  "batches": [],
+  "options": { "concurrency": 2, "repairRounds": 0 }
+}

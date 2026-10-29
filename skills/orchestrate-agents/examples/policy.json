@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "roles": {
+    "executor": { "provider": "openai-codex", "model": "gpt-5.6-terra" },
+    "lead": { "provider": "openai-codex", "model": "gpt-6-astra" },
+    "worker": { "provider": "openai-codex", "model": "gpt-5.6-terra" },
+    "reviewer": { "provider": "openai-codex", "model": "gpt-6-astra" },
+    "designer": { "provider": "openai-codex", "model": "gpt-6-astra" },
+    "coordinator": { "provider": "openai-codex", "model": "gpt-5.6-terra" },
+    "advisor": { "provider": "openai-codex", "model": "gpt-6-astra" },
+    "customDesigner": { "provider": "openai-codex", "model": "gpt-6-astra" }
+  },
+  "limits": {
+    "maxConcurrency": 3,
+    "maxCalls": 40,
+    "maxNodes": 40,
+    "maxWorkers": 8,
+    "maxBatches": 4,
+    "maxRepairRounds": 2
+  },
+  "customDesignerAllowlist": [
+    { "provider": "openai-codex", "model": "gpt-6-astra" }
+  ]
+}

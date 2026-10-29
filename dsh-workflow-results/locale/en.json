@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Workflow result selection",
+    "description": "Keep full workflow results in spill storage while returning selected fields."
+  }
+}

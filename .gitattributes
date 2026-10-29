@@ -1,0 +1,19 @@
+# Preserve npm distribution bytes; do not reformat bundled third-party strings.
+compat/remote-web-ui-alpha2/** -text -whitespace
+compat/better-sidebar-alpha2/** -text
+# These upstream files use CRLF; the carriage return is their line terminator.
+compat/better-sidebar-alpha2/src/client/changes/CommitModelSettings.tsx whitespace=cr-at-eol
+compat/better-sidebar-alpha2/src/commit-message.ts whitespace=cr-at-eol
+compat/better-sidebar-alpha2/lib/** -whitespace
+# Unified-diff context prefixes precede the upstream tab indentation.
+compat/better-sidebar-alpha2/alpha2-compat.patch whitespace=-space-before-tab
+# Retain these two upstream source files' exact final blank lines.
+compat/better-sidebar-alpha2/src/client/SubagentView.module.css whitespace=-blank-at-eof
+compat/better-sidebar-alpha2/src/client/desktop-env.ts whitespace=-blank-at-eof
+
+# Preserve the imported upstream prompt/example bytes in the source-only baseline.
+.agents/skills/skill-creator/scripts/improve_description.py -whitespace
+.agents/skills/skill-creator/scripts/quick_validate.py -whitespace
+dsh-market/src/hot.ts whitespace=-blank-at-eof
+dsh-web-ui/packages/modlens/docs/cli.md whitespace=-blank-at-eof
+skills/quint-modeling/examples/tendermint/tendermint.qnt -whitespace

@@ -1,0 +1,17 @@
+- id: goal
+  disabled: true
+- id: subagent
+  disabled: true
+- insert:
+    - id: acceptance-goal-provider
+      name: '@kkiyama117/dsh-goal-acceptance/goal-provider'
+    - id: acceptance-subagent-provider
+      name: '@kkiyama117/dsh-goal-acceptance/subagent-provider'
+      config:
+        maxDepth: 2
+    - id: request-acceptance-pilot
+      name: '@local/dsh-request-acceptance-pilot'
+      config:
+        maxRecordBytes: 16384
+        sessionIds:
+          - session-2b468884-e9fe-46c5-8816-c8620c9e73c3

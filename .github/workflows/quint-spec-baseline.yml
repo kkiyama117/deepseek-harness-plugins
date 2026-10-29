@@ -1,0 +1,66 @@
+# Quint spec baseline — verification gate for the repo's Quint-modeled skills.
+#
+# Runs each spec's `verify-baseline.sh` (quint-verify: every invariant SATISFIED
+# + every witness REACHED, plus the spec's scenario tests; the implement-task
+# wrapper also runs the replay-gate self-tests) on every change to a spec or the
+# quint-verify skill. A non-zero exit fails the job. The same gates run locally
+# inside the quint container (each spec's verify-baseline.sh).
+#
+# quint is installed via npm (no container in CI); the runners only need
+# `quint` + `node` on PATH. ~/.quint (the Rust evaluator quint downloads on
+# first run/test) is cached so subsequent runs skip the download.
+#
+# Add a new spec: drop a `verify-baseline.sh` in its spec/ dir (mirror an
+# existing one) and add a step + path filter below.
+name: quint spec baseline
+
+on:
+  push:
+    paths:
+      - 'skills/implement-task/spec/**'
+      - 'skills/verify-completion-gate/spec/**'
+      - 'skills/quint-verify/**'
+      - '.github/workflows/quint-spec-baseline.yml'
+  pull_request:
+    paths:
+      - 'skills/implement-task/spec/**'
+      - 'skills/verify-completion-gate/spec/**'
+      - 'skills/quint-verify/**'
+      - '.github/workflows/quint-spec-baseline.yml'
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache quint evaluator (~/.quint)
+        uses: actions/cache@v4
+        with:
+          path: ~/.quint
+          key: quint-eval-0.32.0-${{ runner.os }}
+
+      - name: Install quint
+        run: npm install -g @informalsystems/quint@0.32.0
+
+      - name: implement-task spec baseline
+        run: bash skills/implement-task/spec/verify-baseline.sh
+
+      - name: verify-completion-gate spec baseline
+        if: always()
+        run: bash skills/verify-completion-gate/spec/verify-baseline.sh
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quint-verify-reports
+          path: |
+            skills/implement-task/spec/.baseline-verify-report.json
+            skills/verify-completion-gate/spec/.baseline-verify-report.json
+          if-no-files-found: warn

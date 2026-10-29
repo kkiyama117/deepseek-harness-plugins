@@ -1,0 +1,77 @@
+# Dedicated official DSH CLI Worker. No Web server and no parent model turn.
+# This worker uses the stored Slack credentials, unlike the default headless profile.
+- id: credentials
+  disabled: false
+- id: authorization
+  disabled: false
+- id: deepseek-account
+  disabled: false
+- id: headless-startup
+  disabled: true
+- id: headless-runner
+  disabled: true
+- id: sandbox-policy
+  inject: []
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+- id: session-title-llm
+  disabled: true
+- id: llm-retry
+  disabled: true
+- id: llm-pi-ai
+  config:
+    providers:
+      ollama-cloud:
+        api: openai-completions
+        baseURL: https://ollama.com/v1
+        apiKeyEnv: OLLAMA_CLOUD_API_KEY
+        compat:
+          thinkingFormat: openai
+          supportsReasoningEffort: true
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
+        models:
+          - id: deepseek-v4.1-flash
+            name: deepseek-v4.1-flash
+            input: [text]
+            reasoningEfforts:
+              xhigh: xhigh
+- insert:
+    - id: slack-worker-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: slack-intake-verification
+    - id: preset-slack-intake-verification
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: slack-intake-verification
+        name: Slack Intake 検証
+        plugins: []
+    - id: slack-intake-worker
+      name: '@kkiyama117/dsh-slack-intake/bridge'
+      config:
+        aistoreExecutable: /data/softwares/slack-intake/cli/bin/aistore
+        storeRoot: /data/references/AI
+        stateHome: /home/kiyama/.local/state/slack-intake
+        bridgeStateRoot: /home/kiyama/.local/state/slack-intake-bridge
+        # Filesystem boundary only. No project adoption verdict without an intended use.
+        verificationPurpose: article-review
+        targetRoot: /data/softwares/slack-intake
+        artifactsRoot: /home/kiyama/.dsh/reports/slack-intake-verification
+        teamId: T0BBABWEYBF
+        channelId: C0BBHF3REDS
+        allowedUsers: [U0BBABVGL5T]
+        botCredential: SLACK_BOT_TOKEN
+        appCredential: SLACK_INTAKE_APP_TOKEN
+        presetId: slack-intake-verification
+        route:
+          provider: ollama-cloud
+          model: deepseek-v4.1-flash
+          reasoningEffort: xhigh
+          maxTokens: 4096
+        exitOnFailure: true
+        pollSeconds: 60
+        jobTimeoutSeconds: 300
+        maxModelSteps: 6

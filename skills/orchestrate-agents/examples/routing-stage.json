@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "requestId": "synthetic-comparison-and-proposal",
+  "stageId": "comparison",
+  "sourceRevision": "supplied-text-v1",
+  "remainingGoals": ["Comparison table", "Implementation proposal based on the comparison"],
+  "task": {
+    "originalRequest": "Compare supplied synthetic policies, then propose an implementation. This stage only produces the comparison.",
+    "goal": "Compare the two supplied policies against ownership and coordination criteria.",
+    "context": "Synthetic fixture, not a benchmark. A: one lead owns planning and integration. B: a coordinator handles stable batches and asks an advisor about exceptions. Each unit independently evaluates one policy from this text; no unit consumes another unit's output.",
+    "acceptance": ["Address ownership and coordination for both policies; distinguish evidence from unmeasured claims."],
+    "constraints": ["Read-only. No web, tools, recursive delegation, or performance claims."],
+    "writeScope": []
+  },
+  "units": [
+    { "id": "policy_a", "prompt": "Evaluate A for ownership and coordination from the supplied text; cite that evidence.", "writeScope": [] },
+    { "id": "policy_b", "prompt": "Evaluate B for ownership and coordination from the supplied text; cite that evidence.", "writeScope": [] }
+  ],
+  "dependencies": { "policy_a": [], "policy_b": [] },
+  "division": "ready",
+  "routineCandidates": [],
+  "investigation": null
+}

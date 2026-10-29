@@ -1,0 +1,17 @@
+{
+  "display_information": {
+    "name": "Reference Reader",
+    "description": "Read-only reference intake for an invited public channel"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "slack-reference-reader",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": ["channels:history"]
+    }
+  }
+}

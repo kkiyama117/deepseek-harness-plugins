@@ -1,0 +1,61 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   node --import tsx/esm bin/record-local-readme-pair.mjs TARGET_CORE dsh-goal-acceptance/README.md
+/:
+  en: eaa990be9c108639
+  zh: aabe6b3dd0379ff0
+/kkiyama117-dsh-goal-acceptance:
+  en: 6433fc23fe8851ad
+  zh: 0d18f249f3e7fa3b
+/kkiyama117-dsh-goal-acceptance/summary:
+  en: 3ad3c75b65759214
+  zh: 99c41138e3e1b972
+/kkiyama117-dsh-goal-acceptance/table-of-contents:
+  en: d152484eb41ac6b4
+  zh: 7b30b973a849247d
+/kkiyama117-dsh-goal-acceptance/use-this-package:
+  en: 4add04ea9116a86e
+  zh: d96ab5157e9ef557
+/kkiyama117-dsh-goal-acceptance/understand-the-implementation:
+  en: 5547ff6115a60472
+  zh: 14e2f0ddb79e60d0
+/kkiyama117-dsh-goal-acceptance/further-exploration:
+  en: 2072114c4a26970c
+  zh: 7c2000e16b1c2f6c
+/kkiyama117-dsh-goal-acceptance/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-tool-schema:
+  en: 68058125884bb6d7
+  zh: 16b21df566f10b51
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-tool-schema/what-the-model-sees:
+  en: 2a9bc444f8213813
+  zh: e157a1fa5387d72c
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-tool-schema/token-effect:
+  en: 9fd8d696199c6efa
+  zh: 7f85fbbc2beb3769
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-tool-schema/kv-cache-effect:
+  en: 89dfb3a296d2a49d
+  zh: 7350e31ebedc73c5
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-guidance-and-retained-request:
+  en: 7343b2d9d17c4b35
+  zh: 2d7c93f746cb9fdd
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-guidance-and-retained-request/what-the-model-sees:
+  en: 3b4017234a810e3f
+  zh: e81e204ba8803dd0
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-guidance-and-retained-request/what-the-model-sees/verbatim-guidance:
+  en: ee8865eda3bcc252
+  zh: ab62c488b81a55dc
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-guidance-and-retained-request/token-effect:
+  en: 897eee67d58798a7
+  zh: c7b596936017f3c8
+/kkiyama117-dsh-goal-acceptance/model-experience/checkpoint-guidance-and-retained-request/kv-cache-effect:
+  en: 89a11858e2c06632
+  zh: 52535ced25815c69
+/kkiyama117-dsh-goal-acceptance/known-limitations-and-deferred-work:
+  en: 8cf9d26c04fc8e7c
+  zh: 3067ec2fd443bb96
+/kkiyama117-dsh-goal-acceptance/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: e88aeb617ffb74ea
