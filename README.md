@@ -1,65 +1,103 @@
 # deepseek-harness-plugins
 
-Hand-made plugins, local forks, presets, and operational tools for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Keep their implementations here and load them through profile bundles and settings; the [source ownership policy](SOURCE-OWNERSHIP.md) records the official Core baseline and its exact reviewed exception.
+Unofficial plugins, local forks, presets, skills, and maintenance tools for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). This is a source collection, not a single installable plugin or a distribution of DSH.
 
-What runs, who owns each layer, and what the Quint/replay gates actually prove: **[ARCHITECTURE.md](ARCHITECTURE.md)**. Read-only local setup: `node scripts/local-setup.mjs`.
+## Contents
 
-Each plugin is an npm package that installs as a dsh **bundle**: `dsh plugin --profile <name> add <package-directory>` links the package into the profile and activates its `cordis.patch.yml` layer ([how profiles and bundles compose](https://github.com/deepseek-ai/deepseek-harness/blob/main/docs/user/develop/basic/publish.md)).
+- [Compatibility](#compatibility)
+- [Plugins and presets](#plugins-and-presets)
+- [Skills](#skills)
+- [Installation](#installation)
+- [Development](#development)
+- [Repository scope and ownership](#repository-scope-and-ownership)
+- [License](#license)
 
-## Plugins
+## Compatibility
 
-| Package | What it does |
+Choose an individual package and read its README before installing it. Packages target different DSH releases; presence in this repository does not mean a package supports your installed version.
+
+- [DSH Evolve](dsh-evolve/README.md) declares DSH `0.2.1-rc.3` and Node.js `>=24.9.0`.
+- [Prompt Compact](dsh-prompt-compact/README.md) targets DSH `0.2.1` and only replaces upstream prompt text whose fingerprint matches its reviewed version.
+- The root [pnpm workspace](pnpm-workspace.yaml) retains development dependencies from the DSH `0.1.0-rc.8` line. Its build and test scripts are not a repository-wide compatibility check.
+- [Compatibility copies](compat/) and older adapters have package-specific requirements. In particular, the Web Search and Cursor invariant companions depend on a registry absent from current DSH master. Do not treat their older installation examples as current-version guidance.
+
+The [maintenance scope](docs/maintenance-scope.md) distinguishes maintained extensions, retained reference implementations, and removed managed providers. The `managed-standard` and `managed-cordis` preset names do not imply use of those removed providers.
+
+## Plugins and presets
+
+These entry points describe each component's setup, behavior, and limitations; this is not an install-all list.
+
+| Component | Purpose |
 |---|---|
-| [`dsh-evolve`](dsh-evolve/README.md) — `@kkiyama117/dsh-evolve` | Observes tool failures, validates skill proposals, and requires human commands for activation and rollback; opt-in, not enabled by installation here. |
-| [`dsh-prompt-compact`](dsh-prompt-compact/README.md) — `@kkiyama117/dsh-prompt-compact` | Opt-in, preset-scoped prompt alternatives with an on-demand Cordis Skill; upstream tools and runtime remain unchanged. |
-| [`dsh-web-search`](dsh-web-search/README.md) — `@kkiyama117/dsh-web-search` | Keyless DuckDuckGo search provider for the harness web seam (`ctx.web`), ported from [pi-web-access](https://github.com/nicobailon/pi-web-access) (MIT). |
-| [`dsh-llm-cursor`](dsh-llm-cursor/README.md) — `@kkiyama117/dsh-llm-cursor` | Cursor SDK agent adapter for the harness LLM seam (`ctx.llm`): one Cursor agent run per model call, with replay-state session continuity. |
+| [DSH Evolve](dsh-evolve/README.md) | Observes tool failures and repeated calls. Installation defaults to observation without LLM calls; proposal generation is opt-in, and activation and rollback require human commands. |
+| [Prompt Compact](dsh-prompt-compact/README.md) | Opt-in, preset-scoped alternatives for the Workflow and Ralph prompt sections. Tool schemas and execution behavior remain unchanged; it registers no Cordis Skill. |
+| [Goal acceptance](dsh-goal-acceptance/README.md) | Retains the original request and checks evidence records for Goal completion and initial delegation. See the [restricted pilot](dsh-request-acceptance-pilot/README.md) before enabling it in a shared Host. |
+| [Workflow result selection](dsh-workflow-results/README.md) | Saves a complete workflow result before returning selected fields through `resultKeys`; requires a tool replacement in the chosen preset. |
+| [Codex transport recovery](dsh-codex-transport-recovery/README.md) | Classifies specific premature WebSocket closures as transport errors so the official retry policy can handle them. Does not add retries or change models. |
+| [AI reference-store daily preset](presets/ai-reference-store-daily/README.md) | Declares the preset for a separately configured reference-store application. Selecting the preset does not start a daily batch. |
 
-## Retired managed bundles
+Older integrations and local forks:
 
-The five legacy provider forks and their dedicated release/launch tooling are removed. Their earlier local history is retained outside this public source snapshot, not as another published source archive. Current compatibility presets such as `managed-standard` and `managed-cordis` remain supported and use official providers. The [maintenance scope](docs/maintenance-scope.md) distinguishes these presets and current external extensions from the removed implementations.
-
-## Managed skills
-
-`skills/` holds hand-made agent skills whose source of truth lives here. Each
-is symlinked into `~/.dsh/skills/<name>` (and the per-session workspace
-`.dsh/skills/<name>`) so the harness loads it; edit only the copy in this
-repository.
-
-| Skill | What it does |
+| Component | Purpose |
 |---|---|
-| [`implement-task`](skills/implement-task/SKILL.md) | Superpowers-style end-to-end implementation flow (scope → plan → gate → implement → verify → review → iterate → report) with role-specific subagent tools: `subagent_frontier` (planner/reviewer), `subagent_worker` (implementation), `subagent_verify` (deterministic checks). Requires `subagent-fallback` rows in `~/.dsh/cordis.patch.yml`. Formalized as Quint in [`skills/implement-task/spec/`](skills/implement-task/spec/README.md). |
-| [`archify`](skills/archify/SKILL.md) | Fork of [`@tt-a1i/archify-dsh`](https://github.com/tt-a1i/archify) (v2.14) with a reduced visual-check: containment and screenshots at **1920×1080 and 2048×1320 only** (upstream checks 1440×900 / 1600×1000 / 1920×1080 / 2048×1320). Lives at `~/.dsh/skills/archify` (rank 400), shadowing the plugin's bundled copy (rank 600). Rebase from the upstream package when a new version ships. |
-| [`quint-lang`](skills/quint-lang/SKILL.md) | Imported from [`quint-co/quint-llm-kit`](https://github.com/quint-co/quint-llm-kit) (lightweight path). Quint language + CLI reference: syntax, operators, types, `basicSpells`, typecheck/run/test, reading counterexamples. Rebasable. |
-| [`quint-modeling`](skills/quint-modeling/SKILL.md) | Imported from `quint-co/quint-llm-kit`. Build, or review/audit, a Quint spec from an idea, requirements, source code (Rust/Go/TS/…), or TLA+. Rebasable. |
-| [`quint-execute-spec`](skills/quint-execute-spec/SKILL.md) | Imported from `quint-co/quint-llm-kit`. Implement code against an existing Quint spec, with the spec as the formal constraint. Rebasable. |
-| [`quint-cli`](skills/quint-cli/SKILL.md) | This repo's own. Runs the `quint` CLI through `container_exec` (podman) against the prebuilt `localhost/claudecode:latest` image (Quint 0.32.0) — the sandbox `bash` cannot reach a host-installed `quint`. `--user 0` reads the mode-`0600` `.qnt` files; `--entrypoint /usr/bin/quint` skips the image's MCP-setup entrypoint so the mounted repo is not polluted. |
+| [Web Search](dsh-web-search/README.md) — `@kkiyama117/dsh-web-search` | Keyless DuckDuckGo HTML search, ported from [pi-web-access](https://github.com/nicobailon/pi-web-access). |
+| [Cursor adapter](dsh-llm-cursor/README.md) — `@kkiyama117/dsh-llm-cursor` | Runs a Cursor SDK agent for each harness model call, with replay-state session continuity. |
+| [Web UI family](dsh-web-ui/packages/) | Local copies of UI, SSH, Git graph, settings, and Modlens packages; consult each package's README. |
+| [Market](dsh-market/README.md) | Local plugin-market copy with its own build and compatibility checks. |
 
-## Public repository scope
+Additional package sources live at the repository root; profile declarations live under [presets/](presets/). Neither directory is a deployment inventory.
 
-This repository publishes plugin, preset, skill, test, and maintenance-tool sources. Credentials, private design/review material, execution reports, deployment inventories, local caches, and release archives stay outside Git. The initial public commit is a source-only snapshot; the preceding local history and staging state are retained in a private local backup, not pushed to GitHub. Review new files for sensitive data before committing; ignore rules are not a secret scanner.
+## Skills
 
-## Install
+[skills/](skills/) contains authored skills and upstream-derived copies. Cloning this repository does not install or enable them. Local deployments may link individual skill directories into a DSH skill search path; edit the source directory, not a separate copied version. Read each skill's prerequisites before enabling it.
 
-From the harness checkout:
+| Skill | Purpose and prerequisites |
+|---|---|
+| [orchestrate-agents](skills/orchestrate-agents/SKILL.md) | Task formulation, direct-versus-delegated execution, and bounded orchestration. See its [runtime limits](skills/orchestrate-agents/README.md). |
+| [archify](skills/archify/SKILL.md) | Local fork of [archify](https://github.com/tt-a1i/archify) for architecture visualization, with screenshot checks at 1920×1080 and 2048×1320. |
+| [quint-lang](skills/quint-lang/SKILL.md) | Quint syntax and CLI reference, imported from [quint-llm-kit](https://github.com/quint-co/quint-llm-kit). |
+| [quint-modeling](skills/quint-modeling/SKILL.md) | Build or review Quint specifications from requirements or source code. |
+| [quint-execute-spec](skills/quint-execute-spec/SKILL.md) | Implement code against an existing Quint specification. |
+| [quint-cli](skills/quint-cli/SKILL.md) | Container-based Quint CLI instructions; requires the documented container tool and image. |
+| [quint-verify](skills/quint-verify/SKILL.md) | Run invariant and witness checks and produce a structured verification report. Requires the documented Quint container environment. |
+| [slack-reference-intake](skills/slack-reference-intake/SKILL.md) | Reference intake for a separately configured private Go aistore, with authorized Slack access and DSH credentials. Not a standalone public demo. |
+| [implement-task](skills/implement-task/SKILL.md) | Retained implementation-flow reference with a [Quint specification](skills/implement-task/spec/README.md). It depends on legacy `subagent-fallback` tools; migrate the callers and specification before using it with current DSH. |
+
+## Installation
+
+1. Install DSH separately and choose the target profile.
+2. Check the selected package's README, manifest, and patch for DSH compatibility, prerequisites, and activation scope. Build compiled packages using their own development instructions before loading them.
+3. Install only the selected bundle through DSH's Plugin Manager or plugin CLI. A bundle declares `dsh.bundle.patch` in its package manifest; the repository root and plain skill directories are not bundles.
+4. Complete any package-specific opt-in steps. For example, Prompt Compact has an empty bundle patch and needs a row in a locally authored preset. DSH Evolve instead mounts in observation mode on installation.
+
+For CLI usage from a DSH source checkout:
 
 ```sh
-pnpm dsh plugin --profile web add /data/softwares/deepseek-harness-plugins/dsh-web-search
-pnpm dsh plugin --profile web add /data/softwares/deepseek-harness-plugins/dsh-llm-cursor
+pnpm dsh plugin --help
 ```
 
-The web-search bundle's patch layer overrides the base `web` row to select `searchProvider: pi-web-access`, so `web_search` works with no API key and no billing. The llm-cursor bundle's patch layer inserts the `llm-cursor` row, which registers the `cursor` provider route on the LLM seam (store a Cursor SDK API key through the credentials service or export `CURSOR_API_KEY`).
+Use your own package location rather than the maintainer's filesystem paths in older examples. See the upstream [bundle publishing guide](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md) for profile installation. Do not edit shipped DSH presets to enable these extensions.
 
 ## Development
 
-```sh
-pnpm install   # registry deps, pinned to the @deepseek-ai/* versions dsh@0.1.0-rc.8 runs
-pnpm build     # tsc for every package (dsh loads built lib/)
-pnpm test      # vitest per package
-```
+The root [package manifest](package.json) pins pnpm to `11.7.0`. The root workspace includes Web Search, Cursor, and five Web UI family packages—not every package in this repository.
 
-The root workspace retains legacy development peers for its member packages. Other extensions, including DSH Evolve, declare their own DSH compatibility and development setup. Follow the owning package README; the root install/build commands are not a universal compatibility check for every extension.
+| Root command | Scope |
+|---|---|
+| `pnpm install` | Installs dependencies for the root workspace using its lockfile. |
+| `pnpm build` | Runs the build script of each workspace member. Builds are not all plain `tsc`; UI packages also bundle client assets. |
+| `pnpm test` | Runs workspace-member test scripts with workspace concurrency set to one. |
 
-**pnpm is pinned to `11.7.0`** (via `packageManager` and `.mise.toml`).
+For packages outside that workspace, follow their own README and package scripts. Do not use a passing root build or test run as evidence that those packages work with your DSH version. Compiled packages load generated output, not edited source; follow the package's rebuild and reload instructions.
 
-Source changes need `pnpm build` and a harness restart to take effect; the harness's hot reload does not watch this repository.
+The read-only [local setup diagnostic](scripts/local-setup.mjs) inspects a local DSH profile. It imports `dsh-market/lib/check.js`, so it requires a built Market package, which is outside the root workspace. It is not a fresh-clone setup command or an installer.
+
+## Repository scope and ownership
+
+This repository publishes plugin, preset, skill, test, and maintenance-tool sources. Credentials, private design and review material, execution reports, deployment inventories, local caches, and release archives stay outside Git. Review new files for sensitive data before committing; ignore rules are not a secret scanner.
+
+The public history starts with a source-only snapshot; earlier local history is not available here. See [architecture](ARCHITECTURE.md) for composition and verification limits, and the [source ownership policy](SOURCE-OWNERSHIP.md) for the upstream Core baseline and reviewed exception.
+
+## License
+
+[MIT](LICENSE). Preserve the upstream license and attribution notices included with imported code, forks, and skills.
