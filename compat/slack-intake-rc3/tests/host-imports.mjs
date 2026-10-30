@@ -7,12 +7,12 @@ import { pathToFileURL } from 'node:url';
 const root = process.env.DSH_HOST_ROOT;
 if (!root || !isAbsolute(root)) throw new Error('Set DSH_HOST_ROOT to the built DSH checkout for tests');
 const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
-const cordisVersions = { '0.1.6-alpha.1': '4.0.2', '0.2.1-alpha.1': '4.0.5-alpha.1', '0.2.1-alpha.2': '4.0.5-alpha.1', '0.2.1-rc.2': '4.0.5', '0.2.1-rc.3': '4.0.5' };
+const cordisVersions = { '0.1.6-alpha.1': '4.0.2', '0.2.1-alpha.1': '4.0.5-alpha.1', '0.2.1-alpha.2': '4.0.5-alpha.1', '0.2.1-rc.2': '4.0.5', '0.2.1-rc.3': '4.0.5', '0.2.2-alpha.2': '4.0.6-alpha.1' };
 if (!cordisVersions[version]) throw new Error(`Unreviewed host version: ${version}`);
 const packages = {
   '@deepseek-ai/cordis': ['vendor/cordis', cordisVersions[version]],
-  '@deepseek-ai/cordis-plugin-loader': ['vendor/loader', '1.0.6'],
-  '@deepseek-ai/cordis-plugin-include': ['vendor/include', '1.0.10'],
+  '@deepseek-ai/cordis-plugin-loader': ['vendor/loader', version === '0.2.2-alpha.2' ? '1.0.7-alpha.1' : '1.0.6'],
+  '@deepseek-ai/cordis-plugin-include': ['vendor/include', version === '0.2.2-alpha.2' ? '1.0.11-alpha.1' : '1.0.10'],
   '@deepseek-ai/dsh-agent-preset-registry': ['packages/preset/agent-preset-registry', version],
   '@deepseek-ai/dsh-agent-loop': ['packages/core/agent-loop', version],
   '@deepseek-ai/dsh-agent-loop-testkit': ['packages/test-support/agent-loop-testkit', version],

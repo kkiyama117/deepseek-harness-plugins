@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-managed-cordis-preset",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "dsh": {
@@ -10,6 +10,6 @@
   },
   "description": "创造模式（managed-cordis 互換）: preserved local behavior with current master subagent controls",
   "peerDependencies": {
-    "@deepseek-ai/dsh-agent-preset": "0.2.1-rc.3"
+    "@deepseek-ai/dsh-agent-preset": "0.2.1-rc.3 || 0.2.2-alpha.2"
   }
 }

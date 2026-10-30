@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-slack-digest",
-  "version": "1.0.2-local.2",
+  "version": "1.0.2-local.3",
   "private": true,
   "type": "module",
   "description": "Slack Intake daily reports, manual decisions and durable development verification jobs",
@@ -22,12 +22,12 @@
     "UPGRADE.json"
   ],
   "peerDependencies": {
-    "@kkiyama117/dsh-slack-intake": "0.2.1-local.3",
-    "@deepseek-ai/cordis": "4.0.5",
-    "@deepseek-ai/dsh-agent": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-credentials": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.3"
+    "@kkiyama117/dsh-slack-intake": "0.2.1-local.3 || 0.2.1-local.4",
+    "@deepseek-ai/cordis": "4.0.5 || 4.0.6-alpha.1",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-credentials": "0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3 || 0.2.2-alpha.2"
   },
   "dsh": {
     "bundle": {
