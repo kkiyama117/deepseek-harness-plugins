@@ -9,11 +9,11 @@ DSH boots a **host** Cordis tree, then mounts one **agent preset** per session. 
 ```
 shipped DSH install          this repository                 ~/.dsh (user runtime)
 ─────────────────            ───────────────                 ────────────────────
-@deepseek-ai/dsh-*           plugin packages                 profiles/<name>/
-shipped agent-presets        skills/                         ├─ package.json  (bundle list)
-(do not edit)                subagent-fallback/              ├─ cordis.patch.yml
-                             llm-fallback/                   └─ node_modules (links)
-                             dsh-slack-intake/               cordis.patch.yml   (home overlay)
+@deepseek-ai/dsh-*           plugins/                        profiles/<name>/
+shipped agent-presets        configs/                        ├─ package.json  (bundle list)
+(do not edit)                skills/                         ├─ cordis.patch.yml
+                             presets/                        └─ node_modules (links)
+                             compat/                         cordis.patch.yml   (home overlay)
                              …                               skills/<name> → repo or local dir
 ```
 

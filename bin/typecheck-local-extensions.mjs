@@ -21,7 +21,7 @@ host.resolveModuleNames = (names, containingFile) => names.map(name => {
 });
 const hostConfig = ts.getParsedCommandLineOfConfigFile(join(target, 'tsconfig.host.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: diagnostic => { throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')); } });
 if (!hostConfig) throw new Error('Cannot parse target Host project references');
-const program = ts.createProgram({ rootNames: [join(root, 'dsh-workflow-results/src/index.ts'), join(root, 'dsh-session-cleanup/src/index.ts'), join(root, 'dsh-goal-acceptance/src/index.ts'), join(root, 'dsh-goal-acceptance/tests/acceptance.spec.ts'), join(root, 'dsh-goal-acceptance/tests/composition.spec.ts')], options, host, projectReferences: hostConfig.projectReferences });
+const program = ts.createProgram({ rootNames: [join(root, 'plugins/dsh-workflow-results/src/index.ts'), join(root, 'plugins/dsh-session-cleanup/src/index.ts'), join(root, 'plugins/dsh-goal-acceptance/src/index.ts'), join(root, 'plugins/dsh-goal-acceptance/tests/acceptance.spec.ts'), join(root, 'plugins/dsh-goal-acceptance/tests/composition.spec.ts')], options, host, projectReferences: hostConfig.projectReferences });
 const diagnostics = ts.getPreEmitDiagnostics(program);
 if (diagnostics.length) {
   console.error(ts.formatDiagnosticsWithColorAndContext(diagnostics, { getCanonicalFileName: x => x, getCurrentDirectory: () => root, getNewLine: () => '\n' }));

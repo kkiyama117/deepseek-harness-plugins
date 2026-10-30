@@ -11,7 +11,7 @@ This is an **implementation** plugin: it registers a provider into `ctx.web`, it
 The package ships as a dsh **bundle**: its `cordis.patch.yml` layer mounts the provider row and overrides the base bundle's `web` row to select `searchProvider: pi-web-access`. Install it into a profile from the harness checkout:
 
 ```sh
-pnpm dsh plugin --profile web add /data/softwares/deepseek-harness-plugins/dsh-web-search
+pnpm dsh plugin --profile web add /path/to/deepseek-harness-plugins/plugins/dsh-web-search
 ```
 
 The layer applies after the base bundle's, so the keyless default wins; `searchProvider: deepseek-official` (config or `$DSH_WEB_SEARCH_PROVIDER`) still selects DeepSeek search where a funded account exists.

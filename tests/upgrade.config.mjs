@@ -23,7 +23,7 @@ export default {
     return ts.transpileModule(code,{fileName:file,compilerOptions:{target:ts.ScriptTarget.ES2024,module:ts.ModuleKind.ESNext,jsx:file.endsWith('x')?ts.JsxEmit.ReactJSX:undefined}}).outputText;
   }}],
   test:{
-    include:['tests/upgrade/*.spec.ts','dsh-goal-acceptance/tests/*.spec.ts'],pool:'forks',maxWorkers:2,
+    include:['tests/upgrade/*.spec.ts','plugins/dsh-goal-acceptance/tests/*.spec.ts'],pool:'forks',maxWorkers:2,
     execArgv:process.allowedNodeEnvironmentFlags.has('--webstorage')?['--no-webstorage']:[],
     setupFiles:[join(target,'scripts/test-proxy-environment.ts'),join(target,'scripts/test-dom-environment.ts')],
     testTimeout:15000,hookTimeout:15000,

@@ -18,8 +18,8 @@ uv run --no-project bin/check-core-separation.py --core /data/softwares/deepseek
 
 ## 独自機能と設定
 
-- [Goal acceptance](./dsh-goal-acceptance/README.md)がポリシーと外部のGoal/subagent提供方を所有する。公式Goal/Subagentソースには登録APIを追加しない。
-- [pilot](./dsh-request-acceptance-pilot/README.md)が実際のSession制限と配置設定を所有する。通常Sessionへ対象を広げない。
+- [Goal acceptance](./plugins/dsh-goal-acceptance/README.md)がポリシーと外部のGoal/subagent提供方を所有する。公式Goal/Subagentソースには登録APIを追加しない。
+- [pilot](./plugins/dsh-request-acceptance-pilot/README.md)が実際のSession制限と配置設定を所有する。通常Sessionへ対象を広げない。
 - [日次プリセット](./presets/ai-reference-store-daily/README.md)を含む独自プリセットはこのリポジトリで管理する。Harness home内の旧プリセットディレクトリを保守元にしない。
 - 私的な設計資料・レビュー結果・実行記録は公開対象外のローカル領域に置く。公開用に引用・記録を書き換えず、資料ごとGit管理から除外する。
 - モデル確認などの運用スクリプトはこのリポジトリのbinで管理する。Coreのbinへ戻さない。

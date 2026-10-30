@@ -3,7 +3,7 @@ import { it, expect, onTestFinished } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
 import { registerSessionResourceCleanup } from '@earendil-works/pi-ai'
-import * as cleanup from '../../dsh-session-cleanup/src/index.ts'
+import * as cleanup from '../../plugins/dsh-session-cleanup/src/index.ts'
 
 it('releases only an announced disposed Session and retains the other live Session', async () => {
   const ctx = new Context()

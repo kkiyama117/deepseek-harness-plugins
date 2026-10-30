@@ -11,11 +11,11 @@ for (const [name, files] of Object.entries({
   'dsh-goal-acceptance': ['index.ts', 'check.ts', 'schema.ts', 'goal-provider.ts', 'subagent-provider.ts'],
   'dsh-session-cleanup': ['index.ts'],
 })) {
-  await mkdir(join(root, name, 'lib'), { recursive: true });
+  await mkdir(join(root, 'plugins', name, 'lib'), { recursive: true });
   for (const file of files) {
-    const source = await readFile(join(root, name, 'src', file), 'utf8');
+    const source = await readFile(join(root, 'plugins', name, 'src', file), 'utf8');
     const output = ts.transpileModule(source, {fileName: file, compilerOptions: {target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,verbatimModuleSyntax:true}});
-    await writeFile(join(root, name, 'lib', file.replace(/\.ts$/, '.js')), output.outputText.replace(/from '(\.\/.+)\.ts'/g,"from '$1.js'"));
+    await writeFile(join(root, 'plugins', name, 'lib', file.replace(/\.ts$/, '.js')), output.outputText.replace(/from '(\.\/.+)\.ts'/g,"from '$1.js'"));
   }
   console.log(name);
 }

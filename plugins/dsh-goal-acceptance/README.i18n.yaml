@@ -1,7 +1,7 @@
 # Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
-#   node --import tsx/esm bin/record-local-readme-pair.mjs TARGET_CORE dsh-goal-acceptance/README.md
+#   node --import tsx/esm bin/record-local-readme-pair.mjs TARGET_CORE plugins/dsh-goal-acceptance/README.md
 /:
   en: eaa990be9c108639
   zh: aabe6b3dd0379ff0

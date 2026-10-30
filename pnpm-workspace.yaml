@@ -1,16 +1,16 @@
 packages:
-  - 'dsh-web-search'
-  - 'dsh-llm-cursor'
+  - 'plugins/dsh-web-search'
+  - 'plugins/dsh-llm-cursor'
   # Local fork of the dsh-web-ui family (aionui-panel, ssh, git-graph,
   # web-ui-settings) plus the modlens vision plugin, until the loopback-fence
   # fixes land upstream; the fork aggregator (dsh-web-ui/packages/dsh-web-ui-all)
   # is NOT a member — the web profile links it directly and the remaining
   # family packages stay registry deps.
-  - 'dsh-web-ui/packages/dsh-aionui-panel'
-  - 'dsh-web-ui/packages/dsh-ssh'
-  - 'dsh-web-ui/packages/dsh-git-graph'
-  - 'dsh-web-ui/packages/dsh-web-ui-settings'
-  - 'dsh-web-ui/packages/modlens'
+  - 'plugins/dsh-web-ui/packages/dsh-aionui-panel'
+  - 'plugins/dsh-web-ui/packages/dsh-ssh'
+  - 'plugins/dsh-web-ui/packages/dsh-git-graph'
+  - 'plugins/dsh-web-ui/packages/dsh-web-ui-settings'
+  - 'plugins/dsh-web-ui/packages/modlens'
 
 allowBuilds:
   cpu-features: true
