@@ -11,7 +11,7 @@ The package root exposes the Cordis plugin contract and `CursorAdapter`; prompt 
 From the harness checkout:
 
 ```sh
-pnpm dsh plugin --profile web add /data/softwares/deepseek-harness-plugins/dsh-llm-cursor
+pnpm dsh plugin --profile web add /path/to/deepseek-harness-plugins/plugins/dsh-llm-cursor
 ```
 
 The bundle's patch layer inserts the `llm-cursor` row, which registers the `cursor` provider route on the harness LLM seam. Restart the harness, store a Cursor SDK API key through the credentials service (the web Models page writes it) or export `CURSOR_API_KEY`, and select a `cursor/*` model.

@@ -23,8 +23,8 @@ import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import PtcWorkflowEngine from '@deepseek-ai/dsh-workflow-ptc'
 import { mountWorkflowRuntime } from '@test-target/packages/workflow/workflow-ptc/tests/setup.ts'
-import * as toolWorkflow from "../../dsh-workflow-results/src/index.ts"
-import type {} from "../../dsh-workflow-results/src/types.ts"
+import * as toolWorkflow from "../../plugins/dsh-workflow-results/src/index.ts"
+import type {} from "../../plugins/dsh-workflow-results/src/types.ts"
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SpillStore, { SpillLocator, type SaveTextSpill } from '@deepseek-ai/dsh-spill'

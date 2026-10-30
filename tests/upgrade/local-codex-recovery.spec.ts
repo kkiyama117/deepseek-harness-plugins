@@ -7,7 +7,7 @@ import type { StreamChunk, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import * as retry from '@deepseek-ai/dsh-llm-retry'
 import { MockAdapter, textResponse } from '@test-target/packages/core/agent-loop/tests/mock-adapter.ts'
-import * as recovery from '../../dsh-codex-transport-recovery/index.mjs'
+import * as recovery from '../../plugins/dsh-codex-transport-recovery/index.mjs'
 
 const failed = (code: number): StreamChunk[] => [{ type: 'finish', reason: { kind: 'error', failure: { code: 'PI_AI_ERROR', message: `WebSocket closed ${code}` } } }]
 class Adapter extends MockAdapter {

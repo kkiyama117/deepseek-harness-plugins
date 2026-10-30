@@ -8,7 +8,7 @@ import { existsSync, lstatSync, readdirSync, readlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { analyzeProfile, parsePatchFile } from '../dsh-market/lib/check.js'
+import { analyzeProfile, parsePatchFile } from '../plugins/dsh-market/lib/check.js'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const HOME = process.env.DSH_HOME || join(homedir(), '.dsh')

@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
-const [target, source = 'dsh-goal-acceptance/README.md'] = process.argv.slice(2);
+const [target, source = 'plugins/dsh-goal-acceptance/README.md'] = process.argv.slice(2);
 if (!target) throw new Error('Run with the selected Core tsx loader: record-local-readme-pair.mjs TARGET_CORE [RELATIVE_README]');
 const root=resolve(import.meta.dirname,'..');
 const api=await import(pathToFileURL(join(resolve(target),'scripts/translation-pairing-record.ts')).href);

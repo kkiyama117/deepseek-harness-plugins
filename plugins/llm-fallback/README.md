@@ -5,7 +5,7 @@ This Host bundle retries only the configured source provider/model on its explic
 Run pure tests and the real-Cordis waterfall smoke against the exact built deployment:
 
 ```sh
-DSH_UPSTREAM_ROOT=/path/to/built/dsh node --test llm-fallback/test.mjs llm-fallback/mount.test.mjs
+DSH_UPSTREAM_ROOT=/path/to/built/dsh node --test plugins/llm-fallback/test.mjs plugins/llm-fallback/mount.test.mjs
 ```
 
 The mount test requires an explicit checkout so the plugins repository's older Cordis dependency cannot silently stand in for the upgraded runtime. Its provider responses are synthetic; it does not verify live model or credential availability.

@@ -11,7 +11,7 @@ const require = createRequire(join(target, 'package.json'));
 const ts = require('typescript');
 const icon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path fill="#426B8F" d="M4 4h24v24H4z"/><path fill="none" stroke="white" stroke-width="2" d="M9 11h14M9 16h9M9 21h14"/></svg>\n';
 async function createPackage(directory, manifest, title, description) {
-  const dir = join(root, directory);
+  const dir = join(root, 'plugins', directory);
   try { await access(dir); throw new Error(`Refusing to replace existing package ${dir}`); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   await mkdir(join(dir, 'locale'), { recursive: true });
