@@ -14,6 +14,6 @@ compat/better-sidebar-alpha2/src/client/desktop-env.ts whitespace=-blank-at-eof
 # Preserve the imported upstream prompt/example bytes in the source-only baseline.
 .agents/skills/skill-creator/scripts/improve_description.py -whitespace
 .agents/skills/skill-creator/scripts/quick_validate.py -whitespace
-dsh-market/src/hot.ts whitespace=-blank-at-eof
-dsh-web-ui/packages/modlens/docs/cli.md whitespace=-blank-at-eof
+plugins/dsh-market/src/hot.ts whitespace=-blank-at-eof
+plugins/dsh-web-ui/packages/modlens/docs/cli.md whitespace=-blank-at-eof
 skills/quint-modeling/examples/tendermint/tendermint.qnt -whitespace

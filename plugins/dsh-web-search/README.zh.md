@@ -11,7 +11,7 @@
 该包以 dsh **组合包**（bundle）形式提供：其 `cordis.patch.yml` 层挂载提供方行，并把基础组合包的 `web` 行覆盖为 `searchProvider: pi-web-access`。在 harness checkout 中安装到 profile：
 
 ```sh
-pnpm dsh plugin --profile web add /data/softwares/deepseek-harness-plugins/dsh-web-search
+pnpm dsh plugin --profile web add /path/to/deepseek-harness-plugins/plugins/dsh-web-search
 ```
 
 该层在基础组合包之后应用，因此无密钥默认生效；`searchProvider: deepseek-official`（配置或 `$DSH_WEB_SEARCH_PROVIDER`）仍可在账户有余额时选择 DeepSeek 搜索。

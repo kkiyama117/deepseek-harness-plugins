@@ -11,7 +11,7 @@
 在 harness 检出目录中：
 
 ```sh
-pnpm dsh plugin --profile web add /data/softwares/deepseek-harness-plugins/dsh-llm-cursor
+pnpm dsh plugin --profile web add /path/to/deepseek-harness-plugins/plugins/dsh-llm-cursor
 ```
 
 bundle 的 patch 层插入 `llm-cursor` 行，在 harness LLM 接缝上注册 `cursor` provider 路由。重启 harness，通过 credentials 服务（web Models 页面写入）或导出 `CURSOR_API_KEY` 存储 Cursor SDK API key，然后选择 `cursor/*` 模型。

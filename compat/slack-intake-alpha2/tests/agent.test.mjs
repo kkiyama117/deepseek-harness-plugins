@@ -16,7 +16,7 @@ import * as JsonlPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import Loader from '@deepseek-ai/cordis-plugin-loader';
 import Include from '@deepseek-ai/cordis-plugin-include';
 import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry';
-import * as nativeRestriction from '../../../dsh-aistore-native-preset/index.mjs';
+import * as nativeRestriction from '../../../plugins/dsh-aistore-native-preset/index.mjs';
 
 const taskId = 'task:reader:actual-agent';
 const inputHash = 'a'.repeat(64);

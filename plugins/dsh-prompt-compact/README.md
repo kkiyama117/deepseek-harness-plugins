@@ -17,7 +17,7 @@ Only the two sections in `index.mjs` are eligible. Each original must match its 
 Use the built CLI from the upstream version you run:
 
 ```sh
-node "$DSH_UPSTREAM_ROOT/apps/cli/lib/bin.js" plugin --profile web add /path/to/deepseek-harness-plugins/dsh-prompt-compact
+node "$DSH_UPSTREAM_ROOT/apps/cli/lib/bin.js" plugin --profile web add /path/to/deepseek-harness-plugins/plugins/dsh-prompt-compact
 ```
 
 The bundle patch is empty: installation makes the package resolvable but does not enable it globally. Add this row to the `config.plugins` list of a locally authored `@deepseek-ai/dsh-agent-preset` declaration, never a shipped file:
@@ -34,7 +34,7 @@ The runtime imports only Node built-ins, avoiding a second copy of Cordis or DSH
 ## Verification
 
 ```sh
-DSH_UPSTREAM_ROOT=/path/to/built/upstream node --test dsh-prompt-compact/tests/plugin.test.mjs
+DSH_UPSTREAM_ROOT=/path/to/built/upstream node --test plugins/dsh-prompt-compact/tests/plugin.test.mjs
 ```
 
 Tests use that checkout's real Cordis, scope, and system-prompt services. They cover sibling-scope isolation, disposal, complete-prompt overrides, waterfall delegation, unchanged schemas/context, reviewed-source matching, and retention of customized instructions. They do not establish improved task quality for a live model. The legacy `tests/preset-probe.mjs` targets the retired directory-preset API and is not the validation entry point for 0.2.1.
