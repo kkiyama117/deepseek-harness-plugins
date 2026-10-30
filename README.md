@@ -53,6 +53,7 @@ Additional package sources live at the repository root; profile declarations liv
 
 | Skill | Purpose and prerequisites |
 |---|---|
+| [issue-driven-development](skills/issue-driven-development/SKILL.md) | Shared issue intake, feature and bugfix delivery, verification, and development-process improvement for humans and AI agents. See [contributing](CONTRIBUTING.md) for this repository's setup. |
 | [orchestrate-agents](skills/orchestrate-agents/SKILL.md) | Task formulation, direct-versus-delegated execution, and bounded orchestration. See its [runtime limits](skills/orchestrate-agents/README.md). |
 | [archify](skills/archify/SKILL.md) | Local fork of [archify](https://github.com/tt-a1i/archify) for architecture visualization, with screenshot checks at 1920×1080 and 2048×1320. |
 | [quint-lang](skills/quint-lang/SKILL.md) | Quint syntax and CLI reference, imported from [quint-llm-kit](https://github.com/quint-co/quint-llm-kit). |
@@ -79,6 +80,8 @@ pnpm dsh plugin --help
 Use your own package location rather than the maintainer's filesystem paths in older examples. See the upstream [bundle publishing guide](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md) for profile installation. Do not edit shipped DSH presets to enable these extensions.
 
 ## Development
+
+Use [Issues](https://github.com/kkiyama117/deepseek-harness-plugins/issues) to report problems or propose improvements. [CONTRIBUTING.md](CONTRIBUTING.md) describes the shared human/AI development flow and this repository's verification and publication scope.
 
 The root [package manifest](package.json) pins pnpm to `11.7.0`. The root workspace includes Web Search, Cursor, and five Web UI family packages—not every package in this repository.
 

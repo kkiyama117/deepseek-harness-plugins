@@ -1,0 +1,41 @@
+name: 困りごと・改善提案
+description: 機能追加、bugfix、開発手順の改善。困ったことだけでも投稿できます。
+body:
+  - type: markdown
+    attributes:
+      value: |
+        人間・AI agents共通の入口です。似たIssueがあれば追記してください。
+        公開されるため、認証情報・私的な会話・内部URL・生ログは貼らないでください。
+        AIは観測事実と仮説を区別し、起票を実行許可とは扱わないでください。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 何をしようとして、どこで困りましたか？
+      description: 解決策や詳しい設計は不要です。具体例があれば添えてください。
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種類（分かれば）
+      options:
+        - 未整理・相談
+        - 機能追加
+        - bugfix
+        - 共通の開発手順・スキルの改善
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: どうなればよいですか？
+      description: 期待する結果や、改善したと確認できる条件を書いてください。
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 再現方法・環境・関連リンク（あれば）
+      description: パッケージや版、操作手順、関連Issueなど。公開可能な情報だけを記載してください。
+    validations:
+      required: false
