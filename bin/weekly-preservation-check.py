@@ -7,7 +7,8 @@ from pathlib import Path
 import argparse,json,hashlib,datetime
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('report',type=Path);args=p.parse_args();r=args.report
 initial=json.loads((r/'initial-file-hashes.json').read_text());changes=[];counts={}
-for label,root in [('runtime',Path('/data/softwares/deepseek-harness')),('plugins',Path('/data/softwares/deepseek-harness-plugins'))]:
+prior=json.loads((r/'maintenance-before.json').read_text())
+for label,root in [('runtime',Path(prior['runtime_source'])),('plugins',Path(prior['plugin_repository']))]:
  for name,sha in initial[label].items():
   path=root/name;actual=hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
   if actual!=sha:changes.append({'repository':label,'path':name,'before':sha,'after':actual})
