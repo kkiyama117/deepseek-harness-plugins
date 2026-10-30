@@ -47,7 +47,7 @@ Older integrations and local forks:
 
 Plugin sources and forks live under [plugins/](plugins/); configuration-only bundles under [configs/](configs/); profile declarations under [presets/](presets/). These directories are source collections, not deployment inventories.
 
-**Layout migration:** Existing installations, profiles, systemd units, and scripts may still refer to old root-level paths. Moving this repository's sources does not update them; inventory and migrate those references before replacing an active checkout. In particular, the retained Slack worker configuration and compatibility patch still contain old absolute paths. Do not assume that an isolated checkout or a passing source test has migrated the live runtime. See the [migration checklist](docs/layout-migration.md).
+**Layout migration:** Existing installations, profiles, systemd units, and scripts may still refer to old root-level paths. Moving this repository's sources does not update them; inventory and migrate those references before replacing an active checkout. The retained Slack worker configuration and compatibility patch contain machine-specific paths that need review before use elsewhere. Do not assume that an isolated checkout or a passing source test has migrated the live runtime. See the [migration checklist](docs/layout-migration.md).
 
 ## Skills
 

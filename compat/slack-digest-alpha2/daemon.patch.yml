@@ -38,7 +38,7 @@
         name: Slack Intake 検証
         plugins: []
     - id: slack-intake-worker
-      name: /data/softwares/deepseek-harness-plugins/dsh-slack-intake/bridge.mjs
+      name: /data/softwares/deepseek-harness-plugins/plugins/dsh-slack-intake/bridge.mjs
       config:
         aistoreExecutable: /data/softwares/slack-intake/cli/bin/aistore
         storeRoot: /data/references/AI

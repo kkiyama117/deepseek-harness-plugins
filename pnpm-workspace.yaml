@@ -26,6 +26,11 @@ allowBuilds:
 # the dsh-* packages instead of the rc.8 line the lockfile resolves.
 autoInstallPeers: false
 
+# This rc.8 package accepts ^3.18.1, but a second global Schemastery
+# declaration at 3.18.5 makes the SSH plugin's schema types incompatible.
+overrides:
+  '@deepseek-ai/dsh-system-prompt@0.1.0-rc.8>@deepseek-ai/schemastery': '3.18.1'
+
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-api-remotes@0.1.0-rc.8'
   - '@deepseek-ai/dsh-atomic-write@0.1.0-rc.8'
