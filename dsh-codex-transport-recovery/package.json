@@ -1,12 +1,30 @@
 {
   "name": "@kkiyama117/dsh-codex-transport-recovery",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "description": "Classify interrupted Codex WebSocket close 1000 or 1012 as transport failure for the existing bounded retry policy.",
-  "exports": { ".": "./index.mjs", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg" },
-  "files": ["index.mjs", "cordis.patch.yml", "locale", "icon.svg", "README.md"],
-  "peerDependencies": { "@deepseek-ai/dsh-llm": "0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3" },
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
-  "scripts": { "test": "node --test tests/*.test.mjs" }
+  "exports": {
+    ".": "./index.mjs",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
 }

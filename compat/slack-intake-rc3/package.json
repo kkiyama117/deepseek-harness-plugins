@@ -1,6 +1,6 @@
 {
   "name": "@kkiyama117/dsh-slack-intake",
-  "version": "0.2.1-local.3",
+  "version": "0.2.1-local.4",
   "description": "DSH credential and native-Agent adapters for the Go aistore CLI",
   "type": "module",
   "license": "MIT",
@@ -37,15 +37,15 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.2 || 4.0.5-alpha.1 || 4.0.5",
-    "@deepseek-ai/dsh-cmdline": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
-    "@deepseek-ai/dsh-credentials": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
-    "@deepseek-ai/dsh-credentials-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
-    "@deepseek-ai/dsh-subagent": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
-    "@deepseek-ai/dsh-session-query": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
-    "@deepseek-ai/dsh-llm": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-tool-executor-native": "0.2.1-rc.3"
+    "@deepseek-ai/cordis": "4.0.2 || 4.0.5-alpha.1 || 4.0.5 || 4.0.6-alpha.1",
+    "@deepseek-ai/dsh-cmdline": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-credentials": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-credentials-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-subagent": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-session-query": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.3 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.1-rc.3 || 0.2.2-alpha.2"
   },
   "dsh": {
     "bundle": {
