@@ -22,7 +22,9 @@ for name in tracked_now:
     if not file.is_file():
         continue
     parts = PurePosixPath(name).parts
-    old_name = PurePosixPath(*parts[1:]) if len(parts) > 2 and parts[0] in ('plugins', 'configs') else PurePosixPath(name)
+    # HEAD may already contain the new layout; only map back when it does not.
+    moved = name not in tracked_before and len(parts) > 2 and parts[0] in ('plugins', 'configs')
+    old_name = PurePosixPath(*parts[1:]) if moved else PurePosixPath(name)
     for raw in link_pattern.findall(file.read_text(encoding='utf-8', errors='replace')):
         link = unquote(raw.split(' ', 1)[0].strip('<>').split('#', 1)[0].split('?', 1)[0])
         if not link or link.startswith('/') or re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', link):
