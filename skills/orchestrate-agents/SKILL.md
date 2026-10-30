@@ -11,6 +11,8 @@ This skill includes the former `task-router` intake stage. Do not load a second 
 
 ## 1. Formulate the task
 
+For issue intake, issue-based development, or feeding development experience back into shared procedures, first follow `issue-driven-development` ([source](https://github.com/kkiyama117/deepseek-harness-plugins/blob/main/skills/issue-driven-development/SKILL.md)). It owns intake, acceptance, delivery, and feedback; this skill owns execution structure and delegation. If deployed separately, use the project's documented equivalent rather than assume the sibling skill is installed.
+
 Read the full request and minimum relevant context. Record the intended deliverable, completion evidence, constraints, authority, relevant inputs, material unknowns and exclusive write ownership. Use [the task packet guide](references/task-packet.md).
 
 When the work is large or multi-part, follow [progressive decomposition](references/progressive-decomposition.md): map the whole goal, refine responsibilities and dependencies, then dispatch only independently ready units. Routine and tightly coupled work stays direct, and unresolved design choices belong to the designing model or the parent, not to an implementation worker.
