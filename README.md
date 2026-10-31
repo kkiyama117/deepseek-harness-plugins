@@ -1,9 +1,12 @@
 # deepseek-harness-plugins
 
+English | [日本語](README.ja.md)
+
 Unofficial plugins, local forks, presets, skills, and maintenance tools for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). This is a source collection, not a single installable plugin or a distribution of DSH.
 
 ## Contents
 
+- [Repository structure](#repository-structure)
 - [Compatibility](#compatibility)
 - [Plugins and presets](#plugins-and-presets)
 - [Skills](#skills)
@@ -11,6 +14,27 @@ Unofficial plugins, local forks, presets, skills, and maintenance tools for [Dee
 - [Development](#development)
 - [Repository scope and ownership](#repository-scope-and-ownership)
 - [License](#license)
+
+## Repository structure
+
+Each directory below is a source collection, not a deployment inventory. Cloning the repository installs and enables nothing.
+
+| Path | Contents |
+|---|---|
+| [plugins/](plugins/) | Plugin sources, local forks, and retained reference implementations, one directory per component. [plugins/dsh-web-ui/packages/](plugins/dsh-web-ui/packages/) keeps its nested package layout. |
+| [presets/](presets/) | Agent-preset declarations: a manifest and a Cordis patch per preset. Declaring a preset does not install the packages its rows name. |
+| [configs/](configs/) | Configuration-only bundles and service configuration, with no runtime code. See [its README](configs/README.md). |
+| [skills/](skills/) | Authored skills and upstream-derived copies, one directory per skill. |
+| [compat/](compat/) | Retained copies and preparation notes for older DSH releases, each with its own requirements and installation steps. |
+| [bin/](bin/) | Maintainer scripts that build, pack, and check packages, one-off migration scripts, and the [runtime placement](bin/runtime-placement.md) notes. Not a public CLI; some scripts keep the paths of their original run. |
+| [scripts/](scripts/) | The read-only [local setup diagnostic](scripts/local-setup.mjs). |
+| [tests/](tests/) | Vitest configuration and upgrade regression specs that are not package-local. |
+| [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes. |
+| [.agents/](.agents/) | Development notes and the harness-facing skills for working on this repository. |
+
+A local working copy also holds ignored directories such as `reports/`, `releases/`, and `local-design/`. They contain private material and are not part of the published tree.
+
+**Layout migration:** Existing installations, profiles, systemd units, and scripts may still refer to old root-level paths. Moving this repository's sources does not update them; inventory and migrate those references before replacing an active checkout. The retained Slack worker configuration and compatibility patch contain machine-specific paths that need review before use elsewhere. Do not assume that an isolated checkout or a passing source test has migrated the live runtime. See the [migration checklist](docs/layout-migration.md).
 
 ## Compatibility
 
@@ -44,10 +68,6 @@ Older integrations and local forks:
 | [Cursor adapter](plugins/dsh-llm-cursor/README.md) — `@kkiyama117/dsh-llm-cursor` | Runs a Cursor SDK agent for each harness model call, with replay-state session continuity. |
 | [Web UI family](plugins/dsh-web-ui/packages/) | Local copies of UI, SSH, Git graph, settings, and Modlens packages; consult each package's README. |
 | [Market](plugins/dsh-market/README.md) | Local plugin-market copy with its own build and compatibility checks. |
-
-Plugin sources and forks live under [plugins/](plugins/); configuration-only bundles under [configs/](configs/); profile declarations under [presets/](presets/). These directories are source collections, not deployment inventories.
-
-**Layout migration:** Existing installations, profiles, systemd units, and scripts may still refer to old root-level paths. Moving this repository's sources does not update them; inventory and migrate those references before replacing an active checkout. The retained Slack worker configuration and compatibility patch contain machine-specific paths that need review before use elsewhere. Do not assume that an isolated checkout or a passing source test has migrated the live runtime. See the [migration checklist](docs/layout-migration.md).
 
 ## Skills
 
