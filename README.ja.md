@@ -25,7 +25,7 @@
 | [presets/](presets/) | エージェントプリセットの宣言です。プリセットごとにマニフェストとCordisパッチを置きます。プリセットを宣言しても、その行が指すパッケージはインストールされません。 |
 | [configs/](configs/) | 設定だけのバンドルとサービス設定で、実行時のコードは含みません。詳しくは[このディレクトリのREADME](configs/README.md)を参照してください。 |
 | [skills/](skills/) | 自作したスキルとupstream由来の複製を、スキルごとに1ディレクトリで置いています。 |
-| [bin/](bin/) | パッケージのビルド・梱包・検査を行う保守用スクリプト、一度きりの移行スクリプト、[配置検査](bin/runtime-placement.md)のメモです。公開CLIではありません。実行当時のパスをそのまま残しているスクリプトもあります。 |
+| [bin/](bin/) | パッケージのビルド・梱包・検査を行う保守用スクリプト、週次保守の補助スクリプト、[配置検査](bin/runtime-placement.md)のメモです。公開CLIではありません。 |
 | [scripts/](scripts/) | 読み取り専用の[ローカル設定の診断](scripts/local-setup.mjs)です。 |
 | [tests/](tests/) | パッケージ内に置かないVitestの設定と、アップグレードの回帰テストです。 |
 | [docs/](docs/) | [レイアウト移行](docs/layout-migration.md)と[保守対象と保管対象](docs/maintenance-scope.md)のメモです。 |

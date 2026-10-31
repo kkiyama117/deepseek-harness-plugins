@@ -25,7 +25,7 @@ Each directory below is a source collection, not a deployment inventory. Cloning
 | [presets/](presets/) | Agent-preset declarations: a manifest and a Cordis patch per preset. Declaring a preset does not install the packages its rows name. |
 | [configs/](configs/) | Configuration-only bundles and service configuration, with no runtime code. See [its README](configs/README.md). |
 | [skills/](skills/) | Authored skills and upstream-derived copies, one directory per skill. |
-| [bin/](bin/) | Maintainer scripts that build, pack, and check packages, one-off migration scripts, and the [runtime placement](bin/runtime-placement.md) notes. Not a public CLI; some scripts keep the paths of their original run. |
+| [bin/](bin/) | Maintainer scripts that build, pack, and check packages, the weekly maintenance helpers, and the [runtime placement](bin/runtime-placement.md) notes. Not a public CLI. |
 | [scripts/](scripts/) | The read-only [local setup diagnostic](scripts/local-setup.mjs). |
 | [tests/](tests/) | Vitest configuration and upgrade regression specs that are not package-local. |
 | [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes. |
