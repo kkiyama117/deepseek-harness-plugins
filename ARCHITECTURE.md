@@ -13,7 +13,7 @@ shipped DSH install          this repository                 ~/.dsh (user runtim
 shipped agent-presets        configs/                        ├─ package.json  (bundle list)
 (do not edit)                skills/                         ├─ cordis.patch.yml
                              presets/                        └─ node_modules (links)
-                             compat/                         cordis.patch.yml   (home overlay)
+                                                             cordis.patch.yml   (home overlay)
                              …                               skills/<name> → repo or local dir
 ```
 

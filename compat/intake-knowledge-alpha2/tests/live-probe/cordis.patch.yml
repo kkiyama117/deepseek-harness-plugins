@@ -1,5 +1,0 @@
-- insert:
-    - id: intake-knowledge-live-verify
-      name: /data/softwares/slack-intake/integrations/dsh-intake-knowledge/tests/live-probe/verify.mjs
-      config:
-        reportPath: /home/kiyama/.dsh/reports/intake-sentence-20261010-60BwfX/live-reader.json

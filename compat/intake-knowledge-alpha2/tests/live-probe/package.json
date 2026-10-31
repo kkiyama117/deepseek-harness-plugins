@@ -1,1 +1,0 @@
-{"name":"@local/intake-knowledge-live-probe","version":"1.0.2","private":true,"type":"module","description":"Disposable no-model check of the live Intake Knowledge preset; removed after verification","exports":{".":"./verify.mjs"},"dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}

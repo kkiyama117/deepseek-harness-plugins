@@ -25,7 +25,6 @@
 | [presets/](presets/) | エージェントプリセットの宣言です。プリセットごとにマニフェストとCordisパッチを置きます。プリセットを宣言しても、その行が指すパッケージはインストールされません。 |
 | [configs/](configs/) | 設定だけのバンドルとサービス設定で、実行時のコードは含みません。詳しくは[このディレクトリのREADME](configs/README.md)を参照してください。 |
 | [skills/](skills/) | 自作したスキルとupstream由来の複製を、スキルごとに1ディレクトリで置いています。 |
-| [compat/](compat/) | 旧DSHリリース向けに残している複製と準備メモです。それぞれに固有の要件とインストール手順があります。 |
 | [bin/](bin/) | パッケージのビルド・梱包・検査を行う保守用スクリプト、一度きりの移行スクリプト、[配置検査](bin/runtime-placement.md)のメモです。公開CLIではありません。実行当時のパスをそのまま残しているスクリプトもあります。 |
 | [scripts/](scripts/) | 読み取り専用の[ローカル設定の診断](scripts/local-setup.mjs)です。 |
 | [tests/](tests/) | パッケージ内に置かないVitestの設定と、アップグレードの回帰テストです。 |
@@ -43,7 +42,7 @@
 - [DSH Evolve](plugins/dsh-evolve/README.md)は、DSH `0.2.1-rc.3`とNode.js `>=24.9.0`を前提としています。
 - [Prompt Compact](plugins/dsh-prompt-compact/README.md)はDSH `0.2.1`を対象とし、レビューした版と指紋が一致するupstreamのプロンプト文だけを置き換えます。
 - リポジトリ直下の[pnpmワークスペース](pnpm-workspace.yaml)は、DSH `0.1.0-rc.8`系の開発依存を残しています。そのビルドとテストは、リポジトリ全体の互換性検査ではありません。
-- [互換用の複製](compat/)と古いアダプタは、パッケージごとに要件が異なります。特にWeb SearchとCursorのinvariant companionは、現在のDSH masterには無いレジストリに依存します。古いインストール例を、現行版の手引きとして扱わないでください。
+- 古いアダプタは、パッケージごとに要件が異なります。特にWeb SearchとCursorのinvariant companionは、現在のDSH masterには無いレジストリに依存します。古いインストール例を、現行版の手引きとして扱わないでください。
 
 [保守対象と保管対象](docs/maintenance-scope.md)では、保守している拡張、参考として残している実装、削除したmanaged providerを区別しています。`managed-standard`と`managed-cordis`というプリセット名は、削除済みのproviderを使っていることを意味しません。
 

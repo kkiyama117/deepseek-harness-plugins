@@ -25,7 +25,6 @@ Each directory below is a source collection, not a deployment inventory. Cloning
 | [presets/](presets/) | Agent-preset declarations: a manifest and a Cordis patch per preset. Declaring a preset does not install the packages its rows name. |
 | [configs/](configs/) | Configuration-only bundles and service configuration, with no runtime code. See [its README](configs/README.md). |
 | [skills/](skills/) | Authored skills and upstream-derived copies, one directory per skill. |
-| [compat/](compat/) | Retained copies and preparation notes for older DSH releases, each with its own requirements and installation steps. |
 | [bin/](bin/) | Maintainer scripts that build, pack, and check packages, one-off migration scripts, and the [runtime placement](bin/runtime-placement.md) notes. Not a public CLI; some scripts keep the paths of their original run. |
 | [scripts/](scripts/) | The read-only [local setup diagnostic](scripts/local-setup.mjs). |
 | [tests/](tests/) | Vitest configuration and upgrade regression specs that are not package-local. |
@@ -43,7 +42,7 @@ Choose an individual package and read its README before installing it. Packages 
 - [DSH Evolve](plugins/dsh-evolve/README.md) declares DSH `0.2.1-rc.3` and Node.js `>=24.9.0`.
 - [Prompt Compact](plugins/dsh-prompt-compact/README.md) targets DSH `0.2.1` and only replaces upstream prompt text whose fingerprint matches its reviewed version.
 - The root [pnpm workspace](pnpm-workspace.yaml) retains development dependencies from the DSH `0.1.0-rc.8` line. Its build and test scripts are not a repository-wide compatibility check.
-- [Compatibility copies](compat/) and older adapters have package-specific requirements. In particular, the Web Search and Cursor invariant companions depend on a registry absent from current DSH master. Do not treat their older installation examples as current-version guidance.
+- Older adapters have package-specific requirements. In particular, the Web Search and Cursor invariant companions depend on a registry absent from current DSH master. Do not treat their older installation examples as current-version guidance.
 
 The [maintenance scope](docs/maintenance-scope.md) distinguishes maintained extensions, retained reference implementations, and removed managed providers. The `managed-standard` and `managed-cordis` preset names do not imply use of those removed providers.
 

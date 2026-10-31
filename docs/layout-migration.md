@@ -1,6 +1,6 @@
 # Migrating an existing installation to the new layout
 
-The source layout moves plugin packages and forks under `plugins/`, and configuration-only bundles under `configs/`. `skills/`, `presets/`, and `compat/` retain their existing locations. Package names and selected workspace members do not change. This is a source-tree change, not an installation or profile migration.
+The source layout moves plugin packages and forks under `plugins/`, and configuration-only bundles under `configs/`. `skills/` and `presets/` retain their existing locations. Package names and selected workspace members do not change. This is a source-tree change, not an installation or profile migration.
 
 ## Before switching a live checkout
 

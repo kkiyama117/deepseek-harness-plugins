@@ -1,7 +1,0 @@
-{
-  "source": "/data/softwares/deepseek-harness-plugins/dsh-slack-intake",
-  "targetDsh": "0.2.1-alpha.2",
-  "status": "offline-suite-passed",
-  "passed": 185,
-  "skipped": 2
-}

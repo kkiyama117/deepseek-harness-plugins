@@ -1,8 +1,0 @@
-{
-  "source": "/data/softwares/slack-intake/integrations/dsh-slack-digest",
-  "targetDsh": "0.2.1-rc.3",
-  "targetCommit": "22ddee3792402c3e70ec5f86a63c3e3e895a2f60",
-  "status": "shared-adapter-suite-passed-isolated-profile-passed-worker-remains-disabled",
-  "sharedAdapter": "0.2.1-local.3",
-  "productionApplied": false
-}
