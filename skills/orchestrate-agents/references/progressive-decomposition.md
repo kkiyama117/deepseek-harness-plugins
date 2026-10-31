@@ -18,7 +18,7 @@ Do not deepen unrelated future work here. Future candidates may stay one line un
 
 ## 2. Refine responsibility layers and dependencies
 
-Group adopted candidates into responsibility layers, then order them by true dependencies.
+Group adopted candidates into responsibility layers, then order them by true dependencies. A planning layer is not an agent boundary: the same owner may implement and verify several sequential layers. Delegate only when the needed context can be isolated; serial dependencies or a ready packet alone do not justify a handoff.
 
 - A layer produces one kind of result, has one owner, and can be checked without later layers.
 - Order by what must exist first, not by convenience, file count, or expected effort.
