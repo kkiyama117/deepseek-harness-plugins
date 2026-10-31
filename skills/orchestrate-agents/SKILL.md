@@ -5,67 +5,39 @@ description: Formulate tasks, choose direct or delegated execution, and run vali
 
 # Task formulation and orchestration
 
-Use the smallest execution structure that completes the human's full request. Models decide what the task means and which flow fits; checked code owns a selected workflow's topology, admission, conditional transitions and bounds. A coordinator need not be the strongest model.
+Use the smallest execution structure that completes the human's full request. This skill includes the former `task-router` intake; do not load a second routing policy or create a router agent merely to select a flow.
 
-This skill includes the former `task-router` intake stage. Do not load a second routing policy. The source directory is portable; the executable adapter currently targets DSH only. Read [runtime and guarantee limits](README.md) before claiming deterministic execution, resumability, isolation or actual model identity.
+For issue-based development, first follow [issue-driven-development](https://github.com/kkiyama117/deepseek-harness-plugins/blob/main/skills/issue-driven-development/SKILL.md) or the project's documented equivalent. It owns intake, acceptance, delivery and feedback; this skill owns execution structure and delegation.
 
-## 1. Formulate the task
+## Select and read before acting
 
-For issue intake, issue-based development, or feeding development experience back into shared procedures, first follow `issue-driven-development` ([source](https://github.com/kkiyama117/deepseek-harness-plugins/blob/main/skills/issue-driven-development/SKILL.md)). It owns intake, acceptance, delivery, and feedback; this skill owns execution structure and delegation. If deployed separately, use the project's documented equivalent rather than assume the sibling skill is installed.
+Read the full request and minimum relevant context. Identify the outcome, acceptance evidence, authority, unknowns and write ownership; resolve routine details without questioning the user. Use [task formulation](references/task-packet.md) when preparing a handoff or run, and [progressive decomposition](references/progressive-decomposition.md) for large multi-part work. Neither creates an extra planning agent.
 
-Read the full request and minimum relevant context. Record the intended deliverable, completion evidence, constraints, authority, relevant inputs, material unknowns and exclusive write ownership. Use [the task packet guide](references/task-packet.md).
+Keep sequential work that shares reasoning in one agent. Split by isolated context, not job titles; difficulty or model strength alone does not justify delegation. Prefer on-demand skills and tools over adding specialists just to hold instructions. Explain the chosen structure's benefit over a simpler choice.
 
-When the work is large or multi-part, follow [progressive decomposition](references/progressive-decomposition.md): map the whole goal, refine responsibilities and dependencies, then dispatch only independently ready units. Routine and tightly coupled work stays direct, and unresolved design choices belong to the designing model or the parent, not to an implementation worker.
+**Before entering a flow, read its guide below.** Read only that guide and the references needed for the current action, not every guide or the entire README. On a flow change, read the new guide; do not reread unchanged guidance already in context. If a required guide is unavailable, report the missing resource rather than invent its procedure.
 
-Classify using concrete evidence about clarity, coupling, independent units, judgment/impact, repeated coordination, available checks and resources. Do not use model strength or task difficulty alone as a delegation rule. Resolve routine reversible details from context; ask only about facts that materially change outcome or authority. Continue independent authorized work when possible.
+| Choice | Selection criterion | Read on entry |
+|---|---|---|
+| Direct | Current-agent work; use native delegation only for a justified independent part. No compiled workflow required. | [Direct](docs/direct.md) |
+| `single` | An explicitly requested reproducible workflow with one fresh executor and its checks. | [Single](docs/single.md) |
+| `executor-advisor` | One executor, at most one scoped consultation, then a fresh continuation if needed. | [Executor–advisor](docs/executor-advisor.md) |
+| `comparison` | A requested read-only experiment: Flash alone, Astra alone, Flash with conditional advice; not production task execution. | [Comparison](docs/comparison.md) |
+| `lead-workers` | A finite set of independent units with separate write scopes, followed by integration and bounded review/repair. | [Lead–workers](docs/lead-workers.md) |
+| `coordinator-advisor` | Stable ordered batches where repeated coordination can be separated from design judgment. | [Coordinator–advisor](docs/coordinator-advisor.md) |
+| `custom` | Fixed templates cannot express the structure; an available, allowlisted designer proposes a finite data-only graph. | [Custom](docs/custom.md) |
 
-Task formulation selects a structure; it is not a mandatory separate router agent or a substitute for design. In direct execution, the current agent continues into design, implementation and checks with the context it already has. Store task/run data privately outside this skill, never in its examples. Do not pass credentials, raw private messages or unnecessary inherited conversation to workers.
+## Constraints that apply before execution
 
-## 2. Select a structure flexibly
+- Follow higher-priority instructions, user scope and host permissions. Loading this skill grants no recursive delegation, additional data sharing, higher spend, destructive actions, installation, publication or server authority.
+- Native `workflow` needs an explicit workflow/large-orchestration request; `ralph` needs a separate explicit Ralph/fresh-agent request. Ordinary work needs neither. Discover routes before binding them; never silently substitute a model.
+- One writer per shared file/worktree. Compiled flows use flat, fresh child contexts with no worker-spawned children; owner-continuity guidance does not change that topology. Keep credentials, private run data and unnecessary conversation out of worker packets and skill examples.
+- Material ambiguity is `needs-input`, not permission to proceed. Missing capabilities are blockers, not permission to invent routes or launch another application. A changed compiled graph requires a new validated run; do not replay uncertain effects or restart after cancellation without authority.
+- A routing packet is not completion of an execution request, and a child's `done` is not proof. Inspect artifacts and [acceptance evidence](references/acceptance-evidence.md) against the original goal. Design-only requests do not authorize executing their example tasks.
 
-Keep sequential work that shares reasoning in one agent: for a feature, the same owner normally investigates, designs, implements, tests and repairs. Split by isolated context, not job titles. Useful boundaries include independent research, verification against explicit criteria, and components with settled interfaces and separate write scopes. Independent tool calls can run in parallel without another agent. Before adding a specialist merely to hold instructions or tools, prefer on-demand skills and references; add a subagent when isolation, parallel work or conflicting tool/instruction needs justify the handoff.
+## Read when the action requires it
 
-For explicitly opted-in stage routing, use the [Jev routing entry](references/jev-routing.ja.md): `bin/route.mjs` batches only needed Choice questions over existing stage data, then applies fixed rules and calls the existing compiler. Keep operator permissions, model routes and budgets separate from classifications. Do not create a detailed plan solely to classify it. Preserve remaining overall deliverables across stages. Default shadow output is not executable; selection requires operator-supplied adoption thresholds and workflow authorization, separately from permission to send data to the selected TypeSafe or OpenRouter gateway. Keep gateway credentials separate and never fall back between them. Pass the previous report for finite classification limits; reuse classifications only for pinned models and recheck execution policy. OpenRouter `~typesafe/jev-latest` is an explicit floating choice: record the resolved Jev model and do not reuse old classifications or assume calibration survives a model update. F0 and F2 only hand off routine work or bounded investigation, F1 uses direct work or authorized `single`, and F3/F4 use validated units with authorized `lead-workers`. Unknown, low-confidence or failed classification returns normal agent judgment without automatically calling another model. Explicit user flow/model choices take precedence; do not ask Jev to reconfirm them.
-
-- **Direct:** Handle routine or tightly coupled work in the current agent when extra delegation provides no demonstrated benefit. A capable model may do a difficult task alone.
-- **`single`:** One fresh executor performs the task and checks, for an explicitly requested reproducible workflow. Model choice is a role binding, not a separate `expert-single` flow.
-- **`executor-advisor`:** One executor attempts the task, optionally requests one scoped advisor response, then a fresh executor continues from the recorded attempt and advice. No mandatory designer or reviewer.
-- **`comparison`:** Compare Flash alone, Astra alone and Flash with conditional Astra advice on the same read-only fixture. Read [comparison protocol](references/comparison.md); compile with the existing CLI. Results await independent evaluation; telemetry and writable isolation are not provided.
-- **`lead-workers`:** A capable lead plans and integrates independently scoped workers, followed by a reviewer and bounded repairs. Suitable for a finite group of independent tasks.
-- **`coordinator-advisor`:** A designer defines outcomes; a coordinator runs stable batches and asks an advisor only through the explicit `needs_advice` branch. Use when repeated coordination can be separated from design judgment.
-- **`custom`:** An allowlisted strong designer constructs a finite data-only graph when templates cannot express the required structure. The runner calls that designer, validates its returned graph, then executes it. The router selects this option but cannot forge author metadata or bypass validation with generated JavaScript.
-
-Explain the selection and any benefit over a simpler choice in the task's context. Fixed templates are defaults, not a ban on custom work. Material ambiguity is a `needs-input` task state; it is not a flow that grants permission to proceed. Missing essential capabilities are blockers, not permission to invent routes or launch another application.
-
-## 3. Resolve roles and limits
-
-Discover supported routes in the active harness. In DSH use `list_subagent_models` before explicitly choosing provider/model. Maintain a deployment policy separately from the model-formulated task. See [policy and graph formats](references/flow-format.md) and [the example policy](examples/policy.json).
-
-Choose role bindings by task fit, report volume and total input/output cost, not just call count. For a costly parent and substantial reports, bind the existing lead/coordinator integration role to a suitable lower-cost discovered route; reserve expensive judgment for specific unresolved questions. Do not add a mandatory synthesizer or have the parent reread all reports after delegation. Follow [evidence-aware synthesis](references/synthesis.md). Example names are not claims of benchmarked quality or savings. A current agent does not become cheaper by renaming itself coordinator. Fable or any other custom designer is usable only when its actual route is available and explicitly included in the deployment allowlist; do not guess identifiers or silently substitute another model.
-
-The DSH workflow hook accepts provider/model, not effort or reasoning_effort. Do not insert unsupported options. Its phases describe progress; role bindings in actual `agent` calls determine requested model routes. The returned route list records requests, not proof of the backend's effective weights.
-
-## 4. Use the active harness
-
-System/developer instructions, user scope, host approval boundaries and project rules take precedence. Loading this skill does not authorize recursive delegation, additional data sharing, higher spend, destructive actions, software installation, publication or a server.
-
-- **DSH, ordinary work:** Use native `subagent` for self-contained assignments or `subagent_fork` only when sharing the conversation is appropriate. Start independent work in the background, continue useful parent work and use completion notifications. Use `send_message` for related continuations. Give each shared file/worktree one writer; the parent owns integration and acceptance.
-- **DSH, requested workflows:** Follow [compile and run](references/run-dsh.md). Compile a request plus deployment policy with the supplied offline generator; submit its exact `meta`, `script`, `args` and `resultKeys` to native `workflow`. Confirm that the live tool supports `resultKeys`; if absent, report the required Host update rather than silently sending all reports to the parent. Do not rewrite its runner in chat or replace it with arbitrary model-authored code. The native tool still requires an explicit workflow/large-orchestration request. `ralph` separately requires an explicit Ralph/fresh-agent request. Use goal tools for long-running same-session objectives under their own rules.
-- **pi:** Use `pi-subagents` when registered and follow its instructions. If pi-workflows is installed, follow its documented adapter/API; these DSH payloads are not pi-workflows definitions. Do not install it or invoke Herdr implicitly.
-- **Claude Code and others:** Use documented native delegation tools, supported session controls and applicable local instructions. No DSH runtime compatibility is implied. Without an executable adapter, describe manual/native execution honestly rather than claim the deterministic runner was used.
-
-The executable DSH flows keep all runtime-owned workers flat under the calling agent. Workers do not launch children. Related repair steps receive explicit outputs in fresh contexts; this adapter does not implement the original proposal's persistent advisor/worker sessions.
-
-## 5. Execute and accept
-
-For an execution request, producing a routing packet is not completion. Continue through implementation and verification unless concrete missing authority or information blocks work. For requests only to design a structure or produce prompts, deliver those artifacts without executing their example tasks.
-
-Ordinary direct delegation may reuse worker sessions for related repairs and separate review contexts for independence. Fixed workflows follow their declared fresh-session topology. Do not add a supervisor merely to poll jobs; use native process/job controls.
-
-A `changes_requested` review enters only the configured repair path. A null result, invalid output, blocked node or runtime failure is not a successful partial batch. Preserve accepted artifacts and inspect failures before a new run; do not replay uncertain effects automatically. A graph change requires a new validated run, not a silent mutation during execution. Explicit cancellation is not permission to restart.
-
-Check artifacts and actual acceptance evidence against the original goal. Record each acceptance criterion's target identity, check, observation and evidence pointer following the [acceptance evidence convention](references/acceptance-evidence.md); a criterion without evidence is uncovered, not passed, and the convention adds no schema. Small tasks may record it in a brief phrase of prose rather than repeating the checklist. A model's `done` output is not independent verification. Report completed/partial/blocked work, actual checks, requested routes and any independently observed runtime identities. Collect relevant managed jobs and stop irrelevant ones before finishing. Deliver requested files through the host mechanism (`present` in DSH).
-
-## Reference examples
-
-[Single](examples/single.json), [lead-workers](examples/lead-workers.json), [coordinator-advisor](examples/coordinator-advisor.json) and [custom](examples/custom.json) are synthetic read-only exercises. They do not execute real edits or establish cost/quality claims. Run deterministic tests with `node --test tests/*.test.mjs` from this skill directory.
+- Before role/budget configuration or delegation: [shared execution rules](docs/shared-execution.md), selecting the relevant model-route and harness-adapter sections. Before a compiled DSH run: [compile and submit](references/run-dsh.md); transmit the exact compiled payload, including supported `resultKeys`, never a rewritten runner.
+- Only for explicitly opted-in stage classification: [Jev routing](references/jev-routing.ja.md). It is not compulsory; user-selected flows/models take precedence. External-send permission and workflow execution permission are separate; default shadow output is not executable.
+- Before claiming determinism, resumability, isolation or actual model identity: [runtime limits](README.md#limits) and [guarantees](README.md#reproducibility-and-guarantees). Only DSH has a supplied executable adapter.
+- When maintaining this skill: [verification entry points](references/verification-map.md). Examples are synthetic, not cost/quality evidence; run `node --test tests/*.test.mjs` from this skill directory for deterministic regression checks.

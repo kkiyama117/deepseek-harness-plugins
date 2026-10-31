@@ -12,6 +12,8 @@ uv run bin/install.py
 
 Read [DSH execution and installation](references/run-dsh.md) before submitting the compiled payload. [Task packets](references/task-packet.md) and [policy/graph formats](references/flow-format.md) define the inputs. Installation backs up the old two skills and leaves one discoverable `orchestrate-agents` skill. The [verification record](references/verification.md) separates deterministic tests, native integration evidence and deployment limitations.
 
+[SKILL.md](SKILL.md) is a thin entry: it selects a structure and points to one [flow guide](docs/direct.md) per choice (`direct`, `single`, `executor-advisor`, `comparison`, `lead-workers`, `coordinator-advisor`, `custom`), each read only when that flow is entered. [Shared execution rules](docs/shared-execution.md) holds authority, opt-in, session-topology, routing and runner behavior common to the flows. The references below explain specific mechanisms and are not a required read-first sequence.
+
 For larger tasks, use [progressive decomposition](references/progressive-decomposition.md) to move from the whole goal to independently verifiable worker packets. [Acceptance evidence](references/acceptance-evidence.md) defines the criterion-to-evidence report without changing the runner schema. [Verification entry points](references/verification-map.md) maps this skill's existing checks and their limits.
 
 ## Optional Jev routing
