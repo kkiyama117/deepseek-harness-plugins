@@ -1,6 +1,7 @@
 ---
 name: orchestrate-agents
 description: Formulate tasks, choose direct or delegated execution, and run validated parameterized single, lead-workers, coordinator-advisor or strong-model-designed custom flows. Use for task routing, AI prompt formulation, model-role selection, reproducible workflows and multi-agent coordination. Does not require delegation or a workflow for routine work.
+disable-model-invocation: true
 ---
 
 # Task formulation and orchestration
