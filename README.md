@@ -75,7 +75,7 @@ Deployment-specific bundles and presets:
 | Component | Purpose |
 |---|---|
 | [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Confines the Goal acceptance policy to the Session ids listed in its patch. Other Sessions keep ordinary behavior. |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions. It has no README; read its manifest and patch. |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions. It lacks a README; read its manifest and patch. |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Releases pi-ai Session-owned connection caches when a Session is disposed. |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | Supplies generic icons for explicitly selected local applications without changing DSH Core. |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | Declares the restricted `aistore-native` child preset for structured reader and reviewer Sessions. |

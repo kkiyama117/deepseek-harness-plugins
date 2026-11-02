@@ -28,10 +28,10 @@
 | [bin/](bin/) | パッケージのビルド・梱包・検査を行う保守用スクリプト、週次保守の補助スクリプト、[配置検査](bin/runtime-placement.md)のメモです。公開CLIではありません。 |
 | [scripts/](scripts/) | 読み取り専用の[ローカル設定の診断](scripts/local-setup.mjs)です。 |
 | [tests/](tests/) | パッケージ内に置かないVitestの設定と、アップグレードの回帰テストです。 |
-| [docs/](docs/) | [レイアウト移行](docs/layout-migration.md)と[保守対象と保管対象](docs/maintenance-scope.md)のメモ、参考として残している[implement-taskのフロー図](docs/implement-task-flow.html)です。 |
+| [docs/](docs/) | [レイアウト移行](docs/layout-migration.md)と[保守対象と保管対象](docs/maintenance-scope.md)のメモ、参考資料として残している[implement-taskのフロー図](docs/implement-task-flow.html)です。 |
 | [.agents/](.agents/) | このリポジトリの開発で使うメモと、harness側のスキルです。 |
 
-リポジトリ直下の文書: [AGENTS.md](AGENTS.md)はAI agentの入口です(`CLAUDE.md`はこのファイルへのリンクです)。[CONTRIBUTING.md](CONTRIBUTING.md)は開発の流れ、[ARCHITECTURE.md](ARCHITECTURE.md)は実行時の層構成と検証の限界、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)と[core-exceptions.json](core-exceptions.json)はCoreの基準を定めます。
+リポジトリ直下の文書: [AGENTS.md](AGENTS.md)はAIエージェントの入口です（`CLAUDE.md`はこのファイルへのリンクです）。[CONTRIBUTING.md](CONTRIBUTING.md)は開発手順、[ARCHITECTURE.md](ARCHITECTURE.md)は実行時の層構成と検証の限界、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)と[core-exceptions.json](core-exceptions.json)はCoreの基準を定めます。
 
 ローカルの作業コピーには、ignoreされた`reports/`、`releases/`、`local-design/`などのディレクトリもあります。いずれも私的な資料を含み、公開しているツリーの一部ではありません。
 
@@ -75,15 +75,15 @@
 | コンポーネント | 目的 |
 |---|---|
 | [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Goal acceptanceの方針を、パッチに列挙したSession idだけに限定します。その他のSessionは通常の動作のままです。 |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。READMEは無いため、マニフェストとパッチを読んでください。 |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。READMEはないため、マニフェストとパッチを参照してください。 |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Sessionの破棄時に、そのSessionが所有するpi-aiの接続キャッシュを解放します。 |
-| [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | 明示的に選んだローカルアプリケーション向けの汎用アイコンを、DSH Coreを変えずに提供します。 |
-| [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | 構造化したreaderとreviewerのSession向けに、制限付きの子プリセット`aistore-native`を宣言します。 |
+| [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | 明示的に指定したローカルアプリケーション向けの汎用アイコンを、DSH Coreを変えずに提供します。 |
+| [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | 構造化したreaderおよびreviewerのSession向けに、制限付きの子プリセット`aistore-native`を宣言します。 |
 | [Slack intake](plugins/dsh-slack-intake/README.md) | DSHプロファイルをGo aistore CLIに接続し、取得したreaderまたはreviewerのタスク1件を固定のネイティブAgent経路で実行します。 |
-| [LLM fallback](plugins/llm-fallback/README.md) | 設定した元モデルに限り、内容が届く前に設定済みのエラーが起きたときだけ、明示した経路の一覧で再試行します。 |
+| [LLM fallback](plugins/llm-fallback/README.md) | 設定した元モデルに限り、内容の受信前に設定済みエラーが発生したときだけ、明示した経路一覧で再試行します。 |
 | [ローカルプリセット](presets/) | `ai-reference-store-next`、`cordis-kura`、`managed-cordis`、`managed-standard`は、現行upstreamのsubagent制御の上でローカルの挙動を保ちます。各`UPSTREAM.json`がupstreamの基準を記録します。 |
 
-[subagent-fallback](plugins/subagent-fallback/)はバンドルではなく、`implement-task`の参考としてだけ残しています。
+[subagent-fallback](plugins/subagent-fallback/)はバンドルではなく、`implement-task`の参考資料としてのみ残しています。
 
 ## スキル
 
@@ -102,7 +102,7 @@
 | [slack-reference-intake](skills/slack-reference-intake/SKILL.md) | 別に設定した私的なGo aistore向けの参照取り込みです。許可されたSlackアクセスとDSHの認証情報を使います。単体で動く公開デモではありません。 |
 | [implement-task](skills/implement-task/SKILL.md) | [Quint仕様](skills/implement-task/spec/README.md)付きで残している実装フローの参考資料です。旧`subagent-fallback`のツールに依存するため、現在のDSHで使う前に、呼び出し側と仕様を移行してください。 |
 
-[skills/verify-completion-gate/](skills/verify-completion-gate/spec/README.md)にあるのはQuint仕様だけで、読み込めるスキルではありません。
+[skills/verify-completion-gate/](skills/verify-completion-gate/spec/README.md)にあるのはQuint仕様のみで、読み込めるスキルではありません。
 
 ## インストール
 
