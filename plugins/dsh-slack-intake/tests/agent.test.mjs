@@ -5,12 +5,18 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Context } from '@deepseek-ai/cordis';
 import AgentLoop from '@deepseek-ai/dsh-agent-loop';
-import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit';
+import { mountAgentLoopTestDependencies, provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit';
 import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import SubagentRuntime from '@deepseek-ai/dsh-subagent';
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process';
 import * as agentPlugin from '../agent.mjs';
+import SessionQuery from '@deepseek-ai/dsh-session-query';
+import * as JsonlPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
+import Loader from '@deepseek-ai/cordis-plugin-loader';
+import Include from '@deepseek-ai/cordis-plugin-include';
+import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry';
+import * as nativeRestriction from '../../../plugins/dsh-aistore-native-preset/index.mjs';
 
 const taskId = 'task:reader:actual-agent';
 const inputHash = 'a'.repeat(64);
@@ -50,7 +56,7 @@ test('agent entry registers a validated native task tool without credentials', a
   let tool;
   const ctx = { tools: { register(value) { tool = value; return () => {}; } }, subagents: {} };
   agentPlugin.apply(ctx, { aistoreExecutable: '/trusted/aistore', storeRoot: '/private/store', subagentProvider: 'spawn' });
-  assert.deepEqual(agentPlugin.inject, ['tools', 'subagents']);
+  assert.deepEqual(agentPlugin.inject, ['tools', 'subagents', 'sessionQuery']);
   assert.equal(tool.name, 'aistore_native_task');
   assert.deepEqual(tool.parameters.required, ['taskId', 'inputHash']);
   await assert.rejects(tool.execute({ taskId }, { agent: {}, signal: new AbortController().signal }), /invalid arguments/);
@@ -68,8 +74,21 @@ test('real exec.agent drives one native child and accepts its recorded route and
     await ctx.fiber.dispose();
     await rm(directory, { recursive: true, force: true });
   });
+  await ctx.plugin(Loader);
+  ctx.loader.builtins.include = Include;
+  ctx.loader.builtins.nativeRestriction = nativeRestriction;
   await mountAgentLoopTestDependencies(ctx, { tools: { mode: 'native' } });
+  await ctx.plugin(AgentPresets, { default: 'aistore-native' });
+  const releasePreset = await ctx.agentPresets.register({ id: 'aistore-native', plugins: [
+    { id: 'restriction', name: 'cordis:nativeRestriction' },
+  ] });
+  t.after(releasePreset);
+  await ctx.plugin(JsonlPersistence, { root: join(directory, 'sessions') });
+  await ctx.plugin(SessionQuery);
   await ctx.plugin(AgentLoop, { agents: [] });
+  provideWorkingDirectoryFixture(ctx, directory);
+  // Native activations also assign their captured directory during setup.
+  ctx.workingDirectory.set = async (_agent, cwd) => cwd;
   await ctx.plugin(SubagentRuntime);
   await ctx.plugin(SpawnProvider, { providerName: 'spawn' });
   const adapter = new StructuredAdapter();
@@ -77,15 +96,20 @@ test('real exec.agent drives one native child and accepts its recorded route and
   await ctx.plugin(agentPlugin, { aistoreExecutable: executable, storeRoot: directory, subagentProvider: 'spawn' });
   const parent = await ctx.agentLoop.create(SessionId('parent:actual'), { provider: 'openrouter', model: 'parent-model' });
 
-  const result = await ctx.tools.execute({ callId: ToolCallId('native-call'), name: 'aistore_native_task',
-    arguments: { taskId, inputHash }, agent: parent, signal: new AbortController().signal });
-  assert.equal(result.isError, false);
+  const batch = await ctx.tools.execute({
+    calls: [{ type: 'tool-call', id: ToolCallId('native-call'), name: 'aistore_native_task', arguments: JSON.stringify({ taskId, inputHash }) }],
+    agent: parent, signal: new AbortController().signal,
+  });
+  assert.equal(batch.results.length, 1);
+  const result = batch.results[0].result;
+  assert.equal(result.isError, false, JSON.stringify(result));
   assert.deepEqual(result.value, { status: 'accepted', taskId, attempt: 1 });
   assert.equal(adapter.requests.length, 1);
   assert.equal(adapter.requests[0].provider, 'openrouter');
   assert.equal(adapter.requests[0].model, 'fixed-model');
   assert.equal(adapter.requests[0].reasoningEffort, 'high');
   assert.equal(adapter.requests[0].maxTokens, 4096);
+  assert.deepEqual(adapter.requests[0].tools.map(tool => tool.name), ['structured_output']);
   assert.ok(!JSON.stringify(adapter.requests[0]).includes(claimSecret));
   assert.ok(!JSON.stringify(adapter.requests[0]).includes(slackOriginal));
 

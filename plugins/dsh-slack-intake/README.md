@@ -9,6 +9,8 @@ kind: "package-bundle"
 
 This package provides two separate DSH entries for the Go `aistore` CLI. The bundle patch mounts a standalone command adapter with local `OPENROUTER_API_KEY` credential access. The `./agent` entry registers `aistore_native_task` in an Agent scope and runs one claimed reader or reviewer task through an explicitly selected native subagent provider. Both entries require absolute paths to the `aistore` executable and store; legacy Python and `skillRoot` configuration is rejected.
 
+This local.4 package requires the native executor, batch tool execution, and AgentModel APIs of the master commit recorded in `UPGRADE.json`; the older rc.3 release tag has the same version string but not those APIs. Verification Sessions select their configured route before admission and reject route changes. The configured step/command limits, startup readiness, durable claims, and unknown-outcome handling remain unchanged.
+
 ## Table of Contents
 
 - [Use the standalone adapter](#use-the-standalone-adapter)
@@ -58,7 +60,7 @@ Only the exact `intake resume ... --allow-network` operation resolves `OPENROUTE
 
 ## Mount the native Agent entry
 
-Mount `@kkiyama117/dsh-slack-intake/agent` in an authored Agent preset that already consumes the host `tools` and `subagents` services. Do not mount it in the standalone authentication profile: that profile has no calling Agent. A preset row has this configuration:
+Mount `@kkiyama117/dsh-slack-intake/agent` in an authored Agent preset that already consumes the host `tools`, `subagents`, and `sessionQuery` services. Do not mount it in the standalone authentication profile: that profile has no calling Agent. A preset row has this configuration:
 
 ```yaml
 - id: aistore-native-task
@@ -69,7 +71,7 @@ Mount `@kkiyama117/dsh-slack-intake/agent` in an authored Agent preset that alre
     subagentProvider: spawn
 ```
 
-The configured provider must support one-shot `agentOptions`, `outputSchema`, and `toolFilter`; the current in-process `spawn` provider supports all three. The tool must be invoked by the DSH Agent loop so `exec.agent` identifies the real parent Agent.
+The configured provider must support `agentOptions`, `outputSchema`, and `agentPreset`; the in-process `spawn` provider supports all three. Install `@local/dsh-aistore-native-preset` in every calling profile. The adapter selects its `aistore-native` preset, which excludes global tools and provides no task tools; the runtime adds only `structured_output`. A missing preset rejects creation instead of inheriting parent tools. The tool must be invoked by the DSH Agent loop so `exec.agent` identifies the real parent Agent.
 
 The tool accepts only `taskId` and `inputHash` from an aistore handoff. It performs this sequence once:
 
@@ -93,7 +95,7 @@ The standalone subprocess receives a new environment containing only `LANG=C.UTF
 
 Every aistore subprocess uses an argv array with no shell, ignored stdin, an 8,000,000-byte stdout limit, and a 1,024-byte stderr inspection limit. For Slack collection failures, only an exact allowlisted condition becomes an `AISTORE_SLACK_*` diagnostic; raw stderr, unknown conditions, oversized diagnostics and credential-bearing text are never exposed. Successful output must be one protocol-version-1 JSON envelope. The native claim and authority data stay outside the child prompt and tool output. Only the Go-produced native packet becomes model-visible.
 
-The native entry forwards cancellation to the child run, enforces the packet deadline, awaits the run result, and awaits `dispose()` before returning. Its receipt uses the route recorded by DSH request and assistant events rather than a route claimed in model output. `reported_cost` is `null` because the current DSH session events do not expose a monetary cost for this run.
+The native entry uses `startActivation` with caller delivery, enforces the packet deadline, and awaits the result and `dispose()` before returning. The admission signal covers startup; after publication, cancellation disposes that exact activation. It reads the settled child's durable Session through `sessionQuery.readSession`, verifies the child id, and builds its receipt from recorded request and assistant events rather than a model's route claim. `reported_cost` is `null` because the current DSH session events do not expose a monetary cost for this run.
 
 -----
 
@@ -111,7 +113,7 @@ DSH_HOST_ROOT=/data/softwares/deepseek-harness-master \
   npm test
 ```
 
-The suite uses synthetic credentials and temporary files only. It starts real local child processes, preserves exit-code-3 handoffs, exercises the current built DSH tool registry, creates a real parent Agent as `exec.agent`, starts a real in-process one-shot child through `spawn`, and uses a scripted local LLM adapter to produce structured output. With the two binary variables set, it creates a schema-7 disposable store and drives real Go claim, in-flight, packet, native accept, deadline, cancellation, and unknown-task rejection paths. It does not contact Slack, OpenRouter, or another network service.
+The suite uses synthetic credentials and temporary files only. It starts real local child processes, preserves exit-code-3 handoffs, exercises the current built DSH tool registry, creates a real parent Agent as `exec.agent`, starts a real in-process managed activation through `spawn`, and uses a scripted local LLM adapter to produce structured output. With the two binary variables set, it creates a schema-7 disposable store and drives real Go claim, in-flight, packet, native accept, deadline, cancellation, and unknown-task rejection paths. It does not contact Slack, OpenRouter, or another network service.
 
 -----
 

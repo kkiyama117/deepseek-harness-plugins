@@ -125,8 +125,13 @@ integrationTest('built Go aistore completes real DSH reader/reviewer runs and co
 
   async function invoke(name, signal = new AbortController().signal) {
     const item = fixture.tasks[name];
-    return ctx.tools.execute({ callId: ToolCallId(`native-${name}`), name: 'aistore_native_task',
-      arguments: { taskId: item.task_id, inputHash: item.input_hash }, agent: parent, signal });
+    const batch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: ToolCallId(`native-${name}`), name: 'aistore_native_task',
+        arguments: JSON.stringify({ taskId: item.task_id, inputHash: item.input_hash }) }],
+      agent: parent, signal,
+    });
+    assert.equal(batch.results.length, 1);
+    return batch.results[0].result;
   }
 
   for (const name of ['reader', 'insufficient', 'reviewer']) {

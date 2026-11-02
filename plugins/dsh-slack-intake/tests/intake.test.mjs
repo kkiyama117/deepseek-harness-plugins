@@ -96,6 +96,24 @@ test('Slack credential is injected only for collection', async () => {
   }), 0);
 });
 
+test('native rejection is trusted only for the exact finalized task, attempt and safe code', async () => {
+  const args = ['intake', 'native', 'accept', '--task', 'task:1', '--attempt', '1', '--receipt', '/private/receipt'];
+  const value = { status: 'rejected', final_status: 'failed', code: 'NATIVE_READER_ANCHOR_MISMATCH',
+    task_id: 'task:1', attempt: 1, result_hash: 'a'.repeat(64) };
+  await assert.rejects(runAistore(config, args, new AbortController().signal, undefined,
+    childResult({ code: 4, stdout: JSON.stringify({ protocol_version: 1, result: value }) })),
+  error => error.code === value.code && error.nativeRejected === true);
+  for (const bad of [{ ...value, task_id: 'other' }, { ...value, attempt: 2 }, { ...value, final_status: 'unknown' },
+    { ...value, code: secret }, { ...value, result_hash: 'missing' }, { ...value, private: secret }]) {
+    await assert.rejects(runAistore(config, args, new AbortController().signal, undefined,
+      childResult({ code: 4, stdout: JSON.stringify({ protocol_version: 1, result: bad }), stderr: secret })),
+    error => error.code === 'AISTORE_REJECTION_PROTOCOL_INVALID' && !error.nativeRejected && !error.message.includes(secret));
+  }
+  await assert.rejects(runAistore(config, ['verify'], new AbortController().signal, undefined,
+    childResult({ code: 4, stdout: JSON.stringify({ protocol_version: 1, result: value }) })),
+  error => error.code === 'AISTORE_REJECTION_PROTOCOL_INVALID' && !error.nativeRejected);
+});
+
 test('protocol, nonzero exit, and secret output use fixed diagnostics only', async () => {
   for (const [child, code] of [
     [childResult({ stdout: 'not json' }), 'AISTORE_PROTOCOL_ERROR'],

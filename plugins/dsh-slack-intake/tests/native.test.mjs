@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
-import { buildNativeReceipt, runNativeTask } from '../native.mjs';
+import { buildNativeReceipt, runNativeTask as executeNativeTask } from '../native.mjs';
+
+function runNativeTask(options) {
+  return executeNativeTask({ ...options, sessionQuery: options.subagents.sessionQuery });
+}
 
 const config = { aistoreExecutable: '/trusted/aistore', storeRoot: '/private/store', subagentProvider: 'spawn' };
 const taskId = 'task:reader:1';
@@ -35,10 +41,14 @@ function eventsFor(value = response, route = { provider: 'openrouter', model: 'f
 function successfulSubagents({ result = { output: [], structured: response, stopReason: 'completed' }, events = eventsFor(), onStart, onDispose } = {}) {
   return {
     getProvider(name) { return name === 'spawn' ? {} : undefined; },
-    async start(provider, request) {
-      onStart?.(provider, request);
-      const agent = { id: 'session:actual', session: { snapshotEvents: () => events } };
-      return { id: agent.id, localAgent: agent, result: Promise.resolve(result),
+    sessionQuery: { async readSession(id) {
+      assert.equal(id, 'session:actual');
+      return { session: { id }, events };
+    } },
+    async startActivation(spec) {
+      assert.equal(spec.delivery, 'caller');
+      onStart?.(spec.provider, spec.request);
+      return { childId: 'session:actual', result: Promise.resolve(result),
         async dispose() { await onDispose?.(); } };
     },
   };
@@ -103,7 +113,8 @@ test('claims once, hides private grant, fixes route, disposes, and accepts actua
   assert.ok(!JSON.stringify(nativeRequest).includes(claimSecret));
   assert.ok(!JSON.stringify(nativeRequest).includes('authority_hash'));
   assert.deepEqual(nativeRequest.agentOptions, { provider: 'openrouter', model: 'fixed-model', reasoningEffort: 'high', maxTokens: 4096 });
-  assert.deepEqual(nativeRequest.toolFilter, { allow: [] });
+  assert.equal(nativeRequest.agentPreset, 'aistore-native');
+  assert.equal(Object.hasOwn(nativeRequest, 'toolFilter'), false);
   assert.equal(nativeRequest.outputSchema.type, 'object');
   assert.deepEqual(validateJsonSchemaValue(nativeRequest.outputSchema, response), []);
   assert.deepEqual(validateJsonSchemaValue(nativeRequest.outputSchema, insufficientResponse), []);
@@ -131,10 +142,33 @@ test('receipt validation rejects missing, extra, and duplicate reader identities
   ];
   for (const fixture of cases) {
     const agent = { id: `session:${fixture.name}`, session: { snapshotEvents: () => eventsFor(fixture.value) } };
-    assert.throws(() => buildNativeReceipt({ id: agent.id, localAgent: agent },
+    assert.throws(() => buildNativeReceipt({ id: agent.id, events: agent.session.snapshotEvents() },
       { structured: fixture.value, stopReason: 'completed' }, packetValue),
     error => error.code === 'NATIVE_READER_RESULT_INVALID', fixture.name);
   }
+});
+
+test('a committed Reader rejection retains its receipt and never becomes unknown or retries', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'aistore-native-rejection-test-'));
+  assert(root.startsWith(join(tmpdir(), 'aistore-native-rejection-test-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const calls = []; const state = {};
+  const base = standardHandler(state);
+  const handler = async argv => {
+    const op = command(argv);
+    if (op.slice(0, 3).join('/') === 'intake/native/accept') {
+      state.receiptPath = op[8];
+      return { code: 4, result: { status: 'rejected', final_status: 'failed', code: 'NATIVE_READER_ANCHOR_MISMATCH',
+        task_id: taskId, attempt: 1, result_hash: 'c'.repeat(64) } };
+    }
+    return base(argv);
+  };
+  await assert.rejects(runNativeTask({ config: { ...config, receiptRoot: root }, taskId, inputHash, parent: { id: 'parent' },
+    signal: new AbortController().signal, subagents: successfulSubagents(), spawnChild: protocolSpawn(handler, calls) }),
+  error => error.code === 'NATIVE_READER_ANCHOR_MISMATCH' && error.nativeRejected === true);
+  assert.deepEqual(JSON.parse(await readFile(state.receiptPath, 'utf8')).response, response);
+  assert.equal(calls.filter(c => command(c.argv)[1] === 'claim').length, 1);
+  assert.equal(calls.filter(c => command(c.argv)[1] === 'unknown').length, 0);
 });
 
 test('route mismatch is never replaced and marks the in-flight attempt unknown', async () => {
@@ -167,13 +201,17 @@ test('deadline aborts the native signal and waits for result plus dispose before
   const order = [];
   const subagents = {
     getProvider() { return {}; },
-    async start(_provider, request) {
-      const result = new Promise(resolve => request.signal.addEventListener('abort', () => {
-        order.push('aborted');
-        setTimeout(() => { order.push('result'); resolve({ output: [], stopReason: 'aborted' }); }, 10);
-      }, { once: true }));
-      return { id: 'session:timeout', localAgent: { id: 'session:timeout', session: { snapshotEvents: () => [] } }, result,
-        async dispose() { await new Promise(resolve => setTimeout(resolve, 10)); order.push('disposed'); } };
+    async startActivation() {
+      // Published activations ignore their admission signal; dispose must cancel them.
+      const result = Promise.withResolvers();
+      return { childId: 'session:timeout', result: result.promise,
+        async dispose() {
+          order.push('aborted');
+          order.push('result');
+          result.resolve({ output: [], stopReason: 'aborted' });
+          await Promise.resolve();
+          order.push('disposed');
+        } };
     },
   };
   const timedPacket = packet({ timeout_seconds: 1 });
@@ -199,7 +237,7 @@ test('content review uses a separate packet and rejects missing or foreign artic
   assert.deepEqual(validateJsonSchemaValue(request.outputSchema, output), []);
   for (const invalid of [{ items: [] }, { items: [{ ...output.items[0], article_hash: 'foreign' }] }, { items: [{ ...output.items[0], reason: '' }] }]) {
     const agent = { id: 'session:actual', session: { snapshotEvents: () => eventsFor(invalid) } };
-    assert.throws(() => buildNativeReceipt({ id: agent.id, localAgent: agent }, { structured: invalid, stopReason: 'completed' }, reviewPacket),
+    assert.throws(() => buildNativeReceipt({ id: agent.id, events: agent.session.snapshotEvents() }, { structured: invalid, stopReason: 'completed' }, reviewPacket),
       error => error.code === 'NATIVE_CONTENT_REVIEW_INVALID');
   }
 });
@@ -208,7 +246,7 @@ test('reviewer rejects reader statuses and invented categories before acceptance
   const reviewPacket = packet({ kind: 'reviewer', packet: { taxonomy: { categories: { misc: 'Science news' } } } });
   for (const output of [{ status: 'ready', category: 'misc', reason: 'matches' }, { status: 'classified', category: 'invented', reason: 'matches' }, { status: 'excluded', category: 'misc', reason: 'outside' }]) {
     const agent = { id: 'session:actual', session: { snapshotEvents: () => eventsFor(output) } };
-    assert.throws(() => buildNativeReceipt({ id: agent.id, localAgent: agent }, { structured: output, stopReason: 'completed' }, reviewPacket),
+    assert.throws(() => buildNativeReceipt({ id: agent.id, events: agent.session.snapshotEvents() }, { structured: output, stopReason: 'completed' }, reviewPacket),
       error => error.code === 'NATIVE_REVIEWER_RESULT_INVALID');
   }
 });

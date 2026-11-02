@@ -5,7 +5,7 @@ import { resolveNativeConfig, runNativeTask } from './native.mjs';
 /** Stable agent-side plugin name. */
 export const name = 'aistore-native-task';
 /** The tool consumes the host registries already mounted for an Agent session. */
-export const inject = ['tools', 'subagents'];
+export const inject = ['tools', 'subagents', 'sessionQuery'];
 
 /** Register one native task tool in an Agent-owned scope. */
 export function apply(ctx, config) {
@@ -33,7 +33,7 @@ export function apply(ctx, config) {
     async execute(args, exec) {
       if (!exec.agent) throw new Error('aistore-native: an executing Agent is required');
       return runNativeTask({ config: spec, taskId: args.taskId, inputHash: args.inputHash,
-        parent: exec.agent, signal: exec.signal, subagents: ctx.subagents });
+        parent: exec.agent, signal: exec.signal, subagents: ctx.subagents, sessionQuery: ctx.sessionQuery });
     },
   }));
 }
