@@ -160,13 +160,19 @@ test('a cwd hint attaches through the public session persistence service', async
 
 function fakeContext(workspaceRegistry, persistence) {
   const disposers = [];
+  let disposed = false;
   return {
     workspaceRegistry,
     logger: { warn() {} },
     get: name => (name === 'sessionPersistence' ? persistence : undefined),
-    effect: (callback) => { disposers.push(callback()); },
+    effect: (callback) => {
+      // Cordis refuses effects on a disposed fiber (fiber.ts `assertActive`).
+      if (disposed) throw new Error('cannot create effect on inactive context');
+      disposers.push(callback());
+    },
     on() {},
     async dispose() {
+      disposed = true;
       for (const dispose of disposers.reverse()) await dispose();
     },
   };
@@ -185,6 +191,36 @@ test('apply creates the hint root, processes pending hints, and stops on dispose
   await writeFile(join(root, 'late.json'), hintText('late', { kind: 'id', id: 'ws-1' }));
   await new Promise(resolve => setTimeout(resolve, 60));
   assert.deepEqual(calls, ['session-a']);
+});
+
+test('apply leaves no watcher or timer behind when disposed during the first scan', async (t) => {
+  const root = await hintRoot(t);
+  const calls = [];
+  let releaseFirstScan;
+  let firstScanStarted;
+  const gate = new Promise(resolve => { releaseFirstScan = resolve; });
+  const started = new Promise(resolve => { firstScanStarted = resolve; });
+  const registry = registryFor([workspace('ws-1', '/repo', async sessionId => {
+    calls.push(sessionId);
+    if (sessionId !== 'session-a') return;
+    firstScanStarted();
+    await gate;
+  })]);
+  const context = fakeContext(registry);
+  await writeFile(join(root, 'session-a.json'), hintText('session-a', { kind: 'id', id: 'ws-1' }));
+
+  const applied = apply(context, { hintRoot: root, scanIntervalMs: 10, maxPendingMs: 1_000 }).catch(error => error);
+  await started;
+  await context.dispose();
+  releaseFirstScan();
+  const applyFailure = await applied;
+
+  await writeFile(join(root, 'late.json'), hintText('late', { kind: 'id', id: 'ws-1' }));
+  await new Promise(resolve => setTimeout(resolve, 400));
+
+  assert.deepEqual(calls, ['session-a']);
+  assert.deepEqual(await readdir(root), ['late.json']);
+  assert.equal(applyFailure, undefined);
 });
 
 test('apply rejects an invalid config', async () => {
