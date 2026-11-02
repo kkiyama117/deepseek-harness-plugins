@@ -123,6 +123,8 @@ Use your own package location rather than the maintainer's filesystem paths in o
 
 Use [Issues](https://github.com/kkiyama117/deepseek-harness-plugins/issues) to report problems or propose improvements. [CONTRIBUTING.md](CONTRIBUTING.md) describes the shared human/AI development flow and this repository's verification and publication scope.
 
+Documentation languages: this README is the English source and [README.ja.md](README.ja.md) is its line-aligned Japanese pair; change both together. [AGENTS.md](AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md), and package READMEs are written in English. A package translation (`README.zh.md` or `README.ja.md`) is optional, but when one exists it is updated in the same change, including any `README.i18n.yaml` record. The process and policy documents—[CONTRIBUTING.md](CONTRIBUTING.md), [SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md), [maintenance scope](docs/maintenance-scope.md), [runtime placement](bin/runtime-placement.md), and the [issue-driven-development](skills/issue-driven-development/SKILL.md) skill—are maintained in Japanese only.
+
 The root [package manifest](package.json) pins pnpm to `11.7.0`. The root workspace includes Web Search, Cursor, and five Web UI family packages—not every package in this repository.
 
 | Root command | Scope |

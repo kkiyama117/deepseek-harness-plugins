@@ -123,6 +123,8 @@ pnpm dsh plugin --help
 
 不具合の報告や改善の提案は[Issues](https://github.com/kkiyama117/deepseek-harness-plugins/issues)へお願いします。[CONTRIBUTING.md](CONTRIBUTING.md)に、人間とAI agentが共有する開発の流れと、このリポジトリの検証と公開範囲を書いています。
 
+文書の言語: このREADMEは英語版を原本とし、[README.ja.md](README.ja.md)は行を揃えた日本語版です。両方を同じ変更で更新してください。[AGENTS.md](AGENTS.md)、[ARCHITECTURE.md](ARCHITECTURE.md)、各パッケージのREADMEは英語で書きます。パッケージの翻訳版(`README.zh.md`または`README.ja.md`)は任意ですが、ある場合は`README.i18n.yaml`の記録も含めて同じ変更で更新します。手順と方針の文書([CONTRIBUTING.md](CONTRIBUTING.md)、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)、[保守対象](docs/maintenance-scope.md)、[常用配置](bin/runtime-placement.md)、[issue-driven-development](skills/issue-driven-development/SKILL.md)スキル)は日本語のみで管理します。
+
 リポジトリ直下の[パッケージマニフェスト](package.json)は、pnpmを`11.7.0`に固定しています。リポジトリ直下のワークスペースに入っているのはWeb Search、Cursor、Web UI系の5パッケージで、このリポジトリの全パッケージではありません。
 
 | リポジトリ直下のコマンド | 範囲 |
