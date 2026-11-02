@@ -165,15 +165,19 @@ to end. The two production instances (`implTaskGate`, `implTaskPreApproved`)
 pass `BUGGY_FIX_CAP = false` and are unaffected; remove the const and the
 `implTaskVulnerable` instance once the pattern is established elsewhere.
 
-> Enforcement layers (do not collapse): proto-1 is a deterministic lock on the
-> **model**. Proto-2 (`replay/trace.jsonl`) is **self-reported / experimental**
-> — the coordinator appends its own transitions; omitting a line defeats the
-> check. Proto-3 (`observed-trace-emitter`) records harness `tools/result`
-> events into per-session logs — **experimental telemetry, not a gate**: it
-> does not observe internal phases (SCOPE / CLARIFY / PLAN), the REPORT
-> action, or `reportHonesty`, and its mapper omits actions it lacks recorded
-> evidence for. Live emit requires the home-patch row and a dsh restart.
-> See [`replay/README.md`](replay/README.md).
+## Enforcement layers
+
+The layers must not be collapsed and are not equally strong; Proto-2 is
+self-reported (the coordinator appends its own transitions, so omitting a line
+defeats the check); see [`replay/README.md`](replay/README.md).
+
+| Layer | What it is | What it proves | What it does **not** prove |
+|---|---|---|---|
+| Skill prose | `SKILL.md` flow | Intent | Anything at runtime |
+| Quint model | `implementTask.qnt` + scenario tests | The *specified* phase machine (guards, invariants, witnesses) | That a live agent followed the skill |
+| Proto-1 gate | Locked counterexample on `BUGGY_FIX_CAP` | Deterministic regression on the **model** | Live agent behavior |
+| Proto-2 replay | Coordinator-written `trace.jsonl` → `replay.mjs` → `quint test` | That a **self-reported** trace is allowed by the model | Honesty. A skipped line is invisible. **Experimental / self-reported.** |
+| Proto-3 emitter | Host plugin on `tools/result` → per-session `trace.observed.<sid>.jsonl` | **Experimental telemetry, not a gate**: observed tool calls (gate question shape, worker/verify/frontier report heads) can be mapped and replayed; the mapper omits unevidenced actions | Internal phases (SCOPE/CLARIFY/PLAN), the REPORT action, `reportHonesty`, and success beyond recorded evidence. Needs a **dsh restart** after the home-patch row is added; live emit is unverified until then. |
 
 ## Baseline CI
 

@@ -75,7 +75,7 @@
 | コンポーネント | 目的 |
 |---|---|
 | [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | 受理ポリシーを特定のSession IDに限定し、公式のGoal/subagent行を外部サブクラスに差し替えます。指定されたSession ID以外には適用されません。 |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | 決定論的な受け入れ検査を2つの検証用Sessionに一時的に隔離します。READMEはないためマニフェストとパッチを参照してください。 |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。マシンローカルのDSHチェックアウトパスからimportします。 |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | `session/disposed`を監視してセッション資源の同期解放を要求します。全Sessionの一括破棄や相手方ソケットの切断待機は行いません。 |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | 指定したローカルアプリURL向けにキャッシュ可能な汎用フォールバックアイコンを提供します。未登録アイコンの自動探索やランチャーの変更は行いません。 |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | 構造化されたreaderおよびreviewer子Session向けに`aistore-native`プリセットを宣言し、ツール利用を制限します。プリセット不在時は親の設定に縮退せず生成を拒否します。 |
@@ -122,6 +122,8 @@ pnpm dsh plugin --help
 ## 開発
 
 不具合の報告や改善の提案は[Issues](https://github.com/kkiyama117/deepseek-harness-plugins/issues)へお願いします。[CONTRIBUTING.md](CONTRIBUTING.md)に、人間とAI agentが共有する開発の流れと、このリポジトリの検証と公開範囲を書いています。
+
+本READMEが英語の正本であり、README.ja.mdは行単位で対になる日本語訳です。両方を同時に変更してください。AGENTS.md、ARCHITECTURE.md、各パッケージのREADMEは英語で記述します。パッケージの翻訳（README.zh.mdまたはREADME.ja.md）は任意ですが、存在する場合はREADME.i18n.yamlの記録を含めて同一の変更で更新します。以下のプロセス・方針文書は日本語のみで維持されます: [CONTRIBUTING.md](CONTRIBUTING.md)、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)、[docs/maintenance-scope.md](docs/maintenance-scope.md)、[bin/runtime-placement.md](bin/runtime-placement.md)、およびissue-driven-developmentスキル（[skills/issue-driven-development/SKILL.md](skills/issue-driven-development/SKILL.md)）。
 
 リポジトリ直下の[パッケージマニフェスト](package.json)は、pnpmを`11.7.0`に固定しています。リポジトリ直下のワークスペースに入っているのはWeb Search、Cursor、Web UI系の5パッケージで、このリポジトリの全パッケージではありません。
 

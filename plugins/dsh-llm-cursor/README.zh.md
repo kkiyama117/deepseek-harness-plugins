@@ -43,6 +43,8 @@ bundle 的 patch 层插入 `llm-cursor` 行，在 harness LLM 接缝上注册 `c
 
 插件注册单一 provider 路由 `cursor`。请求以 `provider: cursor` 选择它；其 `model` 原样作为 Cursor 模型 id 传递，因此更换 Cursor 模型无需生命周期期注册。省略 `models` 时广告 `default` 和 `composer-2.5`，各自使用路由的 `defaultContextWindow`；显式列表整体替换这些默认值，而 `models: []` 不广告任何模型。目录条目通过 `ctx.llm.listModels('cursor')` 暴露给 ACP 编辑器和 Web 选择器等客户端，但仅为建议性：未列出的模型 id 仍原样放行。
 
+Cursor SDK 目录中暴露 `fast` 参数的模型（Grok、Composer、Opus 5/4.8/4.7 以及 GPT-5.x 系列）会额外广告为 `:fast` 和 `:slow` 的 id 变体（例如 `grok-4.6`、`grok-4.6:fast`、`grok-4.6:slow`），以便模型选择器按模型选取快速路径。适配器在调用 SDK 前会剥除该后缀，并注入 `fast` 参数（`:fast` 为 `true`，`:slow` 为 `false`），该参数优先于同 id 的已配置 `params` 条目；不带 `fast` 参数的模型上的后缀会被忽略。纯 id 保持 SDK 的默认变体。
+
 `runtime: cloud` 运行 Cursor Cloud agent 而非本地 SDK 循环；此时本地存储和 `cwd` 不再使用。`params` 条目合并进每个 `ModelSelection`（SDK 的模型参数词汇，例如 `thinking: true`）。推理档位通过 harness 的 reasoning-effort 接缝暴露：适配器将 SDK 目录中的 effort 词汇（Grok/Claude 模型的 `effort`、GLM/GPT 模型的 `reasoning`）作为推理档位提供，模型选择器可按模型选择档位。
 
 `streamIdleTimeoutMs` 约束每次未完成的 provider 读取，不计算消费方在块之间的思考时间。每次 `stream()` 调用恰好执行一次 Cursor agent 运行；适配器将配置的策略注册为 provider 元数据，`dsh-llm-retry` 在持久 agent 步骤边界单独执行它。
@@ -66,7 +68,7 @@ bundle 的 patch 层插入 `llm-cursor` 行，在 harness LLM 接缝上注册 `c
 
 每次解析产生一个**不可变**连接事实快照，在操作的第一次 `await` 之前捕获。因此配置变更作用于下一次请求，绝不作用于进行中的请求。
 
-成功结束会发出携带 Cursor agent id 的 `finish.replayState`（`{ kind: 'cursor', version: 1, agentId }`）。下一次请求时，适配器读取最新模型产出的 assistant 消息上的重放状态、校验之，并且——仅限普通对话请求——恢复该 agent（`Agent.resume`）并只发送最新用户消息，因为 agent 已持有对话。辅助调用（`purpose: compaction` 或 `session-title`）始终在全新 agent 上以扁平化历史运行，因此摘要或标题调用绝不会污染被恢复 agent 的对话。格式错误的重放状态在任何 SDK 交互之前以 `LlmError('INVALID_REPLAY_STATE')` 失败；被恢复的 agent 已不存在（存储被清空）时以 `INVALID_REQUEST` 响亮失败，而非静默重新开始。
+成功结束会发出携带 Cursor agent id 的 `finish.replayState`，其位于接缝的 `ReplayEnvelope` 内部，形式为 `{ response: { kind: 'cursor', version: 1, agentId } }`（没有逐块元数据，因此省略 `blocks`，envelope 原样穿过组装环节）。下一次请求时，适配器读取最新模型产出的 assistant 消息上的重放状态、校验之，并且——仅限普通对话请求——恢复该 agent（`Agent.resume`）并只发送最新用户消息，因为 agent 已持有对话。辅助调用（`purpose: compaction` 或 `session-title`）始终在全新 agent 上以扁平化历史运行，因此摘要或标题调用绝不会污染被恢复 agent 的对话。格式错误的重放状态在任何 SDK 交互之前以 `LlmError('INVALID_REPLAY_STATE')` 失败；被恢复的 agent 已不存在（存储被清空）时以 `INVALID_REQUEST` 响亮失败，而非静默重新开始。
 
 ## 词汇差异
 
@@ -74,6 +76,7 @@ bundle 的 patch 层插入 `llm-cursor` 行，在 harness LLM 接缝上注册 `c
 - 全新 agent 收到扁平化的 harness 对话作为一条提示词：系统提示词，随后每条消息渲染为 `User:`/`Assistant:` 文本，工具调用与结果作为转写。推理块是模型内部内容，绝不渲染。
 - `GenerateOptions.stop`、`temperature` 和 `maxTokens` 以 `UNSUPPORTED_OPTION` 拒绝：Cursor SDK `send` 接受提示词、模型选择和模式，没有采样旋钮或停止序列的线上等价物。agent 循环默认不发送这些字段，因此拒绝只对显式配置触发。
 - `reasoningEffort` 映射到模型的 effort 参数：适配器将 SDK 目录的 effort 词汇（Grok/Claude 模型的 `effort`、GLM/GPT 模型的 `reasoning`）作为 harness 推理档位暴露，模型选择器可按模型选择档位。所选档位成为模型参数（例如 `effort: high`），替换同 id 的已配置 `params` 条目；无词汇表的模型保持 SDK 默认变体。
+- `fast`/`slow` 选择是模型 id 后缀，而非模式：SDK 的 `mode` 仅有 `agent`/`plan`，而 `fast` 是模型参数（`true`/`false`）。选择 `grok-4.6:fast` 或 `grok-4.6:slow` 可按模型固定该设置；该后缀在调用 SDK 之前被剥除，并将 `fast` 参数注入 `ModelSelection`。
 - SDK 错误类映射为稳定 harness 码：`AuthenticationError` → `AUTH`，`RateLimitError` → `RATE_LIMIT`，`NetworkError` → `SERVER`，`AgentBusyError`/`UnknownAgentError`/`ConfigurationError` → `INVALID_REQUEST`，通用可重试 SDK 错误 → `SERVER`，其余 → `TRANSPORT`。失败的运行以携带运行自身错误码和消息的错误 finish 结束流。
 - 调用方取消会取消 Cursor 运行并抛出 `ABORTED`；配置的流空闲预算会取消运行并抛出 `TIMEOUT`。
 

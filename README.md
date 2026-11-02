@@ -75,7 +75,7 @@ Deployment-specific bundles and presets:
 | Component | Purpose |
 |---|---|
 | [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Confines the acceptance policy to exact Session ids and disables official Goal/subagent rows in favor of external subclasses; restricted to fixed Session ids. |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions; it has no README and the reader should read its manifest and patch. |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions. It imports from a machine-local DSH checkout path. |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Listens to `session/disposed` and requests synchronous closure of session resources; does not clear all Sessions or await peer socket closure. |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | Serves cacheable generic fallback icons for selected local application URLs; does not discover missing icons automatically or alter existing launcher routes. |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | Declares the `aistore-native` preset for reader and reviewer child Sessions with scoped tool restrictions; missing presets reject creation without falling back. |
@@ -122,6 +122,8 @@ Use your own package location rather than the maintainer's filesystem paths in o
 ## Development
 
 Use [Issues](https://github.com/kkiyama117/deepseek-harness-plugins/issues) to report problems or propose improvements. [CONTRIBUTING.md](CONTRIBUTING.md) describes the shared human/AI development flow and this repository's verification and publication scope.
+
+This README is the English source; README.ja.md is its line-aligned Japanese pair; change both together. AGENTS.md, ARCHITECTURE.md, and package READMEs are written in English. A package translation (README.zh.md or README.ja.md) is optional; when one exists it is updated in the same change, including any README.i18n.yaml record. These process/policy documents are maintained in Japanese only: [CONTRIBUTING.md](CONTRIBUTING.md), [SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md), [docs/maintenance-scope.md](docs/maintenance-scope.md), [bin/runtime-placement.md](bin/runtime-placement.md), and the issue-driven-development skill ([skills/issue-driven-development/SKILL.md](skills/issue-driven-development/SKILL.md)).
 
 The root [package manifest](package.json) pins pnpm to `11.7.0`. The root workspace includes Web Search, Cursor, and five Web UI family packages—not every package in this repository.
 
