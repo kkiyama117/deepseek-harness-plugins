@@ -36,7 +36,7 @@ node scripts/local-setup.mjs
 
 ## 2. Verification structure
 
-The `implement-task` skill is a retained reference process, not the active development flow ([AGENTS.md](AGENTS.md)). Three artifacts live under `skills/implement-task/spec/`. They differ in verification strength.
+The `implement-task` skill is a retained reference process, not the active development flow (see [AGENTS.md](AGENTS.md)). Three artifacts sit under `skills/implement-task/spec/`. They are not equally strong.
 
 | Layer | What it is | What it proves | What it does **not** prove |
 |---|---|---|---|

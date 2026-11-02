@@ -28,10 +28,10 @@ Each directory below is a source collection, not a deployment inventory. Cloning
 | [bin/](bin/) | Maintainer scripts that build, pack, and check packages, the weekly maintenance helpers, and the [runtime placement](bin/runtime-placement.md) notes. Not a public CLI. |
 | [scripts/](scripts/) | The read-only [local setup diagnostic](scripts/local-setup.mjs). |
 | [tests/](tests/) | Vitest configuration and upgrade regression specs that are not package-local. |
-| [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes, plus the retained [implement-task flow diagram](docs/implement-task-flow.html). |
+| [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes, and the retained [implement-task flow diagram](docs/implement-task-flow.html). |
 | [.agents/](.agents/) | Development notes and the harness-facing skills for working on this repository. |
 
-Root documents: [AGENTS.md](AGENTS.md) is the agent entry point (`CLAUDE.md` links to it), [CONTRIBUTING.md](CONTRIBUTING.md) describes the development flow, [ARCHITECTURE.md](ARCHITECTURE.md) describes runtime layering and verification limits, and [SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md) with [core-exceptions.json](core-exceptions.json) defines the Core baseline.
+Root documents: [AGENTS.md](AGENTS.md) is the agent entry point ([CLAUDE.md](CLAUDE.md) links to it); [CONTRIBUTING.md](CONTRIBUTING.md) describes the development flow; [ARCHITECTURE.md](ARCHITECTURE.md) describes runtime layering and verification limits; [SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md) with [core-exceptions.json](core-exceptions.json) defines the Core baseline.
 
 A local working copy also holds ignored directories such as `reports/`, `releases/`, and `local-design/`. They contain private material and are not part of the published tree.
 
@@ -74,16 +74,16 @@ Deployment-specific bundles and presets:
 
 | Component | Purpose |
 |---|---|
-| [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Confines the Goal acceptance policy to the Session ids listed in its patch. Other Sessions keep ordinary behavior. |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions. It lacks a README; read its manifest and patch. |
-| [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Releases pi-ai Session-owned connection caches when a Session is disposed. |
-| [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | Supplies generic icons for explicitly selected local applications without changing DSH Core. |
-| [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | Declares the restricted `aistore-native` child preset for structured reader and reviewer Sessions. |
-| [Slack intake](plugins/dsh-slack-intake/README.md) | Connects a DSH profile to the Go aistore CLI and runs one claimed reader or reviewer task through a fixed native Agent route. |
-| [LLM fallback](plugins/llm-fallback/README.md) | Retries only the configured source model on its explicit route list after a configured error that occurs before any content. |
-| [Local presets](presets/) | `ai-reference-store-next`, `cordis-kura`, `managed-cordis`, and `managed-standard` preserve local behavior on current upstream subagent controls; each `UPSTREAM.json` records its upstream base. |
+| [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Confines the acceptance policy to exact Session ids and disables official Goal/subagent rows in favor of external subclasses; restricted to fixed Session ids. |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions; it has no README and the reader should read its manifest and patch. |
+| [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Listens to `session/disposed` and requests synchronous closure of session resources; does not clear all Sessions or await peer socket closure. |
+| [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | Serves cacheable generic fallback icons for selected local application URLs; does not discover missing icons automatically or alter existing launcher routes. |
+| [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | Declares the `aistore-native` preset for reader and reviewer child Sessions with scoped tool restrictions; missing presets reject creation without falling back. |
+| [Slack intake](plugins/dsh-slack-intake/README.md) | Connects a DSH profile to the Go aistore CLI and runs one claimed reader or reviewer task through a fixed native Agent route; requires absolute paths to the executable and store, and never selects another model or provider. |
+| [LLM fallback](plugins/llm-fallback/README.md) | Retries only the configured source provider/model on its explicit route list after a configured error before content (such as quota or rate limits); other requested models are not substituted. |
+| [Local presets](presets/) | Preserves local behavior on current upstream subagent controls across `ai-reference-store-next`, `cordis-kura`, `managed-cordis`, and `managed-standard`, each recording its upstream base in `UPSTREAM.json`. |
 
-[subagent-fallback](plugins/subagent-fallback/) is not a bundle; it remains only as a reference for `implement-task`.
+[plugins/subagent-fallback/](plugins/subagent-fallback/) is not a bundle; it remains only as a reference for implement-task.
 
 ## Skills
 
