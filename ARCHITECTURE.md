@@ -36,14 +36,20 @@ node scripts/local-setup.mjs
 
 ## 2. Verification structure
 
-The `implement-task` skill is a retained reference process, not the active development flow ([AGENTS.md](AGENTS.md)). Three artifacts sit under `skills/implement-task/spec/`. They are not equally strong.
+Development follows [issue-driven-development](skills/issue-driven-development/SKILL.md). That skill is a procedure, not an execution platform: it does not enforce permissions, exclusive edits, budgets, or stopping. A task is complete only when its original acceptance conditions and required delivery targets are checked; an agent's success report, a passing test, or an opened PR is not enough.
 
-| Layer | What it is | What it proves | What it does **not** prove |
-|---|---|---|---|
-| Skill prose | `SKILL.md` flow | Intent | Anything at runtime |
-| Quint model | `implementTask.qnt` + scenario tests | The *specified* phase machine (guards, invariants, witnesses) | That a live agent followed the skill |
-| Proto-1 gate | Locked counterexample on `BUGGY_FIX_CAP` | Deterministic regression on the **model** | Live agent behavior |
-| Proto-2 replay | Coordinator-written `trace.jsonl` → `replay.mjs` → `quint test` | That a **self-reported** trace is allowed by the model | Honesty. A skipped line is invisible. **Experimental / self-reported.** |
-| Proto-3 emitter | Host plugin on `tools/result` → per-session `trace.observed.<sid>.jsonl` | **Experimental telemetry, not a gate**: observed tool calls (gate question shape, worker/verify/frontier report heads) can be mapped and replayed; the mapper omits unevidenced actions | Internal phases (SCOPE/CLARIFY/PLAN), the REPORT action, `reportHonesty`, and success beyond recorded evidence. Needs a **dsh restart** after the home-patch row is added; live emit is unverified until then. |
+Each check below proves one narrow thing. Do not substitute one for another.
+
+| Check | What it proves | What it does **not** prove |
+|---|---|---|
+| Package tests and builds (each package README) | The package source behaves as its tests specify | Compatibility with your DSH version; that the runtime loads the rebuilt output |
+| Root `pnpm build` / `pnpm test` | Root workspace members build and pass | Anything about packages outside the root workspace |
+| `bin/check-layout-links.py` | Local Markdown links resolve to tracked targets | That the linked content is accurate |
+| `bin/check-core-separation.py` | The Core checkout differs from upstream only by the recorded, hash-matched exception ([SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)) | Runtime placement or profile composition |
+| `bin/check-runtime-placement.py`, `bin/verify-runtime-location.mjs` | Services start from the intended checkout and dependency paths ([runtime placement](bin/runtime-placement.md)) | Package behavior inside those services |
+| `bin/pack-local-bundle.py` | A release archive contains exactly the reviewed files | That the archive works until it is installed and the profile is checked |
+| Skill-bundled checks (for example `skills/orchestrate-agents`) | The skill's files and scripts meet their own checks | That an agent follows the skill at runtime |
+
+The retained `implement-task` reference keeps its own Quint model and proof-strength table in [its spec README](skills/implement-task/spec/README.md#enforcement-layers); none of those layers gates current development.
 
 Read `scripts/local-setup.mjs` output and this table before claiming a gate is “enforced.”
