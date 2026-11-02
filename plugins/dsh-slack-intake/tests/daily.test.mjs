@@ -74,6 +74,58 @@ for (const state of ['unknown', 'claimed', 'in_flight', 'failed']) {
   });
 }
 
+test('known rejected Reader is not retried and does not abandon other executable work', async () => {
+  let stage = 0; const nativeCalls = []; let held = 0;
+  const rejected = { task: { ...handoff('task:bad', 'reader', 'failed').task, reason: 'NATIVE_READER_ANCHOR_MISMATCH' } };
+  const result = await driveBatch({ batch, maxTransitions: 10, quarantineNativeRejections: true,
+    run: async args => {
+      if (args[2] === 'advance') return { status: 'open', handoffs: stage === 0
+        ? [handoff('task:bad', 'reader'), handoff('task:good', 'reader')]
+        : stage === 1 ? [rejected, handoff('task:good', 'reader')]
+          : stage === 2 ? [rejected, handoff('task:classify', 'classifier')] : [rejected] };
+      if (args.includes('--allow-network')) { stage = 3; return {}; }
+      if (args.includes('--finish-held')) {
+        assert.equal(stage, 3, 'other work was discarded before registration'); held++;
+        return { status: 'completed', run_status: { counts: { registered: 1, needs_review: 1 } } };
+      }
+      return {};
+    },
+    native: async task => {
+      nativeCalls.push(task.task_id);
+      if (task.task_id === 'task:bad') { stage = 1; throw Object.assign(new Error('rejected'), { code: 'NATIVE_READER_ANCHOR_MISMATCH' }); }
+      stage = 2;
+    },
+  });
+  assert.deepEqual(nativeCalls, ['task:bad', 'task:good']);
+  assert.equal(held, 1); assert.equal(result.run_status.counts.registered, 1);
+});
+
+for (const [kind, status, reason] of [['reader', 'unknown', 'NATIVE_READER_ANCHOR_MISMATCH'],
+  ['reader', 'failed', 'AISTORE_OPERATION_FAILED'], ['content_review', 'failed', 'NATIVE_READER_ANCHOR_MISMATCH']]) {
+  test(`rejection isolation does not bypass ${kind}/${status}/${reason}`, async () => {
+    await assert.rejects(driveBatch({ batch, maxTransitions: 10, quarantineNativeRejections: true,
+      run: async args => args[2] === 'advance' ? { status: 'open', handoffs: [{ task: { ...handoff('task:bad', kind, status).task, reason } }] } : {},
+      native: () => assert.fail('unresolved task was dispatched'),
+    }), error => error.code === 'DAILY_TASK_NEEDS_RECONCILIATION');
+  });
+}
+
+test('rejection isolation preserves pending semantic approvals instead of holding them', async () => {
+  await assert.rejects(driveBatch({ batch, maxTransitions: 10, quarantineNativeRejections: true,
+    run: async args => {
+      assert(!args.includes('--finish-held'));
+      return args[2] === 'advance' ? { status: 'open', approvals: [{}], handoffs: [{ task: {
+        ...handoff('task:bad', 'reader', 'failed').task, reason: 'NATIVE_READER_ANCHOR_MISMATCH' } }] } : {};
+    }, native: () => assert.fail('unexpected native dispatch'),
+  }), error => error.code === 'DAILY_NO_EXECUTABLE_WORK');
+});
+
+test('daily rejection report names the cause without source text or claims', () => {
+  const text = renderDailyReport({ status: 'needs_attention', finished_at: 'synthetic', reason: 'NATIVE_READER_ANCHOR_MISMATCH', notification: 'sent',
+    state: { run_status: { tasks: [{ kind: 'reader', status: 'failed', task_id: 'task:1', reason: 'NATIVE_READER_ANCHOR_MISMATCH' }] } } });
+  assert.match(text, /引用が保存原文と一致しない/); assert.match(text, /自動再送しません/);
+});
+
 test('unchanged pending work stops rather than spinning or resetting a budget', async () => {
   let network = 0;
   await assert.rejects(driveBatch({ batch, maxTransitions: 10,

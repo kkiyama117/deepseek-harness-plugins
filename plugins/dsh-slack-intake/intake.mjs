@@ -42,13 +42,39 @@ const EXIT_DIAGNOSTICS = new Map([
   [2, 'AISTORE_USAGE_ERROR'],
 ]);
 
+const NATIVE_REJECTIONS = new Map([
+  ['NATIVE_READER_ANCHOR_MISMATCH', 'Readerの引用が保存原文と一致しないため拒否しました。'],
+  ['NATIVE_READER_SOURCE_MISMATCH', 'Readerの出典が入力資料と一致しないため拒否しました。'],
+  ['NATIVE_READER_IDENTITY_MISMATCH', 'Readerの資料ID集合が入力と一致しないため拒否しました。'],
+  ['NATIVE_READER_RESPONSE_INVALID', 'Readerの返答形式または必須項目が不正なため拒否しました。'],
+]);
+export const isNativeRejectionCode = code => NATIVE_REJECTIONS.has(code);
+export const nativeRejectionMessage = code => NATIVE_REJECTIONS.get(code);
+
 /** Error carrying only an adapter-owned fixed diagnostic code. */
 export class AdapterError extends Error {
-  constructor(code) {
+  constructor(code, nativeRejected = false) {
     super(code);
     this.name = 'AdapterError';
     this.code = code;
+    this.nativeRejected = nativeRejected;
   }
+}
+
+function finalizedNativeRejection(args, envelope) {
+  if (args.length !== 9 || args.slice(0, 3).join('/') !== 'intake/native/accept') return undefined;
+  const fields = new Map();
+  for (let i = 3; i < args.length; i += 2) {
+    if (!['--task', '--attempt', '--receipt'].includes(args[i]) || fields.has(args[i])) return undefined;
+    fields.set(args[i], args[i + 1]);
+  }
+  const value = envelope.result;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 6
+    || value.status !== 'rejected' || value.final_status !== 'failed'
+    || !isNativeRejectionCode(value.code) || value.task_id !== fields.get('--task')
+    || !Number.isSafeInteger(value.attempt) || value.attempt < 1 || String(value.attempt) !== fields.get('--attempt')
+    || typeof value.result_hash !== 'string' || !/^[0-9a-f]{64}$/.test(value.result_hash)) return undefined;
+  return value.code;
 }
 
 /**
@@ -184,6 +210,15 @@ export async function runAistore(config, args, signal, credential, spawnChild = 
       if (signal.aborted) return rejectRun(new AdapterError('AISTORE_INTERRUPTED'));
       if (overflow) return rejectRun(new AdapterError('AISTORE_STDOUT_LIMIT'));
       if (failed || childSignal !== null || code === null) return rejectRun(new AdapterError('AISTORE_PROCESS_FAILED'));
+      if (code === 4) {
+        try {
+          const envelope = parseEnvelope(Buffer.concat(chunks).toString('utf8'), credential?.value);
+          const rejection = finalizedNativeRejection(args, envelope);
+          return rejectRun(new AdapterError(rejection ?? 'AISTORE_REJECTION_PROTOCOL_INVALID', rejection !== undefined));
+        } catch {
+          return rejectRun(new AdapterError('AISTORE_REJECTION_PROTOCOL_INVALID'));
+        }
+      }
       if (code !== 0 && code !== 3) {
         const diagnostic = code === 1 && isSlackCollection(args) && diagnosticBytes <= STDERR_LIMIT
           ? slackDiagnostic(Buffer.concat(diagnosticChunks).toString('utf8'), credential?.value) : undefined;

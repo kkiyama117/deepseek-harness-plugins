@@ -5,7 +5,7 @@ import { mkdir, open, rename, stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { AdapterError, runAistore, resolveConfig } from './intake.mjs';
+import { AdapterError, runAistore, resolveConfig, isNativeRejectionCode, nativeRejectionMessage } from './intake.mjs';
 
 export const name = 'aistore-daily';
 export const inject = ['credentials', 'cmdlineArgs', 'agents', 'agentPresets', 'tools'];
@@ -85,7 +85,11 @@ export function renderDailyReport(report) {
     lines.push('', '## 要確認の実行記録', '', report.batch_completed
       ? '対象項目は明示的に保留へ分離しました。実行履歴は保持し、自動再送はしません。後続期間は収集可能です。'
       : 'このバッチが未完了のため、後続期間の収集は進んでいません。');
-    for (const task of unresolved) lines.push(`- ${task.kind}：${task.status}／${task.reason || '理由未記録'}（${task.task_id}）`);
+    for (const task of unresolved) {
+      lines.push(`- ${task.kind}：${task.status}／${task.reason || '理由未記録'}（${task.task_id}）`);
+      const detail = nativeRejectionMessage(task.reason);
+      if (detail) lines.push(`  ${detail}元の返答と試行は保持し、自動再送しません。`);
+    }
   }
   lines.push('', '## AIの利用', '');
   for (const [kind, value] of Object.entries(usage)) {
@@ -110,8 +114,12 @@ export async function quarantineTimedOutBatch({ batch, run, enabled }) {
   return run(['intake', 'resume', '--run', batch.run_id, '--finish-held']);
 }
 
+function rejectedReader(task) {
+  return task.kind === 'reader' && task.status === 'failed' && isNativeRejectionCode(task.reason);
+}
+
 /** Advance one frozen batch. run/native are injected so failure paths need no live paid requests. */
-export async function driveBatch({ batch, run, native, maxTransitions, quarantineNativeTimeouts = false }) {
+export async function driveBatch({ batch, run, native, maxTransitions, quarantineNativeTimeouts = false, quarantineNativeRejections = false }) {
   if (batch.status === 'collecting') await run(['intake', 'slack', 'collect', '--batch', batch.batch_id]);
   await run(['intake', 'daily', 'reconcile', '--batch', batch.batch_id]);
   let previous;
@@ -124,7 +132,8 @@ export async function driveBatch({ batch, run, native, maxTransitions, quarantin
     }
     if (result.status === 'needs_attention') throw new AdapterError('DAILY_ITEM_LIMIT');
     const handoffs = result.handoffs ?? [];
-    if (handoffs.some(({ task }) => ['unknown', 'claimed', 'in_flight', 'failed'].includes(task.status))) {
+    if (handoffs.some(({ task }) => ['unknown', 'claimed', 'in_flight', 'failed'].includes(task.status)
+      && !(quarantineNativeRejections && rejectedReader(task)))) {
       const held = await quarantineTimedOutBatch({ batch, run, enabled: quarantineNativeTimeouts });
       if (held) return held;
       throw new AdapterError('DAILY_TASK_NEEDS_RECONCILIATION');
@@ -136,6 +145,7 @@ export async function driveBatch({ batch, run, native, maxTransitions, quarantin
     if (task) {
       try { await native(task); }
       catch (error) {
+        if (quarantineNativeRejections && isNativeRejectionCode(error.code)) continue;
         const held = await quarantineTimedOutBatch({ batch, run, enabled: quarantineNativeTimeouts });
         if (held) return held;
         throw error;
@@ -145,6 +155,10 @@ export async function driveBatch({ batch, run, native, maxTransitions, quarantin
     if (handoffs.some(({ task }) => task.status === 'pending' && ['fetch', 'classifier'].includes(task.kind))) {
       await run(['intake', 'resume', '--run', batch.run_id, '--allow-network']);
       continue;
+    }
+    if (quarantineNativeRejections && handoffs.length > 0 && handoffs.every(({ task }) => rejectedReader(task))
+      && (result.approvals ?? []).length === 0) {
+      return run(['intake', 'resume', '--run', batch.run_id, '--finish-held']);
     }
     throw new AdapterError('DAILY_NO_EXECUTABLE_WORK');
   }
@@ -208,10 +222,18 @@ export async function executeDaily(ctx, config, signal) {
   try {
     batch = await run(['intake', 'daily', 'prepare', '--config', config.intakeConfig, '--latest', `${Math.floor(Date.now() / 1000)}.000000`]);
     report.batch_id = batch.batch_id;
-    await driveBatch({ batch, run, maxTransitions: config.maxTransitions, quarantineNativeTimeouts: config.quarantineNativeTimeouts, native: async task => {
-      const result = await ctx.tools.execute({ callId: `daily-${randomUUID()}`, name: 'aistore_native_task',
-        arguments: { taskId: task.task_id, inputHash: task.input_hash }, agent: await getParent(), signal: workSignal });
-      if (result.isError) throw new AdapterError('DAILY_NATIVE_FAILED');
+    await driveBatch({ batch, run, maxTransitions: config.maxTransitions, quarantineNativeTimeouts: config.quarantineNativeTimeouts, quarantineNativeRejections: config.quarantineNativeRejections, native: async task => {
+      const batchResult = await ctx.tools.execute({
+        calls: [{ type: 'tool-call', id: `daily-${randomUUID()}`, name: 'aistore_native_task',
+          arguments: JSON.stringify({ taskId: task.task_id, inputHash: task.input_hash }) }],
+        agent: await getParent(), signal: workSignal,
+      });
+      const result = batchResult.results[0]?.result;
+      if (!result) throw new AdapterError('DAILY_NATIVE_FAILED');
+      if (result.isError) {
+        const code = result.error?.info?.code;
+        throw new AdapterError(isNativeRejectionCode(code) ? code : 'DAILY_NATIVE_FAILED');
+      }
     } });
     report.verify = await run(['verify']);
     if (!Array.isArray(report.verify.errors) || report.verify.errors.length !== 0) throw new AdapterError('DAILY_VERIFY_FAILED');

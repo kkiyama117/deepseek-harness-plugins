@@ -35,7 +35,7 @@ Root documents: [AGENTS.md](AGENTS.md) is the agent entry point ([CLAUDE.md](CLA
 
 A local working copy also holds ignored directories such as `reports/`, `releases/`, and `local-design/`. They contain private material and are not part of the published tree.
 
-**Layout migration:** Existing installations, profiles, systemd units, and scripts may still refer to old root-level paths. Moving this repository's sources does not update them; inventory and migrate those references before replacing an active checkout. The retained Slack worker configuration and compatibility patch contain machine-specific paths that need review before use elsewhere. Do not assume that an isolated checkout or a passing source test has migrated the live runtime. See the [migration checklist](docs/layout-migration.md).
+**Layout migration:** Existing installations, profiles, systemd units, and scripts may still refer to old root-level paths. Moving this repository's sources does not update them; inventory and migrate those references before replacing an active checkout. The retained Slack worker configuration contains machine-specific paths that need review before use elsewhere. Do not assume that an isolated checkout or a passing source test has migrated the live runtime. See the [migration checklist](docs/layout-migration.md).
 
 ## Compatibility
 

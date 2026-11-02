@@ -133,11 +133,10 @@ export function buildNativeReceipt(run, result, packet) {
   if (result.stopReason !== 'completed' || result.structured === undefined) {
     throw new AdapterError('NATIVE_RESULT_FAILED');
   }
-  const agent = run.localAgent;
-  if (!agent || String(run.id) !== String(agent.id) || !agent.session || typeof agent.session.snapshotEvents !== 'function') {
+  if (!run.id || !Array.isArray(run.events)) {
     throw new AdapterError('NATIVE_SESSION_RECORD_MISSING');
   }
-  const events = agent.session.snapshotEvents();
+  const events = run.events;
   const header = events.findLast(event => event.type === 'request/header');
   const assistant = events.findLast(event => event.type === 'assistant/message');
   const end = events.findLast(event => event.type === 'turn/end');
@@ -163,7 +162,7 @@ export function buildNativeReceipt(run, result, packet) {
   const response = exactResponse(events, result.structured);
   const receipt = JSON.stringify({ schema_version: 1, input_hash: packet.input_hash,
     actual_route: { provider: source.provider, model: source.model, effort: config.reasoningEffort },
-    session_id: String(agent.id), reported_cost: null });
+    session_id: String(run.id), reported_cost: null });
   return `${receipt.slice(0, -1)},"response":${response}}\n`;
 }
 
@@ -179,7 +178,7 @@ async function markUnknown(config, taskId, reason, spawnChild) {
   }
 }
 
-async function runModel(subagents, provider, parent, packet, signal) {
+async function runModel(subagents, sessionQuery, provider, parent, packet, signal) {
   if (subagents.getProvider(provider) === undefined) throw new AdapterError('NATIVE_PROVIDER_UNAVAILABLE');
   const controller = new AbortController();
   let timedOut = false;
@@ -188,10 +187,20 @@ async function runModel(subagents, provider, parent, packet, signal) {
   if (signal.aborted) abort();
   const timer = setTimeout(() => { timedOut = true; controller.abort('native task deadline'); }, packet.timeout_seconds * 1000);
   let run;
+  let disposal;
+  const dispose = () => {
+    disposal ??= run.dispose();
+    // The event handler observes rejection now; finally awaits and reports it.
+    void disposal.catch(() => {});
+  };
   try {
-    run = await subagents.start(provider, {
-      parent,
+    run = await subagents.startActivation({
+      provider,
+      label: `aistore ${packet.kind}`,
+      delivery: 'caller',
       signal: controller.signal,
+      request: {
+      parent,
       prompt: [{ type: 'text', text: packet.kind === 'reader'
         ? readerPrompt(packet.packet)
         : packet.kind === 'content_review' ? contentReviewPrompt(packet.packet)
@@ -199,16 +208,24 @@ async function runModel(subagents, provider, parent, packet, signal) {
       agentOptions: { provider: packet.route.provider, model: packet.route.model,
         reasoningEffort: packet.route.effort, maxTokens: packet.max_tokens },
       outputSchema: packet.kind === 'reader' ? READER_SCHEMA : packet.kind === 'content_review' ? CONTENT_REVIEW_SCHEMA : REVIEWER_SCHEMA,
-      toolFilter: { allow: [] },
+      agentPreset: 'aistore-native',
+      },
     });
+    // The admission signal no longer owns cancellation after publication.
+    controller.signal.addEventListener('abort', dispose, { once: true });
+    if (controller.signal.aborted) dispose();
     const result = await run.result;
     if (timedOut) throw new AdapterError('NATIVE_TIMEOUT');
     if (signal.aborted) throw new AdapterError('NATIVE_INTERRUPTED');
-    return { run, result };
+    if (result.stopReason !== 'completed' || result.structured === undefined) throw new AdapterError('NATIVE_RESULT_FAILED');
+    const stored = await sessionQuery.readSession(run.childId);
+    if (String(stored.session.id) !== String(run.childId)) throw new AdapterError('NATIVE_SESSION_RECORD_MISSING');
+    return { run: { id: run.childId, events: stored.events }, result };
   } finally {
     clearTimeout(timer);
     signal.removeEventListener('abort', abort);
-    if (run !== undefined) await run.dispose();
+    controller.signal.removeEventListener('abort', dispose);
+    if (run !== undefined) { dispose(); await disposal; }
   }
 }
 
@@ -216,7 +233,7 @@ async function runModel(subagents, provider, parent, packet, signal) {
  * Claim and execute one native task exactly once, then submit its adapter-authored receipt.
  * @returns {Promise<{status: 'accepted', taskId: string, attempt: number}>} Value-safe tool result.
  */
-export async function runNativeTask({ config, taskId, inputHash, parent, signal, subagents, spawnChild }) {
+export async function runNativeTask({ config, taskId, inputHash, parent, signal, subagents, sessionQuery, spawnChild }) {
   if (typeof taskId !== 'string' || taskId.length === 0 || typeof inputHash !== 'string' || inputHash.length === 0) {
     throw new AdapterError('NATIVE_ARGUMENTS_INVALID');
   }
@@ -234,7 +251,7 @@ export async function runNativeTask({ config, taskId, inputHash, parent, signal,
     inFlight = true;
     const packetEnvelope = await runAistore(config, ['intake', 'native', 'packet', '--task', taskId], signal, undefined, spawnChild);
     packet = packetResult(packetEnvelope.envelope, taskId, inputHash);
-    const completed = await runModel(subagents, config.subagentProvider, parent, packet, signal);
+    const completed = await runModel(subagents, sessionQuery, config.subagentProvider, parent, packet, signal);
     const receiptText = buildNativeReceipt(completed.run, completed.result, packet);
     const receiptPath = join(directory, 'native-receipt.json');
     await writeFile(receiptPath, receiptText, { mode: 0o600, flag: 'wx' });
@@ -244,8 +261,8 @@ export async function runNativeTask({ config, taskId, inputHash, parent, signal,
     return { status: 'accepted', taskId, attempt: packet.attempt };
   } catch (error) {
     const code = error instanceof AdapterError ? error.code : 'NATIVE_ADAPTER_FAILURE';
-    if (inFlight) await markUnknown(config, taskId, code, spawnChild);
-    throw new AdapterError(code);
+    if (inFlight && error?.nativeRejected !== true) await markUnknown(config, taskId, code, spawnChild);
+    throw new AdapterError(code, error?.nativeRejected === true);
   } finally {
     // An uncertain acceptance must retain the private receipt for reconciliation, not replay.
     if (accepted || !inFlight) await rm(directory, { recursive: true, force: true });
