@@ -75,7 +75,7 @@
 | コンポーネント | 目的 |
 |---|---|
 | [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Goal acceptanceの方針を、パッチに列挙したSession idだけに限定します。その他のSessionは通常の動作のままです。 |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。READMEは無いため、マニフェストとパッチを読んでください。 |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。マシン固有のDSH checkoutのパスからimportします。 |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Sessionの破棄時に、そのSessionが所有するpi-aiの接続キャッシュを解放します。 |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | 明示的に選んだローカルアプリケーション向けの汎用アイコンを、DSH Coreを変えずに提供します。 |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | 構造化したreaderとreviewerのSession向けに、制限付きの子プリセット`aistore-native`を宣言します。 |
