@@ -28,8 +28,10 @@ Each directory below is a source collection, not a deployment inventory. Cloning
 | [bin/](bin/) | Maintainer scripts that build, pack, and check packages, the weekly maintenance helpers, and the [runtime placement](bin/runtime-placement.md) notes. Not a public CLI. |
 | [scripts/](scripts/) | The read-only [local setup diagnostic](scripts/local-setup.mjs). |
 | [tests/](tests/) | Vitest configuration and upgrade regression specs that are not package-local. |
-| [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes. |
+| [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes, plus the retained [implement-task flow diagram](docs/implement-task-flow.html). |
 | [.agents/](.agents/) | Development notes and the harness-facing skills for working on this repository. |
+
+Root documents: [AGENTS.md](AGENTS.md) is the agent entry point (`CLAUDE.md` links to it), [CONTRIBUTING.md](CONTRIBUTING.md) describes the development flow, [ARCHITECTURE.md](ARCHITECTURE.md) describes runtime layering and verification limits, and [SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md) with [core-exceptions.json](core-exceptions.json) defines the Core baseline.
 
 A local working copy also holds ignored directories such as `reports/`, `releases/`, and `local-design/`. They contain private material and are not part of the published tree.
 
@@ -68,6 +70,21 @@ Older integrations and local forks:
 | [Web UI family](plugins/dsh-web-ui/packages/) | Local copies of UI, SSH, Git graph, settings, and Modlens packages; consult each package's README. |
 | [Market](plugins/dsh-market/README.md) | Local plugin-market copy with its own build and compatibility checks. |
 
+Deployment-specific bundles and presets:
+
+| Component | Purpose |
+|---|---|
+| [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Confines the Goal acceptance policy to the Session ids listed in its patch. Other Sessions keep ordinary behavior. |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions. It has no README; read its manifest and patch. |
+| [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Releases pi-ai Session-owned connection caches when a Session is disposed. |
+| [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | Supplies generic icons for explicitly selected local applications without changing DSH Core. |
+| [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | Declares the restricted `aistore-native` child preset for structured reader and reviewer Sessions. |
+| [Slack intake](plugins/dsh-slack-intake/README.md) | Connects a DSH profile to the Go aistore CLI and runs one claimed reader or reviewer task through a fixed native Agent route. |
+| [LLM fallback](plugins/llm-fallback/README.md) | Retries only the configured source model on its explicit route list after a configured error that occurs before any content. |
+| [Local presets](presets/) | `ai-reference-store-next`, `cordis-kura`, `managed-cordis`, and `managed-standard` preserve local behavior on current upstream subagent controls; each `UPSTREAM.json` records its upstream base. |
+
+[subagent-fallback](plugins/subagent-fallback/) is not a bundle; it remains only as a reference for `implement-task`.
+
 ## Skills
 
 [skills/](skills/) contains authored skills and upstream-derived copies. Cloning this repository does not install or enable them. Local deployments may link individual skill directories into a DSH skill search path; edit the source directory, not a separate copied version. Read each skill's prerequisites before enabling it.
@@ -84,6 +101,8 @@ Older integrations and local forks:
 | [quint-verify](skills/quint-verify/SKILL.md) | Run invariant and witness checks and produce a structured verification report. Requires the documented Quint container environment. |
 | [slack-reference-intake](skills/slack-reference-intake/SKILL.md) | Reference intake for a separately configured private Go aistore, with authorized Slack access and DSH credentials. Not a standalone public demo. |
 | [implement-task](skills/implement-task/SKILL.md) | Retained implementation-flow reference with a [Quint specification](skills/implement-task/spec/README.md). It depends on legacy `subagent-fallback` tools; migrate the callers and specification before using it with current DSH. |
+
+[skills/verify-completion-gate/](skills/verify-completion-gate/spec/README.md) holds only a Quint specification, not a loadable skill.
 
 ## Installation
 
