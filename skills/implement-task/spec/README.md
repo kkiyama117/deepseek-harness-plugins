@@ -167,9 +167,9 @@ pass `BUGGY_FIX_CAP = false` and are unaffected; remove the const and the
 
 ## Enforcement layers
 
-Do not collapse these layers; they are not equally strong. Proto-2 is
-self-reported: the coordinator appends its own transitions, so omitting a line
-defeats the check. See [`replay/README.md`](replay/README.md).
+The layers must not be collapsed and are not equally strong; Proto-2 is
+self-reported (the coordinator appends its own transitions, so omitting a line
+defeats the check); see [`replay/README.md`](replay/README.md).
 
 | Layer | What it is | What it proves | What it does **not** prove |
 |---|---|---|---|

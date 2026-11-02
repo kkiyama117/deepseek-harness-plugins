@@ -75,7 +75,7 @@
 | コンポーネント | 目的 |
 |---|---|
 | [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Goal acceptanceの方針を、パッチに列挙したSession idだけに限定します。その他のSessionは通常の動作のままです。 |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。マシン固有のDSH checkoutのパスからimportします。 |
+| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。マシンローカルのDSHチェックアウトパスからimportします。 |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Sessionの破棄時に、そのSessionが所有するpi-aiの接続キャッシュを解放します。 |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | 明示的に指定したローカルアプリケーション向けの汎用アイコンを、DSH Coreを変えずに提供します。 |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | 構造化したreaderおよびreviewerのSession向けに、制限付きの子プリセット`aistore-native`を宣言します。 |
@@ -123,7 +123,7 @@ pnpm dsh plugin --help
 
 不具合の報告や改善の提案は[Issues](https://github.com/kkiyama117/deepseek-harness-plugins/issues)へお願いします。[CONTRIBUTING.md](CONTRIBUTING.md)に、人間とAI agentが共有する開発の流れと、このリポジトリの検証と公開範囲を書いています。
 
-文書の言語: このREADMEは英語版を原本とし、[README.ja.md](README.ja.md)は行を揃えた日本語版です。両方を同じ変更で更新してください。[AGENTS.md](AGENTS.md)、[ARCHITECTURE.md](ARCHITECTURE.md)、各パッケージのREADMEは英語で書きます。パッケージの翻訳版(`README.zh.md`または`README.ja.md`)は任意ですが、ある場合は`README.i18n.yaml`の記録も含めて同じ変更で更新します。手順と方針の文書([CONTRIBUTING.md](CONTRIBUTING.md)、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)、[保守対象](docs/maintenance-scope.md)、[常用配置](bin/runtime-placement.md)、[issue-driven-development](skills/issue-driven-development/SKILL.md)スキル)は日本語のみで管理します。
+本READMEが英語の正本であり、README.ja.mdは行単位で対になる日本語訳です。両方を同時に変更してください。AGENTS.md、ARCHITECTURE.md、各パッケージのREADMEは英語で記述します。パッケージの翻訳（README.zh.mdまたはREADME.ja.md）は任意ですが、存在する場合はREADME.i18n.yamlの記録を含めて同一の変更で更新します。以下のプロセス・方針文書は日本語のみで維持されます: [CONTRIBUTING.md](CONTRIBUTING.md)、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)、[docs/maintenance-scope.md](docs/maintenance-scope.md)、[bin/runtime-placement.md](bin/runtime-placement.md)、およびissue-driven-developmentスキル（[skills/issue-driven-development/SKILL.md](skills/issue-driven-development/SKILL.md)）。
 
 リポジトリ直下の[パッケージマニフェスト](package.json)は、pnpmを`11.7.0`に固定しています。リポジトリ直下のワークスペースに入っているのはWeb Search、Cursor、Web UI系の5パッケージで、このリポジトリの全パッケージではありません。
 

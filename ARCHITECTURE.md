@@ -36,20 +36,20 @@ node scripts/local-setup.mjs
 
 ## 2. Verification structure
 
-Development follows [issue-driven-development](skills/issue-driven-development/SKILL.md). That skill is a procedure, not an execution platform: it does not enforce permissions, exclusive edits, budgets, or stopping. A task is complete only when its original acceptance conditions and required delivery targets are checked; an agent's success report, a passing test, or an opened PR is not enough.
+Development follows the issue-driven-development skill ([skills/issue-driven-development/SKILL.md](skills/issue-driven-development/SKILL.md)). The skill is a procedure, not an execution platform: it does not enforce permissions, exclusive edits, budgets, or stopping. A task is complete only when its original acceptance conditions and required delivery targets are checked; an agent's success report, a passing test, or an opened PR is not enough.
 
-Each check below proves one narrow thing. Do not substitute one for another.
+Each check below proves one narrow thing; do not substitute one for another.
 
 | Check | What it proves | What it does **not** prove |
 |---|---|---|
-| Package tests and builds (each package README) | The package source behaves as its tests specify | Compatibility with your DSH version; that the runtime loads the rebuilt output |
-| Root `pnpm build` / `pnpm test` | Root workspace members build and pass | Anything about packages outside the root workspace |
-| `bin/check-layout-links.py` | Local Markdown links resolve to tracked targets | That the linked content is accurate |
+| Package tests and builds (see each package README) | Package source behaves as its tests specify | Compatibility with the user's DSH version; that the runtime loads rebuilt output |
+| Root `pnpm build` / `pnpm test` | Root workspace members build and pass | Packages outside the root workspace |
+| `bin/check-layout-links.py` | Local Markdown links resolve to tracked targets | That linked content is accurate |
 | `bin/check-core-separation.py` | The Core checkout differs from upstream only by the recorded, hash-matched exception ([SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)) | Runtime placement or profile composition |
-| `bin/check-runtime-placement.py`, `bin/verify-runtime-location.mjs` | Services start from the intended checkout and dependency paths ([runtime placement](bin/runtime-placement.md)) | Package behavior inside those services |
-| `bin/pack-local-bundle.py` | A release archive contains exactly the reviewed files | That the archive works until it is installed and the profile is checked |
-| Skill-bundled checks (for example `skills/orchestrate-agents`) | The skill's files and scripts meet their own checks | That an agent follows the skill at runtime |
+| `bin/check-runtime-placement.py`, `bin/verify-runtime-location.mjs` | Services start from the intended checkout and dependency paths ([bin/runtime-placement.md](bin/runtime-placement.md)) | Package behavior inside those services |
+| `bin/pack-local-bundle.py` | A release archive contains exactly the reviewed files | That the archive works before it is installed and the profile is checked |
+| Skill-bundled checks (for example skills/orchestrate-agents) | The skill's files and scripts pass their own checks | That an agent follows the skill at runtime |
 
-The retained `implement-task` reference keeps its own Quint model and proof-strength table in [its spec README](skills/implement-task/spec/README.md#enforcement-layers); none of those layers gates current development.
+The retained implement-task reference keeps its Quint model and proof-strength table in its spec README ([skills/implement-task/spec/README.md#enforcement-layers](skills/implement-task/spec/README.md#enforcement-layers)); none of those layers gates current development.
 
 Read `scripts/local-setup.mjs` output and this table before claiming a gate is “enforced.”
