@@ -126,13 +126,28 @@ export async function apply(ctx, config) {
   };
   const scan = () => scanOnce({ ...settings, registry, readSessionCwd, log });
   let tail = Promise.resolve();
-  const rescan = () => { tail = tail.then(scan); };
-
-  await mkdir(settings.hintRoot, { recursive: true, mode: 0o700 });
-  await scan();
-
   let debounce;
   let watcher;
+  let timer;
+  let disposed = false;
+  const rescan = () => {
+    if (disposed) return;
+    tail = tail.then(scan);
+  };
+
+  // Cordis refuses an effect on a disposed fiber, so the teardown is registered before the first await.
+  ctx.effect(() => () => {
+    disposed = true;
+    clearTimeout(debounce);
+    clearInterval(timer);
+    watcher?.close();
+  }, 'workspace-attach: hint watcher');
+
+  await mkdir(settings.hintRoot, { recursive: true, mode: 0o700 });
+  if (disposed) return;
+  await scan();
+  if (disposed) return;
+
   try {
     watcher = watch(settings.hintRoot, () => {
       clearTimeout(debounce);
@@ -144,10 +159,5 @@ export async function apply(ctx, config) {
     log(`local-workspace-attach: cannot watch ${settings.hintRoot}: ${String(error)}`);
   }
   // The scan must never keep a one-shot process alive after its work is done.
-  const timer = setInterval(rescan, settings.scanIntervalMs).unref();
-  ctx.effect(() => () => {
-    clearTimeout(debounce);
-    clearInterval(timer);
-    watcher?.close();
-  }, 'workspace-attach: hint watcher');
+  timer = setInterval(rescan, settings.scanIntervalMs).unref();
 }
