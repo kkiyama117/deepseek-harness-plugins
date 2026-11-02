@@ -9,6 +9,15 @@ This package provides a hint-file handoff using two rows from one bundle:
 
 Install the bundle in both the web and headless profiles.
 
+In the headless profile, the `local-workspace-attach` row never mounts, because `workspaceRegistry` exists only in the web host. Cordis then prints a warning on every headless run that the row is pending on `workspaceRegistry`. To avoid that warning, disable that row in the headless profile's `cordis.patch.yml`:
+
+```yaml
+- id: local-workspace-attach
+  disabled: true
+```
+
+Disabling it does not affect the producer row, which keeps writing hints.
+
 ## Use
 
 Run headless from the workspace directory with `DSH_WORKSPACE_ID` set to an explicit workspace id, or to the literal `cwd` to pick the workspace whose path equals the Session cwd:
