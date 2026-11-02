@@ -59,6 +59,7 @@ These entry points describe each component's setup, behavior, and limitations; t
 | [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | Retains the original request and checks evidence records for Goal completion and initial delegation. See the [restricted pilot](plugins/dsh-request-acceptance-pilot/README.md) before enabling it in a shared Host. |
 | [Workflow result selection](plugins/dsh-workflow-results/README.md) | Saves a complete workflow result before returning selected fields through `resultKeys`; requires a tool replacement in the chosen preset. |
 | [Codex transport recovery](plugins/dsh-codex-transport-recovery/README.md) | Classifies specific premature WebSocket closures as transport errors so the official retry policy can handle them. Does not add retries or change models. |
+| [Workspace attach](plugins/dsh-workspace-attach/README.md) | Lets a headless run join a web workspace group through `DSH_WORKSPACE_ID`. The web host performs the attach. |
 | [AI reference-store daily preset](presets/ai-reference-store-daily/README.md) | Declares the preset for a separately configured reference-store application. Selecting the preset does not start a daily batch. |
 
 Older integrations and local forks:

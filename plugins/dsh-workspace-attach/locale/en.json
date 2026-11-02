@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Workspace attach for headless runs",
+    "description": "Hand a headless Session's workspace request to the running web host and attach it once the Session is stored."
+  }
+}

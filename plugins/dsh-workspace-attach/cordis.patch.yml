@@ -1,0 +1,5 @@
+- insert:
+    - id: local-workspace-attach
+      name: '@kkiyama117/dsh-workspace-attach'
+    - id: local-workspace-attach-producer
+      name: '@kkiyama117/dsh-workspace-attach/producer'
