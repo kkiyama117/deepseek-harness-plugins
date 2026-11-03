@@ -30,6 +30,7 @@ Each directory below is a source collection, not a deployment inventory. Cloning
 | [tests/](tests/) | Vitest configuration and upgrade regression specs that are not package-local. |
 | [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes, and the retained [implement-task flow diagram](docs/implement-task-flow.html). |
 | [.agents/](.agents/) | Development notes and the harness-facing skills for working on this repository. |
+| [.claude/skills/](.claude/skills/) | Project-local skills loaded by Claude Code when working in this repository. Currently contains [verify-dsh-plugins](.claude/skills/verify-dsh-plugins/SKILL.md), which starts a disposable DSH host with a chosen plugin and mock LLM to verify the web UI and headless CLI with screenshots and logs. Machine-specific settings live in `.env` (described by `.env.example`). |
 
 Root documents: [AGENTS.md](AGENTS.md) is the agent entry point ([CLAUDE.md](CLAUDE.md) links to it); [CONTRIBUTING.md](CONTRIBUTING.md) describes the development flow; [ARCHITECTURE.md](ARCHITECTURE.md) describes runtime layering and verification limits; [SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md) with [core-exceptions.json](core-exceptions.json) defines the Core baseline.
 

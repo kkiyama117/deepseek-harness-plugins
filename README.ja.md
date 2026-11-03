@@ -30,6 +30,7 @@
 | [tests/](tests/) | パッケージ内に置かないVitestの設定と、アップグレードの回帰テストです。 |
 | [docs/](docs/) | [レイアウト移行](docs/layout-migration.md)と[保守対象と保管対象](docs/maintenance-scope.md)のメモ、および残している[implement-taskフロー図](docs/implement-task-flow.html)です。 |
 | [.agents/](.agents/) | このリポジトリの開発で使うメモと、harness側のスキルです。 |
+| [.claude/skills/](.claude/skills/) | このリポジトリで作業するときにClaude Codeが読み込む、プロジェクト固有のスキルです。現在は[verify-dsh-plugins](.claude/skills/verify-dsh-plugins/SKILL.md)を含み、指定したプラグインとモックLLMを組み込んだ使い捨てのDSHホストを起動して、Web UIとheadless CLIの動作をスクリーンショットとログで検証します。環境固有の設定は`.env`（`.env.example`参照）に置きます。 |
 
 ルート文書: [AGENTS.md](AGENTS.md)はエージェントの入口です（[CLAUDE.md](CLAUDE.md)がここへリンクしています）。[CONTRIBUTING.md](CONTRIBUTING.md)は開発の流れを説明し、[ARCHITECTURE.md](ARCHITECTURE.md)は実行時の階層構造と検証の限界を示します。[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)は[core-exceptions.json](core-exceptions.json)とともにCoreの基準を定義しています。
 

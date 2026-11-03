@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# dshv: disposable DSH instances for verifying this repository's plugins.
+# Usage: dshv up <package-dir>... | doctor <run> | exec <run> [--cd DIR] -- CMD... | down <run>
+set -euo pipefail
+
+SKILL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+REPO=$(cd "$SKILL_DIR/../../.." && pwd)
+
+# Local settings: .env next to SKILL.md (git-ignored; see .env.example).
+# Variables already set in the environment win over the file.
+if [ -f "$SKILL_DIR/.env" ]; then
+  while IFS='=' read -r key value; do
+    case $key in ''|\#*) continue ;; esac
+    [ -n "${!key+x}" ] || export "$key=$(eval "printf '%s' \"$value\"")"
+  done < "$SKILL_DIR/.env"
+fi
+
+DSH_ROOT=${DSHV_DSH_ROOT:-$REPO/../deepseek-harness}
+[ -f "$DSH_ROOT/apps/cli/lib/bin.js" ] || { echo "dshv: no built DSH checkout at $DSH_ROOT (set DSHV_DSH_ROOT in $SKILL_DIR/.env)" >&2; exit 1; }
+DSH_ROOT=$(cd "$DSH_ROOT" && pwd)
+RUN_ROOT=${DSHV_RUN_ROOT:-${TMPDIR:-/tmp}/dshv}
+EVIDENCE_ROOT=${DSHV_EVIDENCE_ROOT:-$REPO/reports/verify-dsh-plugins}
+REAL_HOME=$HOME
+
+die() { echo "dshv: $*" >&2; exit 1; }
+
+load() {
+  [ -f "${1:-}/state.env" ] || die "no run at ${1:-<missing>} (pass the RUN printed by 'dshv up')"
+  # shellcheck disable=SC1091
+  . "$1/state.env"
+}
+
+# The isolated environment: no inherited provider keys, and no display, so
+# no native dialog opens on the operator's desktop. An array (not a function)
+# so a backgrounded launch keeps the real process's pid in $!.
+iso() {
+  ISO=(env -i
+    HOME="$RUN/home" DSH_HOME="$RUN/home/.dsh"
+    PATH="$RUN/bin:$PATH" LANG=C.UTF-8 TERM=dumb
+    PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$REAL_HOME/.cache/ms-playwright}"
+    DEEPSEEK_API_KEY=mock-key DEEPSEEK_BASE_URL="${MOCK_URL:-http://127.0.0.1:9/v1}"
+    DSHV_RUN="$RUN" DSHV_EVIDENCE="$EVIDENCE" DSHV_REPO="$REPO" DSHV_DSH_ROOT="$DSH_ROOT")
+}
+isolated() { iso; "${ISO[@]}" "$@"; }
+
+wait_for() { # wait_for SECONDS CMD...
+  local deadline=$((SECONDS + $1)); shift
+  until "$@" >/dev/null 2>&1; do
+    [ $SECONDS -lt $deadline ] || return 1
+    sleep 0.5
+  done
+}
+
+cmd_up() {
+  [ $# -gt 0 ] || die "up needs at least one package directory or release .tgz, e.g. plugins/dsh-workspace-attach"
+  local id; id=$(date +%Y%m%d-%H%M%S)-$$
+  RUN=$RUN_ROOT/$id EVIDENCE=$EVIDENCE_ROOT/$id
+  mkdir -p "$RUN/home" "$RUN/bin" "$EVIDENCE"
+  printf '#!/bin/sh\nexec node %q "$@"\n' "$DSH_ROOT/apps/cli/lib/bin.js" > "$RUN/bin/dsh"
+  chmod +x "$RUN/bin/dsh"
+  MOCK_URL=""
+
+  local p pkg spec names=""
+  for p in web headless; do
+    isolated dsh --profile "$p" --dump-config > /dev/null
+  done
+  for pkg in "$@"; do
+    case $pkg in /*) ;; *) pkg=$REPO/$pkg ;; esac
+    if [ -d "$pkg" ]; then
+      spec=link:$(cd "$pkg" && pwd)
+      names="$names $(node -p "require('$pkg/package.json').name")"
+    elif [ -f "$pkg" ] && [ "${pkg%.tgz}" != "$pkg" ]; then
+      spec=file:$pkg
+      names="$names $(tar -xzOf "$pkg" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0)).name")"
+    else
+      die "not a package directory or .tgz: $pkg"
+    fi
+    for p in web headless; do
+      isolated dsh plugin --profile "$p" add "$spec" > "$RUN/plugin-add.log" 2>&1 \
+        || { cat "$RUN/plugin-add.log" >&2; die "adding $spec to $p failed"; }
+    done
+  done
+
+  # Scripted, keyless LLM endpoint. DSHV_MOCK_SEQUENCE overrides the script.
+  # setsid in a background job does not fork, so $! is the session (and group) leader.
+  cd "$DSH_ROOT"
+  iso
+  "${ISO[@]}" setsid node --import tsx packages/test-support/llm-mock-server/src/bin.ts \
+    --port 0 --api-key mock-key --sequence "${DSHV_MOCK_SEQUENCE:-success}" --repeat-last \
+    > "$RUN/mock.jsonl" 2> "$RUN/mock.err" < /dev/null &
+  echo $! > "$RUN/mock.pid"
+  wait_for 30 grep -q '"type":"ready"' "$RUN/mock.jsonl" || { cat "$RUN/mock.err" >&2; die "mock LLM did not become ready"; }
+  MOCK_URL=$(grep -m1 '"type":"ready"' "$RUN/mock.jsonl" | sed -E 's/.*"baseURL":"([^"]+)".*/\1/')
+
+  iso
+  "${ISO[@]}" setsid dsh --profile web --port 0 --host 127.0.0.1 --no-open \
+    > "$RUN/web.out" 2> "$RUN/web.err" < /dev/null &
+  echo $! > "$RUN/web.pid"
+  wait_for 90 grep -q 'dsh web: http' "$RUN/web.out" || { tail -20 "$RUN/web.err" >&2; die "web host printed no URL"; }
+  local url; url=$(grep -m1 -oE 'http://[^ ]+' "$RUN/web.out")
+
+  cat > "$RUN/state.env" <<EOF
+RUN=$RUN
+EVIDENCE=$EVIDENCE
+MOCK_URL=$MOCK_URL
+MOCK_PID=$(cat "$RUN/mock.pid")
+WEB_PID=$(cat "$RUN/web.pid")
+WEB_URL=$url
+WEB_ORIGIN=${url%%/\?*}
+PACKAGES="${names# }"
+EOF
+  # Ready means the UI loads and every row of the profile mounted.
+  cmd_doctor "$RUN" >&2 || die "instance is up but not healthy; run 'dshv down $RUN'"
+  echo "$RUN"
+}
+
+cmd_doctor() {
+  load "$1"
+  local ok=0 pid
+  echo "info dsh $(isolated dsh --version) from $DSH_ROOT @ $(git -C "$DSH_ROOT" rev-parse --short HEAD)"
+  echo "info packages under test: $PACKAGES"
+  for pid in "$MOCK_PID" "$WEB_PID"; do
+    if [ -r "/proc/$pid/environ" ] && tr '\0' '\n' < "/proc/$pid/environ" | grep -qx "DSHV_RUN=$RUN"; then
+      echo "ok   pid $pid belongs to this run"
+    else
+      echo "FAIL pid $pid is gone or not started by this run"; ok=1
+    fi
+  done
+  local port=${WEB_ORIGIN##*:}
+  if [ "$port" = "${DSHV_LIVE_PORT:-3080}" ]; then
+    echo "FAIL this run serves on the live port $port"; ok=1
+  fi
+  if ss -ltnpH "sport = :$port" 2>/dev/null | grep -q "pid=$WEB_PID,"; then
+    echo "ok   port $port is owned by web pid $WEB_PID"
+  else
+    echo "FAIL port $port is not owned by web pid $WEB_PID"; ok=1
+  fi
+  if isolated node "$SKILL_DIR/scripts/doctor-web.mjs" "$WEB_URL" "$PACKAGES"; then :; else ok=1; fi
+  return $ok
+}
+
+cmd_exec() {
+  load "$1"; shift
+  local dir=$RUN/home
+  if [ "${1:-}" = --cd ]; then dir=$2; shift 2; fi
+  [ "${1:-}" = -- ] && shift
+  [ $# -gt 0 ] || die "exec needs a command after --"
+  (cd "$dir" && isolated "$@")
+}
+
+cmd_down() {
+  load "$1"
+  local pid
+  for pid in "$WEB_PID" "$MOCK_PID"; do
+    # Each was started with setsid, so its pid is its process-group id.
+    if [ -r "/proc/$pid/environ" ] && tr '\0' '\n' < "/proc/$pid/environ" | grep -qx "DSHV_RUN=$RUN"; then
+      kill -TERM -- "-$pid" 2>/dev/null || true
+    fi
+  done
+  for pid in "$WEB_PID" "$MOCK_PID"; do
+    wait_for 15 sh -c "! kill -0 $pid" || kill -KILL -- "-$pid" 2>/dev/null || true
+  done
+  mkdir -p "$EVIDENCE/logs"
+  cp -f "$RUN"/web.out "$RUN"/web.err "$RUN"/mock.jsonl "$RUN"/mock.err "$EVIDENCE/logs/" 2>/dev/null || true
+  rm -rf "$RUN"
+  echo "stopped; evidence kept in $EVIDENCE"
+}
+
+case "${1:-}" in
+  up) shift; cmd_up "$@" ;;
+  doctor) shift; cmd_doctor "${1:-}" ;;
+  exec) shift; cmd_exec "$@" ;;
+  down) shift; cmd_down "${1:-}" ;;
+  *) sed -n '2,3p' "$0" | sed 's/^# //' >&2; exit 2 ;;
+esac
