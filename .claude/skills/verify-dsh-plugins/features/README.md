@@ -4,23 +4,23 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 ## Baseline preconditions
 
-- A run started with `dshv up <package>...` for the bundle under test, with `RUN` set to the path it printed.
+- A run started with `dshv up <package>...` for the bundle under test, with `RUN` set to the `run` it printed (or `latest`).
 - `dshv doctor "$RUN"` passes: the pids and port belong to this run, the UI loads, and the bundle's rows are `active`.
 - The mock LLM answers every request with `success` unless the recipe sets `DSHV_MOCK_SEQUENCE` before `up`.
 - Never drive the operator's live host (`$DSHV_LIVE_PORT`) or anything under the real `~/.dsh`.
 
 ## Driving conventions
 
-- Run CLI actions as `dshv exec "$RUN" [--cd DIR] -- <command>`, and Node/Playwright scripts as `dshv exec "$RUN" -- node <script>`.
-- Use the English UI (`openWeb` sets `en-US`) and ARIA roles with accessible names. Do not use CSS selectors or coordinates.
+- Drive the web UI with `dshv web "$RUN" <action>` and headless runs with `dshv headless "$RUN" ...`. Use `dshv exec "$RUN" -- <command>` only for anything else. `RUN` may be `latest`.
+- Target ARIA roles and accessible names in the English UI. When a name is unknown, run `dshv web "$RUN" snapshot` first. Do not use CSS selectors or coordinates.
 - Start each recipe from a fresh `up`. Journeys change sessions and workspaces, and the next recipe's baseline would drift.
-- Put user directories (workspaces, project folders) under `$RUN/home` so the in-browser picker can reach them and `down` removes them.
+- Put user directories (workspaces, project folders) under `$(dshv state "$RUN" run)/home` so the in-browser picker can reach them and `down` removes them.
 
 ## Proof and skip reporting
 
-- Write artifacts under `$DSHV_EVIDENCE/<feature-id>/`. Write `result.json` with the feature ID, the entry point used, the steps, and the verdict, on failure too.
+- Write artifacts under `$(dshv state "$RUN" evidence)/<feature-id>/` (`dshv web ... screenshot <feature-id>/<file>` does this). Write `result.json` with the feature ID, the entry point used, the steps, and the verdict, on failure too.
 - UI proof is an ARIA snapshot plus a screenshot taken before and after the action. CLI proof is the full `--json` transcript.
-- Check the stored side effect (`$DSH_HOME/storages/*.json`, `$DSH_HOME/sessions/`, `$RUN/mock.jsonl`) next to the screen.
+- Check the stored side effect (`dshv store "$RUN" <name>`, the run's `home/.dsh/sessions/`, `dshv logs "$RUN" mock.out`) next to the screen.
 - Include a control run without the plugin's trigger when the claim is causal.
 - Report an entry point you could not reach with the command you tried and the unmet precondition. Do not report it as verified through another entry point.
 
@@ -33,7 +33,7 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 | Feature | Package | Last proven |
 |---|---|---|
 | [Install a bundle into a profile](./bundle-install.md) | any bundle | 2026-11-02, source dir and release `.tgz` |
-| [Headless sessions join a web workspace](./workspace-attach.md) | `plugins/dsh-workspace-attach` | 2026-11-02, `journey-workspace-attach.mjs` |
+| [Headless sessions join a web workspace](./workspace-attach.md) | `plugins/dsh-workspace-attach` | 2026-11-03, `journey-workspace-attach.mjs` (`attach-cwd` only; `attach-id` and `attach-reject` not yet run) |
 | [Generic icons for open-in-app targets](./open-in-app-icons.md) | `plugins/dsh-open-in-app-icons` | not yet run |
 | [Model fallback on quota or rate limit](./llm-fallback.md) | `plugins/llm-fallback` | not yet run |
 | [Evolve human commands](./evolve-commands.md) | `plugins/dsh-evolve` | not yet run |

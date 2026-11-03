@@ -20,9 +20,9 @@ Preconditions:
 
 - `dshv up plugins/dsh-evolve` (run `pnpm install --ignore-workspace --ignore-scripts --config.auto-install-peers=false` in the package first if `node_modules` is missing), and doctor shows `include:local-evolve` and `include:preset-evolve-trial` active.
 
-- **Status.** Open the UI with `openWeb`, fill the composer with `/evolve status`, and choose `Send message`. A reply appears in the transcript with the mode `observe`. Capture an ARIA snapshot of the transcript and a screenshot.
-- **No model call.** `$RUN/mock.jsonl` has no new `request` record after the command.
-- **Candidates.** Send `/evolve candidates`. The reply reports no candidates.
+- **Status.** Run `dshv web "$RUN" fill --role textbox --name "Describe what you want to build" --value "/evolve status"`, then `dshv web "$RUN" click --role button --name "Send message"`. A reply with the mode `observe` appears; capture it with `dshv web "$RUN" snapshot` and `dshv web "$RUN" screenshot evolve-commands/status.png`.
+- **No model call.** `dshv logs "$RUN" mock.out` has no new `request` record after the command.
+- **Candidates.** Send `/evolve candidates` the same way. The reply reports no candidates.
 
 ## Gotchas
 

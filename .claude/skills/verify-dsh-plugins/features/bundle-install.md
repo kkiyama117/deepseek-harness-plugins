@@ -21,10 +21,10 @@ Preconditions:
 
 - None beyond a package directory under `plugins/` or an archive under `releases/`. `dshv up` performs the install.
 
-- **Install.** Run `dshv up plugins/<pkg>` (or `releases/<pkg>.tgz`). Exit code 0, and the output ends with the run path.
+- **Install.** Run `dshv up plugins/<pkg>` (or `releases/<pkg>.tgz`). Exit code 0; the JSON has `"run"` and `"doctor": {"ok": true}`.
 - **Composed tree.** Run `dshv exec "$RUN" -- dsh --profile web --dump-config`. The output has a `# == <package name>` section listing the bundle's row ids.
-- **Active in the host.** Run `dshv doctor "$RUN"`. One `ok   <entryId> is active` line appears for every row of the package.
-- **Headless pending.** Run `dshv exec "$RUN" --cd "$RUN/home" -- dsh --profile headless "Say hello"`. Stdout is `mock response recovered`. Stderr lists any web-only row as `pending (waiting for service: …)`.
+- **Active in the host.** Run `dshv doctor "$RUN"`. `checks` has an `<entryId> is active` entry with `"ok": true` for every row of the package.
+- **Headless pending.** Run `dshv headless "$RUN" "Say hello"`. `text` is `mock response recovered`, and `warnings` lists any web-only row as `pending (waiting for service: …)`.
 
 ## Gotchas
 

@@ -19,11 +19,11 @@ When a call to the configured source model fails with a configured error before 
 Preconditions:
 
 - `DSHV_MOCK_SEQUENCE=quota_exceeded,success dshv up plugins/llm-fallback`.
-- An overlay patch, `$RUN/fallback.yml`, that points both `ollama-cloud` and `openrouter` providers of the `llm-pi-ai` row at `$MOCK_URL` with a Messages-compatible API and key `mock-key`, declares the models `glm-5.3-flash` and `deepseek/deepseek-v4-flash-0731`, and sets `agent-default-model` to `ollama-cloud` / `glm-5.3-flash`. Start from the `llm-pi-ai` provider block in `dshv exec "$RUN" -- dsh --profile headless --dump-config`, or from your own profile's `cordis.patch.yml`, with the URLs and keys replaced.
+- An overlay patch, `fallback.yml`, that points both `ollama-cloud` and `openrouter` providers of the `llm-pi-ai` row at `$(dshv state "$RUN" mockUrl)` with a Messages-compatible API and key `mock-key`, declares the models `glm-5.3-flash` and `deepseek/deepseek-v4-flash-0731`, and sets `agent-default-model` to `ollama-cloud` / `glm-5.3-flash`. Start from the `llm-pi-ai` provider block in `dshv exec "$RUN" -- dsh --profile headless --dump-config`, or from your own profile's `cordis.patch.yml`, with the URLs and keys replaced.
 
-- **Fallback run.** Run `dshv exec "$RUN" --cd "$RUN/home" -- dsh --profile headless --patch "$RUN/fallback.yml" --json "Say hello"`. The run ends with a `final` record, and the text is `mock response recovered`.
-- **Side effect.** `$RUN/mock.jsonl` has two `request` records: `quota_exceeded` then `success`. If the mock records the requested model, the second request names the route model.
-- **Control.** Repeat on a fresh run with `agent-default-model` set to `ollama-cloud` / `glm-5.3`. The run reports the quota error, and `mock.jsonl` has one request.
+- **Fallback run.** Run `dshv headless "$RUN" --patch fallback.yml "Say hello"`. `finished` is true, and `text` is `mock response recovered`.
+- **Side effect.** `dshv logs "$RUN" mock.out` has two `request` records: `quota_exceeded` then `success`. If the mock records the requested model, the second request names the route model.
+- **Control.** Repeat on a fresh run with `agent-default-model` set to `ollama-cloud` / `glm-5.3`. The run reports the quota error, and `mock.out` has one request.
 
 ## Gotchas
 

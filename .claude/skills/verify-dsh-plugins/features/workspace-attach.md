@@ -20,15 +20,16 @@ A user runs `dsh --profile headless` from a directory that is a workspace in the
 Preconditions:
 
 - `dshv up plugins/dsh-workspace-attach` (or its release `.tgz`), and doctor shows `include:local-workspace-attach` and `include:local-workspace-attach-producer` active.
-- No workspace named `attach-project` exists yet (a fresh run).
+- No workspace named `attach-project` exists yet (a fresh run). `DIR=$(dshv state "$RUN" run)/home/attach-project; mkdir -p "$DIR"`.
 
-- **Whole journey.** Run `dshv exec "$RUN" -- node "$PWD/.claude/skills/verify-dsh-plugins/scripts/journey-workspace-attach.mjs"`. It prints `pass: evidence in …/workspace-attach` and exits 0. The steps follow.
-- **Add workspace.** The journey creates `$RUN/home/attach-project` and adds it through the `Select Workspace Directory` dialog. The `Sessions` tree shows a treeitem `attach-project` with one draft `New Session` row (`1-workspace-added.png`, `1-sidebar.aria.txt`).
-- **Control run.** The journey runs `dsh --profile headless --json "Say hello"` in that directory without the variable (`2-control-headless.jsonl`). No hint file is written for that session.
-- **Attach run.** It runs the same command with `DSH_WORKSPACE_ID=cwd` (`3-headless.jsonl`). The first line carries the `sessionId`.
-- **Side effect.** Within 60 s, `$DSH_HOME/storages/workspace.json` lists that `sessionId` in the `attach-project` record and not the control's id. `$DSH_HOME/workspace-attach-hints/` has no file for it (`4-workspace-store.json`).
-- **Visible result.** After a reload, `attach-project` has exactly one more session row than the baseline (`5-session-grouped.png`, `5-sidebar.aria.txt`), and `result.json` has `"verdict": "pass"`.
-- **Rejected hint (manual).** Run `dshv exec "$RUN" --cd "$RUN/home" -- env DSH_WORKSPACE_ID=no-such-id dsh --profile headless "Say hello"`. Within 30 s, `$DSH_HOME/workspace-attach-hints/<sessionId>.rejected.json` exists with reason `unknown-workspace`.
+- **Whole journey.** Run `node .claude/skills/verify-dsh-plugins/scripts/journey-workspace-attach.mjs "$RUN"`. It prints `pass: evidence in …/workspace-attach` and exits 0. It runs the steps below and writes the numbered files named in each.
+- **Add workspace.** Run `dshv web "$RUN" click --role button --name "Add workspace"`, then with `--in "dialog=Select Workspace Directory"`: `click --role button --name "Edit path"`, `fill --role textbox --name "Edit path" --value "$DIR"`, `press --role textbox --name "Edit path" --key Enter`, `click --role button --name Open --exact`. `dshv web "$RUN" wait --in "tree=Sessions" --role treeitem --name attach-project` succeeds, and the tree shows one draft `New Session` row under it (`1-workspace-added.png`, `1-sidebar.aria.txt`).
+- **Control run.** Run `dshv headless "$RUN" --cd "$DIR" "Say hello"`. `finished` is true, and no `<sessionId>.json` appears in `$(dshv state "$RUN" run)/home/.dsh/workspace-attach-hints/`.
+- **Attach run (`attach-cwd`).** Run `dshv headless "$RUN" --cd "$DIR" --env DSH_WORKSPACE_ID=cwd "Say hello"`. Note its `sessionId`.
+- **Side effect.** Within 60 s, `dshv store "$RUN" workspace` lists that `sessionId` in the `attach-project` record and not the control's id, and the hint directory has no file for it (`4-workspace-store.json`).
+- **Visible result.** Run `dshv web "$RUN" open --reload`, then `dshv web "$RUN" snapshot --role tree --name Sessions`. `attach-project` has exactly one more session row than the baseline (`5-session-grouped.png`, `5-sidebar.aria.txt`), and `result.json` has `"verdict": "pass"`.
+- **By workspace id (`attach-id`).** Not yet run. Find the id with `dshv store "$RUN" workspace` (the key of the `attach-project` record), then run `dshv headless "$RUN" --cd "$DIR" --env DSH_WORKSPACE_ID=<id> "Say hello"`. The session joins `attach-project` as above.
+- **Rejected hint (`attach-reject`).** Not yet run. Run `dshv headless "$RUN" --env DSH_WORKSPACE_ID=no-such-id "Say hello"`. Within 30 s, `<sessionId>.rejected.json` exists in the hint directory with reason `unknown-workspace`.
 
 ## Gotchas
 
