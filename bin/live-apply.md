@@ -34,6 +34,8 @@
 | I. `~/.dsh/skills` のリンク | DSHが見つけるskill | 次の起動（起動中の再走査は未確認）。リンク先がkstackのcheckoutなら、kstackの変更がそのまま届く | リンクかリンク先を戻す | skillを使う起動に届く |
 | J. `run-worker.sh` の一時patch | workerのmodelの経路と認証情報の有効化 | worker・reviewerの次の実行だけ | kstackの所有者が戻す | 届かない |
 
+liveのpatchが壊れていると、前の確認（`--dump-config`）が失敗するので、反映のscriptでは直せない。壊れたliveの修理はscriptの外で、manager の go（本番に届くものは所有者の承認）のもと手で行う。
+
 主checkoutの更新（H）は、どれもliveへの反映として扱う。前後のprobeを流し、manager の go を得てから行う。`configs/dsh-slack-worker-config/` が変わる更新は本番への反映であり、所有者の承認が要る。
 
 経路をまたぐつながり:
@@ -57,7 +59,7 @@ printf 'What is 17*23? Reply with only the number.' |
 
 成功は、exit 0、標準出力を空白で整えたものがちょうど `391`、`$d` が空のまま、の三つがそろうこと。second reviewerの経路（`dsh openai-codex gpt-6.1-sol high`）も同じprobeを流す。この経路はprofileの `credentials` 行と保存済みのproviderのloginを通るので、workerの経路では見えない壊れ方を見つける。
 
-providerの一時的な失敗（`PI_AI_ERROR` の過負荷など）は、反映が壊したことと区別できない。後のprobeと、戻したあとのprobeが失敗したら、30秒あけて一度だけ流し直し、二度とも失敗したら失敗とする。前のprobeが失敗したら反映しない。
+providerの一時的な失敗（`PI_AI_ERROR` の過負荷など）は、反映が壊したことと区別できない。後のprobeと、戻したあとのprobeが失敗したら、30秒あけて一度だけ流し直し、二度とも失敗したら失敗とする。前の確認（`--dump-config` とprobe）が失敗したら、対象を変えずに止まる。
 
 probeはsessionを一つ作る。保存先はhomeのpatch（F）が決める。
 
