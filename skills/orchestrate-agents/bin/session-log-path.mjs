@@ -19,7 +19,12 @@ const QUOTES = new Set(["'", '"']);
 const failure = message => ({ error: message });
 const trim = value => value.trim();
 const stripJs = value => (value.startsWith('!!js ') ? value.slice(5) : value);
-const leadingSpaces = line => line.length - line.trimStart().length;
+const spacesOnly = line => /^ *$/.test(line);
+const leadingSpaces = line => {
+  let count = 0;
+  while (line[count] === ' ') count += 1;
+  return count;
+};
 
 function unquote(value) {
   const text = trim(value);
@@ -90,7 +95,7 @@ function splitRows(lines) {
     let end = start + 1;
     while (end < lines.length && (lines[end] === '' || lines[end].startsWith(' '))) end += 1;
     let contentEnd = end;
-    while (contentEnd > start + 1 && trim(lines[contentEnd - 1]) === '') contentEnd -= 1;
+    while (contentEnd > start + 1 && spacesOnly(lines[contentEnd - 1])) contentEnd -= 1;
     rows.push({ start, lines: lines.slice(start, contentEnd) });
     start = end - 1;
   }
@@ -119,11 +124,11 @@ function foldContinuation(rowLines, rootIndex) {
   const collected = [];
   for (let index = rootIndex + 1; index < rowLines.length; index += 1) {
     const line = rowLines[index];
-    if (trim(line) !== '' && leadingSpaces(line) <= 4) break;
+    if (!spacesOnly(line) && leadingSpaces(line) <= 4) break;
     collected.push(line);
   }
   if (collected.length === 0) return undefined;
-  if (collected.some(line => trim(line) === '')) return undefined;
+  if (collected.some(line => spacesOnly(line))) return undefined;
   const indent = leadingSpaces(collected[0]);
   if (collected.some(line => leadingSpaces(line) !== indent)) return undefined;
   return collected.map(line => trim(line)).join(' ');
@@ -188,7 +193,7 @@ function inspectDump(dump) {
   let configEnd = configIndex + 1;
   while (configEnd < row.lines.length) {
     const line = row.lines[configEnd];
-    if (trim(line) !== '' && leadingSpaces(line) < 4) break;
+    if (!spacesOnly(line) && leadingSpaces(line) < 4) break;
     configEnd += 1;
   }
   let rootIndex = -1;
