@@ -185,9 +185,15 @@ function inspectDump(dump) {
 
   const configIndex = row.lines.findIndex(line => line === '  config:');
   if (configIndex === -1) return failure(MISSING_ROOT_ERROR);
+  let configEnd = configIndex + 1;
+  while (configEnd < row.lines.length) {
+    const line = row.lines[configEnd];
+    if (trim(line) !== '' && leadingSpaces(line) < 4) break;
+    configEnd += 1;
+  }
   let rootIndex = -1;
   let rootValue;
-  for (let index = configIndex + 1; index < row.lines.length; index += 1) {
+  for (let index = configIndex + 1; index < configEnd; index += 1) {
     const match = /^    root: (.+)$/.exec(row.lines[index]);
     if (match === null) continue;
     rootIndex = index;
@@ -198,7 +204,7 @@ function inspectDump(dump) {
 
   let suffix = '.jsonl.zstd';
   let otherSuffix = '.jsonl';
-  for (let index = configIndex + 1; index < row.lines.length; index += 1) {
+  for (let index = configIndex + 1; index < configEnd; index += 1) {
     const compression = /^    compression: (.+)$/.exec(row.lines[index]);
     if (compression === null) continue;
     const value = trim(compression[1]);

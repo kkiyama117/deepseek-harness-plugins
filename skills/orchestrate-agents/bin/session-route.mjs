@@ -70,8 +70,12 @@ function inheritedCount(events) {
   return 0;
 }
 
-function inspect(events) {
+function inspect(log, events) {
   const inherited = inheritedCount(events);
+  const first = events[0];
+  if (first?.type === 'session' && first.isSeeded === true && inherited === 0) {
+    return { error: `${log}: a seeded log has no inherited marker` };
+  }
   const own = events.slice(inherited);
   const descriptor = own.find(event => event.type === 'subagent/descriptor' && isRecord(event.data))?.data;
   const routes = [];
@@ -131,7 +135,9 @@ function main() {
   if (read.error !== undefined) return report(read.error);
   const parsed = parseEvents(log, read.text);
   if (parsed.error !== undefined) return report(parsed.error);
-  const { inherited, descriptor, routes } = inspect(parsed.events);
+  const inspected = inspect(log, parsed.events);
+  if (inspected.error !== undefined) return report(inspected.error);
+  const { inherited, descriptor, routes } = inspected;
   if (routes.length === 0) return report(`no request/header route in ${log}`);
   process.stdout.write(`${describe(log, inherited, descriptor, routes).join('\n')}\n`);
   return 0;

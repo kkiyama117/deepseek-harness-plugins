@@ -508,3 +508,40 @@ test('session-log-path reports an unreadable dump file', async () => {
     assert.equal(result.stderr, 'session-log-path: cannot read the dump file: ENOENT\n');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('session-log-path stops at the end of the config block', async () => {
+  const directory = await scratch();
+  try {
+    const root = join(directory, 'logs');
+    await mkdir(root);
+    const file = await writeDump(directory, dumpWith([
+      '- id: session-persistence-jsonl',
+      '  config:',
+      `    root: ${root}`,
+      '  meta:',
+      '    compression: SECRET-VALUE-123',
+    ]));
+    const result = run(['--dump-file', file]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `root ${root}\nlayer ${LAYER}\n`);
+    assert.equal(result.stdout.includes('SECRET-VALUE-123'), false);
+    assert.equal(result.stderr.includes('SECRET-VALUE-123'), false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('session-log-path does not take a root from another key', async () => {
+  const directory = await scratch();
+  try {
+    const file = await writeDump(directory, dumpWith([
+      '- id: session-persistence-jsonl',
+      '  config:',
+      '    compression: none',
+      '  meta:',
+      '    root: /srv/other',
+    ]));
+    const result = run(['--dump-file', file]);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, 'session-log-path: the session-persistence-jsonl row has no config.root\n');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

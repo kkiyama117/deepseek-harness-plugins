@@ -262,3 +262,36 @@ test('session-route rejects bad usage', async () => {
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('session-route refuses a seeded log without its marker', async () => {
+  const directory = await scratch();
+  try {
+    const log = join(directory, 'session.v4.jsonl');
+    const events = [
+      { ...baseEvents[0], isSeeded: true },
+      { type: 'request/header', seq: 1, data: { reason: 'initial', header: { config: { provider: 'parent-p', model: 'parent-m' } } } },
+    ];
+    await writeFile(log, `${events.map(event => JSON.stringify(event)).join('\n')}\n{"type":"session/end-se`);
+    const result = run([log]);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, `session-route: ${log}: a seeded log has no inherited marker\n`);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('session-route reads a seeded log with its marker', async () => {
+  const directory = await scratch();
+  try {
+    const log = join(directory, 'session.v4.jsonl');
+    const events = [
+      { ...baseEvents[0], isSeeded: true },
+      { type: 'request/header', seq: 1, data: { reason: 'initial', header: { config: { provider: 'parent-p', model: 'parent-m' } } } },
+      { type: 'session/end-seed', seq: 2, data: { inherited: true } },
+      ...baseEvents.slice(1),
+    ];
+    await writeFile(log, text(events));
+    const result = run([log]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, expected(log).replace('inherited 0', 'inherited 3'));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
