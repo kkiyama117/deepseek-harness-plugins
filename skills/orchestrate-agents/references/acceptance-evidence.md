@@ -37,6 +37,14 @@ The parent inspects the actual artifacts and raw evidence: open the file, read t
 
 Distinguish a worker's narrative from raw tool and artifact observations. A summary or self-assessment stays a claim; captured command output, an exit status, a log, a diff or an artifact the parent can open is inspectable evidence regardless of which agent produced it. The parent need not rerun every check or add a verifier agent, and a check is not downgraded merely because a worker ran it.
 
+## Headless worker runs
+
+A headless run streams provider reasoning to stderr; tool calls are not part of that stream, so stderr alone cannot show what a read-only reviewer actually read. The headless bundle's `--json` option (`dsh --profile headless --json "<task>"`) writes the run as newline-delimited events to stdout instead of the final text: `session`, `status`, `thinking`, `text`, `tool_call` (`callId`, `tool`, `input`), `tool_result` (`callId`, `status`, `result`, `error`) and a terminal `final`. Keep that stream as the evidence file and read the answer from `final`.
+
+The projected events come from committed Session events, so an attempt that was retried and never committed does not appear. `tool_call` records the tool and its arguments; `tool_result` also carries the result text, so bound or redact the file before it becomes evidence, and keep private content out of any public record.
+
+`--json` carries no provider or model identity. Confirm the effective route from the child Session log rather than from a requested route or from the stream.
+
 ## Evidence pointers and retention
 
 Describe evidence through the existing `evidence: string[]` result field: name a receipt, log or artifact path, or state the observation directly. The compiler only transports these strings; it does not parse, validate or enforce their content, and a listed path is not proof by itself.
