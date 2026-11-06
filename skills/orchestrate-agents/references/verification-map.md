@@ -26,6 +26,8 @@ Run `node --test tests/*.test.mjs` for this small skill-local suite. These tests
 
 Follow [compile and run](run-dsh.md) only after an explicit human workflow or large-orchestration request. The offline suite cannot prove native model behavior, real overlapping execution, host cancellation or effective backend identity.
 
+[bin/session-evidence.py](../bin/session-evidence.py) resolves the composed Session root and prints the child descriptor and request routes. It is exercised by hand against a live root and a synthetic fixture ([verification record](verification.md#effective-model-evidence-2026-11-06)); it has no automated test, so a missing or changed Session layout surfaces as a reported lookup failure, not a test failure.
+
 Before a native check, define its acceptance criteria, requested roles and call cap, exact writable temporary paths, and expected external artifacts. Compile the packet unchanged through the existing entry point. Keep the native result with its input; independently inspect the artifacts rather than accept the result's `completed` label.
 
 A useful isolated check exercises two independently owned worker artifacts, parent integration, and a read-only review. A repair check must contain an observable seeded defect or missing acceptance artifact; a reviewer must not claim to have found a defect merely to force a branch. A coordinator/advisor check must name the actual question the advisor answers. Record branches actually observed, not those merely enabled by the packet.

@@ -26,6 +26,23 @@ Keep the compact native tool result, full-result retrieval reference and observe
 
 The adapter cannot resume a stopped graph or reuse child sessions. Before another run, inspect existing artifacts and uncertain effects. Do not blindly replay all nodes. A bounded repair inside a successful native call is different from resubmitting a failed workflow.
 
+## Confirm the effective model
+
+Requested routes are not observed identity ([acceptance evidence](acceptance-evidence.md)). The Session root is composed from the profile, its bundles, the profile's `cordis.patch.yml` and any `--patch` overlay, so searching a fixed `<DSH_HOME>/sessions` path can read a stale store and miss the run entirely.
+
+Resolve the root from the same composition that ran the work. `dsh --profile <profile> --dump-config` prints the composed tree; the `session-persistence-jsonl` entry's `config.root` is the directory that deployment writes Sessions to. Then locate `<root>/<projectKey>/<sessionId>/session*.jsonl[.zstd]` and read the `subagent/descriptor` and `request/header` events. Do not pin the format version: glob `session*.jsonl*` because the format and rotation suffixes are not stable.
+
+A child Session may carry a `subagent/descriptor` naming the requested provider, model and reasoning effort; a Session without one still records the route in its `request/header`. [bin/session-evidence.py](../bin/session-evidence.py) resolves the root, searches, and extracts both in one read:
+
+```sh
+uv run bin/session-evidence.py --profile web --session-id session-<uuid>
+uv run bin/session-evidence.py --profile headless --latest
+```
+
+`--latest` is project-agnostic: it takes the newest log under the root, so prefer the explicit id when the runner returns one.
+
+On failure it prints the effective root and every path it searched; that output is the coverage gap to report. Use `--sessions-root` only when the launcher cannot run in the current environment, and record that reason with the observation. A missing log is not evidence that a different model ran, and it is not evidence for the requested route either.
+
 ## Verify
 
 ```sh
