@@ -55,3 +55,7 @@ A separately authorized native revalidation used a fresh artifact root and the s
 ## Effective-model evidence (2026-11-06)
 
 `dsh --profile web --dump-config` resolved the composed Session root to a recovery directory rather than `~/.dsh/sessions`. A child Session there used `session.v4.jsonl.zstd`; its `subagent/descriptor` named `openai-codex` / `gpt-6-astra` / `high`, and its `request/header` carried the same provider, model and reasoning effort. `uv run bin/session-evidence.py --profile web --session-id <child>` returned both in one read, and an unknown id failed with the effective root and the searched patterns instead of an empty result. A synthetic uncompressed fixture with two distinct request routes and a `session-<uuid>` directory name also passed by hand; no automated test covers the script. These runs establish the lookup method, not model quality, and no paid headless run was performed.
+
+## Headless stream evidence (2026-11-06)
+
+The deployed headless profile's help lists `--json` ("write newline-delimited run events to stdout instead of the final message"). Its projection source emits `tool_call` with the tool name and parsed input, `tool_result` with the status and result text, and a terminal `final`, alongside status, thinking and text events. This is a help-and-source check: no headless run was performed for it, so the stream content for any particular provider remains unobserved.
