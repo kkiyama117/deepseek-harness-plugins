@@ -79,7 +79,6 @@
 
 | コンポーネント | 目的 |
 |---|---|
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。マシンローカルのDSHチェックアウトパスからimportします。 |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | `session/disposed`を監視してセッション資源の同期解放を要求します。全Sessionの一括破棄や相手方ソケットの切断待機は行いません。 |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | 指定したローカルアプリURL向けにキャッシュ可能な汎用フォールバックアイコンを提供します。未登録アイコンの自動探索やランチャーの変更は行いません。 |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | 構造化されたreaderおよびreviewer子Session向けに`aistore-native`プリセットを宣言し、ツール利用を制限します。プリセット不在時は親の設定に縮退せず生成を拒否します。 |

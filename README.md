@@ -79,7 +79,6 @@ Deployment-specific bundles and presets:
 
 | Component | Purpose |
 |---|---|
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions. It imports from a machine-local DSH checkout path. |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Listens to `session/disposed` and requests synchronous closure of session resources; does not clear all Sessions or await peer socket closure. |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | Serves cacheable generic fallback icons for selected local application URLs; does not discover missing icons automatically or alter existing launcher routes. |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | Declares the `aistore-native` preset for reader and reviewer child Sessions with scoped tool restrictions; missing presets reject creation without falling back. |
