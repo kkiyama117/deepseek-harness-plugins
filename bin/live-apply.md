@@ -30,9 +30,11 @@
 | E. profileのpatch（`~/.dsh/profiles/<p>/cordis.patch.yml`） | そのprofileの行の上書き | そのprofileの次の起動 | 前のファイルの写しを戻す | `headless`・`ai-reference-store-daily` なら届く |
 | F. homeのpatch（`~/.dsh/cordis.patch.yml`） | 全profileの行。sessionとstorageの保存先（[#45](https://github.com/kkiyama117/deepseek-harness-plugins/issues/45)）を含む | 全profileの次の起動 | 前のファイルの写しを戻す | 届く |
 | G. このcheckoutのdaemon patch（`configs/dsh-slack-worker-config/daemon.patch.yml`） | 本番bridgeの行 | bridgeの次の再起動だけ | 前の内容に戻し、bridgeを再起動する | 届く |
-| H. このリポジトリの主checkoutの更新（`git pull` など） | DとGのリンク先 | `web` が `link:` で読むプラグインと、bridgeが読むdaemon patch。PRのmergeだけではliveは変わらず、主checkoutを更新したときに変わる | 前のcommitの内容に戻す | Gを含めば届く |
+| H. このリポジトリの主checkoutの更新（`git pull` など） | DとGのリンク先 | `web` が `link:` で読むプラグイン（`plugins/llm-fallback`、`configs/*-mcp*` など）と、bridgeが読むdaemon patch。PRのmergeだけではliveは変わらず、主checkoutを更新したときに変わる | 前のcommitの内容に戻す | `configs/dsh-slack-worker-config/` が変われば届く |
 | I. `~/.dsh/skills` のリンク | DSHが見つけるskill | 次の起動（起動中の再走査は未確認）。リンク先がkstackのcheckoutなら、kstackの変更がそのまま届く | リンクかリンク先を戻す | skillを使う起動に届く |
 | J. `run-worker.sh` の一時patch | workerのmodelの経路と認証情報の有効化 | worker・reviewerの次の実行だけ | kstackの所有者が戻す | 届かない |
+
+主checkoutの更新（H）は、どれもliveへの反映として扱う。前後のprobeを流し、manager の go を得てから行う。`configs/dsh-slack-worker-config/` が変わる更新は本番への反映であり、所有者の承認が要る。
 
 経路をまたぐつながり:
 
