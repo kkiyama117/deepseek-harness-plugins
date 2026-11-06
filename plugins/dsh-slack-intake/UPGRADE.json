@@ -1,16 +1,17 @@
 {
-  "source": "/data/softwares/deepseek-harness-plugins/compat/slack-intake-rc3",
+  "source": "plugins/dsh-slack-intake",
   "baselineCommit": "9ad3661",
-  "targetDsh": "0.2.1-rc.3",
-  "targetCommit": "22ddee3792402c3e70ec5f86a63c3e3e895a2f60",
-  "status": "offline-suite-passed-isolated-profile-passed",
-  "passed": 196,
-  "skipped": 2,
+  "targetDsh": "0.2.2-rc.1",
+  "targetCommit": "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159",
+  "status": "synthetic-suite-passed-full-profile-pending",
+  "passed": 199,
+  "skipped": 4,
   "changes": [
     "Explicit native executor",
     "Batch tool execution",
     "AgentModel selection and fixed-route admission",
-    "Retained startup/retry and durable task policies"
+    "Retained startup/retry and durable task policies",
+    "Flattened native SubagentActivationSpec while preserving route, limits and cancellation"
   ],
   "productionApplied": false
 }

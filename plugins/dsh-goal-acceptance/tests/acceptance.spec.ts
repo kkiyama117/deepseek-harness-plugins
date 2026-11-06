@@ -133,7 +133,7 @@ describe('original request acceptance', () => {
     })
     const start = (parent: Agent) => h.ctx.subagents.startActivation({
       provider: 'capture', label: 'bounded review', delivery: 'caller',
-      request: { parent, prompt: [{ type: 'text', text: 'Review the queue' }] }, signal: new AbortController().signal,
+      parent, prompt: [{ type: 'text', text: 'Review the queue' }], signal: new AbortController().signal,
     })
     const unrelated = await start(other)
     await unrelated.result
@@ -372,7 +372,7 @@ describe('original request acceptance', () => {
       },
     })
     const request = { provider: 'capture', label: 'narrow review', delivery: 'caller' as const,
-      request: { prompt: [{ type: 'text' as const, text: 'Review only the queue implementation' }], parent: h.agent },
+      prompt: [{ type: 'text' as const, text: 'Review only the queue implementation' }], parent: h.agent,
       signal: new AbortController().signal }
     await expect(h.ctx.subagents.startActivation(request)).rejects.toThrow(/checkpoint before delegation/)
     expect(prompts).toHaveLength(0)
@@ -388,7 +388,7 @@ describe('original request acceptance', () => {
     h.ctx.goals.complete(h.agent, edited)
     const later = await h.ctx.subagents.startActivation(request)
     await later.dispose()
-    expect(prompts.at(-1)).toEqual(request.request.prompt)
+    expect(prompts.at(-1)).toEqual(request.prompt)
   })
 
   it('retains a nested PTC checkpoint and its negative outcome evidence', async () => {

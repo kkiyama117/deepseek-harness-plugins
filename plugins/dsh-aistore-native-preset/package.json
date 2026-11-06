@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-aistore-native-preset",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "description": "Restricted child preset for aistore structured reader and reviewer tasks.",
@@ -17,7 +17,7 @@
     "README.md"
   ],
   "peerDependencies": {
-    "@deepseek-ai/dsh-tool-executor-native": "0.2.1-rc.3 || 0.2.2-alpha.2"
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.1"
   },
   "dsh": {
     "bundle": {

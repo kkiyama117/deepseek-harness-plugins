@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "base": "dsh-v0.2.2-alpha.2",
+  "directory": "packages/web/web-search-exa",
+  "license": "MIT",
+  "behavior": "Original request, response mapping and redirect rejection retained"
+}

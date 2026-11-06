@@ -47,7 +47,8 @@ function successfulSubagents({ result = { output: [], structured: response, stop
     } },
     async startActivation(spec) {
       assert.equal(spec.delivery, 'caller');
-      onStart?.(spec.provider, spec.request);
+      assert.equal('request' in spec, false);
+      onStart?.(spec.provider, spec);
       return { childId: 'session:actual', result: Promise.resolve(result),
         async dispose() { await onDispose?.(); } };
     },

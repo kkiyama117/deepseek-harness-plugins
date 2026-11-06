@@ -1,0 +1,6 @@
+- id: web-search-exa
+  disabled: true
+- insert:
+    - id: web-search-exa-compat
+      name: '@local/dsh-web-search-exa-compat'
+      config: {}

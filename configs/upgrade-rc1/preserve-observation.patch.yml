@@ -1,0 +1,3 @@
+# Review and apply explicitly; this file is not installed by the maintenance task.
+- id: fs-observation-policy
+  disabled: false

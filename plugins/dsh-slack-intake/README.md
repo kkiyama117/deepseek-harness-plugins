@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 This package provides two separate DSH entries for the Go `aistore` CLI. The bundle patch mounts a standalone command adapter with local `OPENROUTER_API_KEY` credential access. The `./agent` entry registers `aistore_native_task` in an Agent scope and runs one claimed reader or reviewer task through an explicitly selected native subagent provider. Both entries require absolute paths to the `aistore` executable and store; legacy Python and `skillRoot` configuration is rejected.
 
-This local.4 package requires the native executor, batch tool execution, and AgentModel APIs of the master commit recorded in `UPGRADE.json`; the older rc.3 release tag has the same version string but not those APIs. Verification Sessions select their configured route before admission and reject route changes. The configured step/command limits, startup readiness, durable claims, and unknown-outcome handling remain unchanged.
+This `0.2.2-local.1` candidate targets DSH `0.2.2-rc.1` and passes native activation options directly instead of through a nested `request`. Verification Sessions select their configured route before admission and reject route changes. The configured step/command limits, startup readiness, durable claims, and unknown-outcome handling remain unchanged.
 
 ## Table of Contents
 

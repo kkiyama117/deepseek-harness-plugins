@@ -14,7 +14,7 @@
  */
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { createWorkflowRecordMirror } from './record.js';
+import { createWorkflowRecordMirror } from "./record.js";
 export const name = 'tool-workflow';
 export const inject = ['tools', 'workflowEngine', 'systemPrompt'];
 export const Config = z.object({
