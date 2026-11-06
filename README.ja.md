@@ -61,6 +61,7 @@
 | [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | 元の依頼を保持し、Goalの完了判定と最初の委任について証拠の記録を確認します。共有Hostで有効にする前に、[限定運用のpilot](plugins/dsh-request-acceptance-pilot/README.md)を読んでください。 |
 | [Workflow result selection](plugins/dsh-workflow-results/README.md) | `resultKeys`で選んだフィールドを返す前に、ワークフローの結果全体を保存します。選んだプリセットでツールの置き換えが必要です。 |
 | [Codex transport recovery](plugins/dsh-codex-transport-recovery/README.md) | 特定の早期WebSocket切断を通信エラーとして分類し、公式の再試行方針で扱えるようにします。再試行の追加やモデルの変更はしません。 |
+| [pi-aiサーバーエラー補正](plugins/dsh-pi-ai-server-recovery/README.md) | 数字のない5xxの状態文で返るpi-aiの失敗をサーバーエラーとして分類し、公式の再試行方針で扱えるようにします。再試行の追加やモデルの変更はしません。 |
 | [Workspace attach](plugins/dsh-workspace-attach/README.md) | `DSH_WORKSPACE_ID` を通じてheadless実行をWebのワークスペースグループに参加させます。アタッチ処理はWebホスト側が実行します。 |
 | [AI reference-store daily preset](presets/ai-reference-store-daily/README.md) | 別に設定する参照ストア・アプリケーション向けのプリセットを宣言します。プリセットを選んでも日次バッチは始まりません。 |
 
