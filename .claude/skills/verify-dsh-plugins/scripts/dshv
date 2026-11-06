@@ -1,0 +1,3 @@
+#!/bin/sh
+# dshv: see `dshv --help`. The implementation is dshv.mjs (Node, no dependencies beyond the DSH checkout).
+exec node "$(dirname "$0")/dshv.mjs" "$@"
