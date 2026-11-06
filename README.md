@@ -28,6 +28,7 @@ Each directory below is a source collection, not a deployment inventory. Cloning
 | [bin/](bin/) | Maintainer scripts that build, pack, and check packages, the weekly maintenance helpers, and the [runtime placement](bin/runtime-placement.md) notes. Not a public CLI. |
 | [scripts/](scripts/) | The read-only [local setup diagnostic](scripts/local-setup.mjs). |
 | [tests/](tests/) | Vitest configuration and upgrade regression specs that are not package-local. |
+| [tasks/](tasks/) | Change cards for the kstack card-flow, one file per card, each tied to one issue. See [its README](tasks/README.md). |
 | [docs/](docs/) | [Layout migration](docs/layout-migration.md) and [maintenance scope](docs/maintenance-scope.md) notes, and the retained [implement-task flow diagram](docs/implement-task-flow.html). |
 | [.agents/](.agents/) | Development notes and the harness-facing skills for working on this repository. |
 
