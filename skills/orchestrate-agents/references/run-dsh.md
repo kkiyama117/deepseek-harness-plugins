@@ -22,21 +22,23 @@ Confirm that the live `workflow` tool declares `resultKeys`; an older Host must 
 
 Use native workflow only after an explicit human workflow/large-orchestration request. The parent waits while the runtime coordinates fresh children. The script handles ordinary null results explicitly, does not use `filter(Boolean)` as success checking, and never silently downgrades a failed route. Host cancellation and host call ceilings still apply.
 
-Keep the compact native tool result, full-result retrieval reference and observed run ID alongside the compiled artifacts. The Host saves the complete script result before returning the selected fields; use targeted `read`/`grep` retrieval only when acceptance needs more evidence. Do not label the inline projection as the full `result.json`. Preserve or copy the saved full artifact through authorized filesystem operations when retention beyond the spill store's lifetime is required. On host failure, record the error and known run ID rather than invent an equivalent success record. Requested role bindings are not proof of effective provider fallback: inspect child runtime metadata when an actual-model claim matters, and find it as [Find a child Session log](run-dsh.md#find-a-child-session-log) says.
+Keep the compact native tool result, full-result retrieval reference and observed run ID alongside the compiled artifacts. The Host saves the complete script result before returning the selected fields; use targeted `read`/`grep` retrieval only when acceptance needs more evidence. Do not label the inline projection as the full `result.json`. Preserve or copy the saved full artifact through authorized filesystem operations when retention beyond the spill store's lifetime is required. On host failure, record the error and known run ID rather than invent an equivalent success record. Requested role bindings are not proof of effective provider fallback: inspect child runtime metadata when an actual-model claim matters, and find it as [Confirm the effective model](run-dsh.md#confirm-the-effective-model) says.
 
 The adapter cannot resume a stopped graph or reuse child sessions. Before another run, inspect existing artifacts and uncertain effects. Do not blindly replay all nodes. A bounded repair inside a successful native call is different from resubmitting a failed workflow.
 
-## Find a child Session log
+## Confirm the effective model
 
-Confirm an actual model only from the child Session's own records. Do not assume where they are stored: the root comes from the composed DSH config, and a deployment can override it, so `~/.dsh/sessions` may be stale or empty. From this skill directory, pass the profile and the same `--patch` overlays as the run:
+Requested routes are not observed identity ([acceptance evidence](acceptance-evidence.md)). The Session root is composed from the profile, its bundles, the profile's and the home `cordis.patch.yml`, and any `--patch` overlay, so searching a fixed `<DSH_HOME>/sessions` path can read a stale store and miss the run entirely.
+
+Resolve the log from the same composition that ran the work. From this skill directory, pass the profile and the same `--patch` overlays as the run:
 
 ```sh
 node bin/session-log-path.mjs --profile <profile> [--patch <overlay>]... --session-id <child-id>
 ```
 
-It prints the effective `root`, the config `layer` that set it, and the `log` path of the newest generation. When nothing matches, it exits 1 and prints the pattern it searched and the effective root with its layer; report those two lines rather than searching other roots by hand. It reads directory listings only and never opens a Session file. Like every `dsh` start, it rewrites the profile's fixed `cordis.yml`; it refuses a profile that does not exist yet, so a lookup never creates one.
+It prints the effective `root`, the config `layer` that set it, and the `log` path of the newest generation, chosen as the Session backend chooses it. When nothing matches, it exits 1 and prints the pattern it searched and the effective root with its layer; that output is the coverage gap to report, rather than a reason to search other roots by hand. It reads directory listings only and never opens a Session file. Like every `dsh` start, it rewrites the profile's fixed `cordis.yml`; it refuses a profile that does not exist yet, so a lookup never creates one. When the launcher cannot run in the current environment, save `dsh --profile <profile> --dump-config` where it can run, pass that file with `--dump-file`, and record why.
 
-Open the log only when an actual-model claim needs it, and keep what you read as private as the other run records. Issue #45 found the effective provider, model and reasoning effort in the `subagent/descriptor` and `request/header` events of a `session.v4.jsonl.zstd` log, read with `zstd -dc`.
+A child Session may carry a `subagent/descriptor` naming the requested provider, model and reasoning effort; a Session without one still records the route in its `request/header`. Open the log only when an actual-model claim needs it, and keep what you read as private as the other run records. A missing log is not evidence that a different model ran, and it is not evidence for the requested route either.
 
 ## Verify
 
