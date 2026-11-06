@@ -13,7 +13,7 @@
 | `ai-reference-store-daily.service`（本番） | timerで毎日1回。`daily-start.sh` 経由 | `ai-reference-store-daily` | 次のtimer起動 |
 | `dsh-web-managed.service` | 常駐。`dsh web` | `web` | serviceの再起動（client bundleは下の注を参照） |
 
-一回の起動は、profileの `package.json` の `dsh.profile.bundles` の順に各bundleのpatch、profileの `cordis.patch.yml`、homeの `~/.dsh/cordis.patch.yml`、`--patch` の順に重ねる（`apps/cli/src/profile-boot.ts`）。どの起動もprofileの `cordis.yml` を同じ空の内容で書き直すので、`--dump-config` も含め、`dsh` の起動は `~/.dsh` を書く操作である。
+一回の起動は、profileの `package.json` の `dsh.profile.bundles` の順に各bundleのpatch、profileの `cordis.patch.yml`、homeの `~/.dsh/cordis.patch.yml`、`--patch` の順に重ねる（`apps/cli/src/profile-boot.ts`）。どの起動もprofileの `cordis.yml` を同じ空の内容で書き直すので、`--dump-config` も含め、`dsh` の起動は `~/.dsh` を書く操作である。存在しないprofile名で起動すると、そのprofileを作ってしまう（`prepareProfile`）。反映のscriptとprobeは、`dsh` を呼ぶ前にそのprofileの `package.json` があることを確かめ、なければ止まる。
 
 `headless` profileはworkerと本番の両方が使う。`headless` に届く変更は、次のworker実行にすぐ届き、本番にはbridgeの次の再起動で届く。後者は人が再起動しなくても、bridgeが落ちれば起きる。
 
