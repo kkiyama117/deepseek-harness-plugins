@@ -9,6 +9,21 @@
       "run": "python3 -m unittest discover -s bin -p 'test_*.py'"
     }
   ],
+  "configs/dsh-inspector-origin": [
+    {
+      "cwd": ".",
+      "run": "d=$(mktemp -d) && npm_config_cache=\"$d/npm-cache\" npm_config_logs_dir=\"$d/npm-logs\" python3 bin/pack-local-bundle.py configs/dsh-inspector-origin \"$d/p.tgz\" >/dev/null; c=$?; rm -rf \"$d\"; exit $c"
+    }
+  ],
+  "configs/upgrade-rc1": [
+    {
+      "cwd": "configs/upgrade-rc1",
+      "run": "grep -q '^- id: fs-observation-policy$' preserve-observation.patch.yml && grep -q '^  disabled: false$' preserve-observation.patch.yml && grep -A2 '^    - id: fs-observation-policy$' \"$DSH_UPSTREAM_ROOT/packages/bundle/base/cordis.patch.yml\" | grep -q '^      disabled: true$'",
+      "env": {
+        "DSH_UPSTREAM_ROOT": "/data/softwares/deepseek-harness"
+      }
+    }
+  ],
   "plugins/dsh-codex-transport-recovery": [
     {
       "cwd": "plugins/dsh-codex-transport-recovery",
@@ -30,12 +45,30 @@
       }
     }
   ],
+  "plugins/dsh-session-cleanup": [
+    {
+      "cwd": ".",
+      "run": "d=$(mktemp -d) && npm_config_cache=\"$d/npm-cache\" npm_config_logs_dir=\"$d/npm-logs\" python3 bin/pack-local-bundle.py plugins/dsh-session-cleanup \"$d/p.tgz\" >/dev/null; c=$?; rm -rf \"$d\"; [ $c -eq 0 ] && \"$DSH_TEST_TARGET/node_modules/.bin/vitest\" run --config \"$(pwd)/tests/upgrade.config.mjs\" tests/upgrade/local-session-cleanup.spec.ts",
+      "env": {
+        "DSH_TEST_TARGET": "/data/softwares/deepseek-harness"
+      }
+    }
+  ],
   "plugins/dsh-slack-intake": [
     {
       "cwd": "plugins/dsh-slack-intake",
       "run": "node --import ./tests/host-imports.mjs --test tests/*.test.mjs",
       "env": {
         "DSH_HOST_ROOT": "/data/softwares/deepseek-harness"
+      }
+    }
+  ],
+  "plugins/dsh-web-search-exa-compat": [
+    {
+      "cwd": ".",
+      "run": "d=$(mktemp -d) && cp -r plugins/dsh-web-search-exa-compat \"$d/\" && node bin/build-target-consumers.mjs \"$DSH_TEST_TARGET\" \"$d/dsh-web-search-exa-compat\" >/dev/null; c=$?; rm -rf \"$d\"; [ $c -eq 0 ] && \"$DSH_TEST_TARGET/node_modules/.bin/vitest\" run --config \"$(pwd)/tests/upgrade.config.mjs\" plugins/dsh-web-search-exa-compat",
+      "env": {
+        "DSH_TEST_TARGET": "/data/softwares/deepseek-harness"
       }
     }
   ],
@@ -64,6 +97,15 @@
     {
       "cwd": "skills/slack-reference-intake",
       "run": "python3 -m unittest discover -s tests"
+    }
+  ],
+  "tests": [
+    {
+      "cwd": ".",
+      "run": "\"$DSH_TEST_TARGET/node_modules/.bin/vitest\" run --config \"$(pwd)/tests/upgrade.config.mjs\" tests/upgrade plugins/dsh-web-search-exa-compat",
+      "env": {
+        "DSH_TEST_TARGET": "/data/softwares/deepseek-harness"
+      }
     }
   ]
 }

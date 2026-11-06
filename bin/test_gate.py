@@ -326,14 +326,19 @@ class RepositoryChecksTest(unittest.TestCase):
         checks = gate.load_checks(gate.ROOT)
         self.assertEqual(sorted(checks), sorted([
             'bin',
+            'configs/dsh-inspector-origin',
+            'configs/upgrade-rc1',
             'plugins/dsh-codex-transport-recovery',
             'plugins/dsh-open-in-app-icons',
             'plugins/dsh-prompt-compact',
+            'plugins/dsh-session-cleanup',
             'plugins/dsh-slack-intake',
+            'plugins/dsh-web-search-exa-compat',
             'plugins/dsh-workspace-attach',
             'plugins/llm-fallback',
             'skills/orchestrate-agents',
             'skills/slack-reference-intake',
+            'tests',
         ]))
         self.assertEqual(checks['bin'], [
             {'cwd': '.', 'run': 'python3 bin/test-runtime-placement.py'},
