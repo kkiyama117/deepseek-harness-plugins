@@ -38,7 +38,13 @@ node bin/session-log-path.mjs --profile <profile> [--patch <overlay>]... --sessi
 
 It prints the effective `root`, the config `layer` that set it, and the `log` path of the newest generation, chosen as the Session backend chooses it. When nothing matches, it exits 1 and prints the pattern it searched and the effective root with its layer; that output is the coverage gap to report, rather than a reason to search other roots by hand. It reads directory listings only and never opens a Session file. Like every `dsh` start, it rewrites the profile's fixed `cordis.yml`; it refuses a profile that does not exist yet, so a lookup never creates one. When the launcher cannot run in the current environment, save `dsh --profile <profile> --dump-config` where it can run, pass that file with `--dump-file`, and record why.
 
-A child Session may carry a `subagent/descriptor` naming the requested provider, model and reasoning effort; a Session without one still records the route in its `request/header`. Open the log only when an actual-model claim needs it, and keep what you read as private as the other run records. A missing log is not evidence that a different model ran, and it is not evidence for the requested route either.
+Then read the route recorded in that log:
+
+```sh
+node bin/session-route.mjs <log>
+```
+
+It prints the `log`, how many `inherited` events a forked child copied from its parent (those are skipped), the `descriptor` the parent wrote when it created the child, and one `route` line per distinct `request/header` route after the inherited events. A continuable child's descriptor names the requested route (`agentProvider`, `agentModel`, `agentReasoningEffort`); `subagentProvider` is the subagent provider, not an LLM provider; a one-shot child's descriptor has no route. The `route` lines are what each request was prepared with, so they are the evidence for the effective model. The tool prints only these values and never other Session content; still run it only when an actual-model claim needs it. A missing log, or a log without a route, is not evidence that a different model ran, and it is not evidence for the requested route either.
 
 ## Verify
 
