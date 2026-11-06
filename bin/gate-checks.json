@@ -1,0 +1,69 @@
+{
+  "bin": [
+    {
+      "cwd": ".",
+      "run": "python3 bin/test-runtime-placement.py"
+    },
+    {
+      "cwd": ".",
+      "run": "python3 -m unittest discover -s bin -p 'test_*.py'"
+    }
+  ],
+  "plugins/dsh-codex-transport-recovery": [
+    {
+      "cwd": "plugins/dsh-codex-transport-recovery",
+      "run": "node --test tests/*.test.mjs"
+    }
+  ],
+  "plugins/dsh-open-in-app-icons": [
+    {
+      "cwd": "plugins/dsh-open-in-app-icons",
+      "run": "python3 bin/test.py"
+    }
+  ],
+  "plugins/dsh-prompt-compact": [
+    {
+      "cwd": "plugins/dsh-prompt-compact",
+      "run": "node --test tests/*.test.mjs",
+      "env": {
+        "DSH_UPSTREAM_ROOT": "/data/softwares/deepseek-harness"
+      }
+    }
+  ],
+  "plugins/dsh-slack-intake": [
+    {
+      "cwd": "plugins/dsh-slack-intake",
+      "run": "node --import ./tests/host-imports.mjs --test tests/*.test.mjs",
+      "env": {
+        "DSH_HOST_ROOT": "/data/softwares/deepseek-harness"
+      }
+    }
+  ],
+  "plugins/dsh-workspace-attach": [
+    {
+      "cwd": "plugins/dsh-workspace-attach",
+      "run": "node --test tests/*.test.mjs"
+    }
+  ],
+  "plugins/llm-fallback": [
+    {
+      "cwd": "plugins/llm-fallback",
+      "run": "node --test test.mjs mount.test.mjs",
+      "env": {
+        "DSH_UPSTREAM_ROOT": "/data/softwares/deepseek-harness"
+      }
+    }
+  ],
+  "skills/orchestrate-agents": [
+    {
+      "cwd": "skills/orchestrate-agents",
+      "run": "node --test tests/*.test.mjs"
+    }
+  ],
+  "skills/slack-reference-intake": [
+    {
+      "cwd": "skills/slack-reference-intake",
+      "run": "python3 -m unittest discover -s tests"
+    }
+  ]
+}
