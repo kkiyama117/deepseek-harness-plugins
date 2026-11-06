@@ -325,6 +325,7 @@ class RepositoryChecksTest(unittest.TestCase):
     def test_repository_checks_file_is_valid(self):
         checks = gate.load_checks(gate.ROOT)
         self.assertEqual(sorted(checks), sorted([
+            '.',
             'bin',
             'plugins/dsh-codex-transport-recovery',
             'plugins/dsh-open-in-app-icons',
@@ -340,6 +341,8 @@ class RepositoryChecksTest(unittest.TestCase):
             {'cwd': '.', 'run': "python3 -m unittest discover -s bin -p 'test_*.py'"},
         ])
         rows = {
+            '.': ('b=$(git merge-base origin/main HEAD) || exit 1; if git diff --quiet "$b" -- core-exceptions.json; then echo "core-exceptions.json unchanged since the merge base; Core separation check skipped"; else python3 bin/check-core-separation.py --core "$DSH_UPSTREAM_ROOT"; fi',
+                  {'DSH_UPSTREAM_ROOT': '/data/softwares/deepseek-harness'}),
             'plugins/dsh-codex-transport-recovery': ('node --test tests/*.test.mjs', None),
             'plugins/dsh-open-in-app-icons': ('python3 bin/test.py', None),
             'plugins/dsh-prompt-compact': ('node --test tests/*.test.mjs',
