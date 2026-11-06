@@ -4,9 +4,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -18,8 +20,22 @@ NEW = '- id: agent-default-model\n  config:\n    reasoningEffort: low\n'
 WORKER_BODY = '''
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 
+stdin_text = sys.stdin.read()
+try:
+    target_text = open(os.environ['FAKE_TARGET']).read()
+except OSError:
+    target_text = None
+with open(os.environ['FAKE_LOG'], 'a') as log:
+    log.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin_text,
+                          'dshCli': os.environ.get('DSH_CLI'),
+                          'dshHome': os.environ.get('DSH_HOME'),
+                          'target': target_text,
+                          'runWorkerEvents': os.environ.get('RUN_WORKER_EVENTS')}) + '\\n')
 plan = os.environ['FAKE_PLAN']
 position_file = plan + '.position'
 position = int(open(position_file).read()) if os.path.exists(position_file) else 0
@@ -28,15 +44,6 @@ if position >= len(words):
     sys.exit(99)
 word = words[position]
 open(position_file, 'w').write(str(position + 1))
-try:
-    target_text = open(os.environ['FAKE_TARGET']).read()
-except OSError:
-    target_text = None
-with open(os.environ['FAKE_LOG'], 'a') as log:
-    log.write(json.dumps({'argv': sys.argv[1:], 'stdin': sys.stdin.read(),
-                          'dshCli': os.environ.get('DSH_CLI'),
-                          'dshHome': os.environ.get('DSH_HOME'),
-                          'target': target_text}) + '\\n')
 if word == 'ok':
     print('391')
 elif word == 'fail':
@@ -46,6 +53,19 @@ elif word == 'wrong':
 elif word == 'write':
     open('stray', 'w').close()
     print('391')
+elif word == 'hang':
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    open(os.environ['FAKE_PID'], 'w').write(str(child.pid))
+    time.sleep(60)
+elif word == 'interrupt':
+    os.kill(os.getppid(), signal.SIGINT)
+    time.sleep(5)
+    sys.exit(1)
+elif word == 'lock':
+    for directory in os.environ['FAKE_LOCK'].split(os.pathsep):
+        os.chmod(directory, 0o500)
+    print('391')
+    sys.exit(0)
 '''
 
 DSH_BODY = '''
@@ -61,6 +81,9 @@ with open(os.environ['FAKE_DSH_LOG'], 'a') as log:
 remove = os.environ.get('FAKE_DSH_REMOVE')
 if remove:
     shutil.rmtree(remove, ignore_errors=True)
+lock = os.environ.get('FAKE_DSH_LOCK')
+if lock:
+    os.chmod(lock, 0o500)
 sys.exit(1 if os.environ.get('FAKE_DSH_FAIL') == '1' else 0)
 '''
 
@@ -113,7 +136,17 @@ class LiveApplyTests(unittest.TestCase):
     def summary(self, result):
         return json.loads(result.stdout)
 
-    def invoke(self, plan='', env=None, **options):
+    def keep_removable(self, *directories):
+        for directory in directories:
+            self.addCleanup(self.make_removable, directory)
+
+    def make_removable(self, directory):
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+
+    def invoke(self, plan='', env=None, umask=-1, **options):
         arguments = {
             '--source': str(self.source),
             '--target': str(self.target),
@@ -143,7 +176,7 @@ class LiveApplyTests(unittest.TestCase):
             if value is not None:
                 argv.extend([name, str(value)])
         return subprocess.run([sys.executable, '-B', str(SCRIPT), 'patch', *argv],
-                              capture_output=True, text=True, env=environment)
+                              capture_output=True, text=True, env=environment, umask=umask)
 
     def test_applies_when_probes_pass(self):
         self.prepare_web()
@@ -382,6 +415,239 @@ class LiveApplyTests(unittest.TestCase):
         self.assertTrue(result.stderr.startswith('live-apply: read source:'), result.stderr)
         self.assertEqual(self.summary(result)['status'], 'error')
         self.assertEqual(self.calls(), [])
+
+    def test_probe_timeout_kills_process_group(self):
+        self.prepare_web()
+        pid_file = self.root / 'pid'
+        started = time.monotonic()
+        result = self.invoke(plan='hang', env={'FAKE_PID': str(pid_file)}, probe_timeout='1')
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 30)
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertEqual(self.target.read_text(), OLD)
+        checks = self.summary(result)['checks']
+        worker = [check for check in checks if check['phase'] == 'before' and check['name'] == 'worker']
+        self.assertEqual(len(worker), 1)
+        self.assertIsNone(worker[0]['exitCode'])
+        self.assert_gone(int(pid_file.read_text()))
+        err = (self.record / 'before-worker-1.err').read_bytes()
+        self.assertTrue(err.endswith(b'live-apply: timed out after 1.0 seconds'), err)
+
+    def assert_gone(self, pid):
+        stat_path = Path(f'/proc/{pid}/stat')
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fields = stat_path.read_text().rsplit(')', 1)[1].split()
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                self.fail(f'/proc/{pid}/stat: {error}')
+            if fields[0] in ('Z', 'X'):
+                return
+            if time.monotonic() > deadline:
+                self.fail(f'process {pid} is still running')
+            time.sleep(0.1)
+
+    def test_probe_timeout_option_rejected(self):
+        self.prepare_web()
+        for value in ('0', 'inf'):
+            result = self.invoke(probe_timeout=value)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, '')
+        self.assertEqual(self.calls(), [])
+
+    def test_interrupt_after_write_restores(self):
+        self.prepare_web()
+        result = self.invoke(plan='ok ok interrupt')
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(self.target.read_text(), OLD)
+        self.assertIn('LIVE_APPLY_INTERRUPTED:', result.stderr)
+        self.assertIn('was restored', result.stderr)
+        self.assertEqual(self.summary(result)['status'], 'interrupted')
+        self.assertIn('LIVE_APPLY_CHECK_SERVICE: dsh-web-managed.service', result.stderr)
+
+    def test_interrupt_before_write_changes_nothing(self):
+        self.prepare_web()
+        result = self.invoke(plan='interrupt')
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(self.target.read_text(), OLD)
+        self.assertIn('LIVE_APPLY_INTERRUPTED: the target was not changed', result.stderr)
+        self.assertEqual(self.summary(result)['status'], 'interrupted')
+
+    def test_symlink_target_rejected(self):
+        self.prepare_web()
+        outside = self.root / 'outside-patch.yml'
+        outside.write_text('outside\n')
+        self.target.unlink()
+        self.target.symlink_to(outside)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('target is a symlink', result.stderr)
+        self.assertEqual(outside.read_text(), 'outside\n')
+        self.assertEqual(self.calls(), [])
+
+    def test_symlink_profiles_directory_rejected(self):
+        outside = self.root / 'outside-profiles'
+        for name in ('headless', 'web'):
+            (outside / name).mkdir(parents=True, exist_ok=True)
+            (outside / name / 'package.json').write_text('{}')
+        (outside / 'web' / 'cordis.patch.yml').write_text('outside\n')
+        shutil.rmtree(self.profiles)
+        self.profiles.symlink_to(outside)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('profiles directory is a symlink', result.stderr)
+        self.assertEqual((outside / 'web' / 'cordis.patch.yml').read_text(), 'outside\n')
+        self.assertEqual(self.calls(), [])
+
+    def test_symlink_profile_directory_rejected(self):
+        outside = self.root / 'outside-web'
+        outside.mkdir()
+        (outside / 'package.json').write_text('{}')
+        (outside / 'cordis.patch.yml').write_text('outside\n')
+        (self.profiles / 'web').symlink_to(outside)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('profile directory is a symlink', result.stderr)
+        self.assertEqual((outside / 'cordis.patch.yml').read_text(), 'outside\n')
+        self.assertEqual(self.calls(), [])
+
+    def test_mode_preserved(self):
+        self.prepare_web()
+        self.target.chmod(0o640)
+        result = self.invoke(plan='ok ok ok ok', umask=0o022)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(os.stat(self.target).st_mode), 0o640)
+
+    def test_new_target_mode_is_private(self):
+        self.prepare_web(old=None)
+        result = self.invoke(plan='ok ok ok ok', umask=0o022)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(os.stat(self.target).st_mode), 0o600)
+
+    def test_record_is_private(self):
+        self.prepare_web()
+        result = self.invoke(plan='ok ok ok ok', umask=0o022)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(os.stat(self.record).st_mode), 0o700)
+        attempts = [entry.name for entry in self.record.iterdir()
+                    if entry.name.endswith(('.out', '.err'))]
+        self.assertTrue(attempts)
+        for name in ['source.yml', 'backup.yml', 'summary.json', *attempts]:
+            self.assertEqual(stat.S_IMODE(os.stat(self.record / name).st_mode), 0o600, name)
+
+    def test_usage_oserror_is_reported(self):
+        if os.geteuid() == 0:
+            self.skipTest('root can read a directory with mode 0o000')
+        self.prepare_web()
+        self.record.mkdir()
+        self.record.chmod(0o000)
+        self.keep_removable(self.record)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertTrue(result.stderr.startswith('live-apply: check usage:'), result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(self.calls(), [])
+
+    def test_record_write_failure_keeps_checks_entry(self):
+        if os.geteuid() == 0:
+            self.skipTest('root can write to a directory with mode 0o500')
+        self.prepare_web()
+        self.keep_removable(self.record)
+        result = self.invoke(env={'FAKE_DSH_LOCK': str(self.record)})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.target.read_text(), OLD)
+        self.assertIn('live-apply: write record:', result.stderr)
+        checks = self.summary(result)['checks']
+        self.assertTrue(any(check['phase'] == 'before' and check['name'] == 'config-web'
+                            for check in checks))
+
+    def test_probe_directory_removed_when_record_write_fails(self):
+        if os.geteuid() == 0:
+            self.skipTest('root can write to a directory with mode 0o500')
+        self.prepare_web()
+        self.keep_removable(self.record)
+        tmpdir = self.root / 'tmp'
+        tmpdir.mkdir()
+        result = self.invoke(plan='lock',
+                             env={'FAKE_LOCK': str(self.record), 'TMPDIR': str(tmpdir)})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.target.read_text(), OLD)
+        left = [entry.name for entry in tmpdir.iterdir()
+                if entry.name.startswith('live-apply-probe-')]
+        self.assertEqual(left, [])
+
+    def test_error_after_rollback_restores_once(self):
+        if os.geteuid() == 0:
+            self.skipTest('root can write to a directory with mode 0o500')
+        self.prepare_web()
+        self.keep_removable(self.record, self.target.parent)
+        locked = os.pathsep.join([str(self.record), str(self.target.parent)])
+        result = self.invoke(plan='ok ok fail fail lock', env={'FAKE_LOCK': locked})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.target.read_text(), OLD)
+        self.assertIn('live-apply: write record:', result.stderr)
+        self.assertNotIn('live-apply: restore target:', result.stderr)
+
+    def test_run_worker_events_not_passed(self):
+        self.prepare_web()
+        result = self.invoke(plan='ok ok ok ok', env={'RUN_WORKER_EVENTS': 'events.jsonl'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 4)
+        for call in calls:
+            self.assertIsNone(call['runWorkerEvents'])
+
+    def test_temp_symlink_not_followed(self):
+        self.prepare_web()
+        outside = self.root / 'outside-temp.yml'
+        outside.write_text('outside\n')
+        temp = self.target.parent / ('.' + self.target.name + '.live-apply-tmp')
+        temp.symlink_to(outside)
+        result = self.invoke(plan='ok ok ok ok')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.target.read_text(), NEW)
+        self.assertEqual(outside.read_text(), 'outside\n')
+
+    def test_record_alias_inside_home_rejected(self):
+        self.prepare_web()
+        inside = self.home / 'record-inside'
+        inside.mkdir()
+        alias = self.root / 'record-alias'
+        alias.symlink_to(inside)
+        result = self.invoke(record=str(alias))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('record directory is inside the harness home', result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_no_service_warning_unless_error(self):
+        self.prepare_web()
+        first = self.invoke(plan='ok ok ok ok')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertNotIn('LIVE_APPLY_CHECK_SERVICE', first.stderr)
+        self.target.write_text(OLD)
+        second = self.invoke(plan='ok ok fail fail ok ok',
+                             record=str(self.root / 'record-second'))
+        self.assertEqual(second.returncode, 5, second.stderr)
+        self.assertEqual(second.stderr.count(
+            'LIVE_APPLY_CHECK_SERVICE: dsh-web-managed.service'), 1)
+
+    def test_check_service_after_error(self):
+        if os.geteuid() == 0:
+            self.skipTest('root can write to a directory with mode 0o500')
+        self.prepare_web()
+        self.keep_removable(self.record)
+        result = self.invoke(plan='ok ok lock', env={'FAKE_LOCK': str(self.record)})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.target.read_text(), OLD)
+        self.assertEqual(self.summary(result)['status'], 'error')
+        self.assertIn('LIVE_APPLY_CHECK_SERVICE: dsh-web-managed.service', result.stderr)
+        write_record = result.stderr.index('live-apply: write record:')
+        service = result.stderr.index('LIVE_APPLY_CHECK_SERVICE: dsh-web-managed.service')
+        write_summary = result.stderr.index('live-apply: write summary:')
+        self.assertLess(write_record, service)
+        self.assertLess(service, write_summary)
 
 
 if __name__ == '__main__':

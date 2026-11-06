@@ -10,6 +10,8 @@ import math
 import os
 from pathlib import Path
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -57,6 +59,16 @@ def retry_seconds(value):
     return seconds
 
 
+def probe_timeout_seconds(value):
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('must be a finite number of seconds, greater than 0') from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError('must be a finite number of seconds, greater than 0')
+    return seconds
+
+
 def cli_path(value):
     return value if '/' not in value else str(absolute(value))
 
@@ -90,6 +102,7 @@ class Apply:
         self.dsh = cli_path(args.dsh)
         self.run_worker = str(absolute(args.run_worker))
         self.retry_delay = args.retry_delay
+        self.probe_timeout = args.probe_timeout
         approval = args.owner_approved.strip() if args.owner_approved else ''
         self.owner_approved = approval or None
         self.route, self.profile = self.check_usage()
@@ -100,8 +113,10 @@ class Apply:
         self.checks = []
         self.new_bytes = None
         self.old_bytes = None
+        self.target_mode = None
         self.record_started = False
         self.replaced = False
+        self.ever_replaced = False
 
     def check_usage(self):
         if not self.home.is_dir():
@@ -109,11 +124,19 @@ class Apply:
         route = route_of(self.home, self.target)
         if route is None:
             raise UsageError(f'LIVE_APPLY_USAGE: target is not a home or profile patch: {self.target}')
+        if os.path.islink(self.target):
+            raise UsageError(f'LIVE_APPLY_USAGE: target is a symlink: {self.target}')
+        if route[0] == 'profile-patch':
+            profiles = self.home / 'profiles'
+            if os.path.islink(profiles):
+                raise UsageError(f'LIVE_APPLY_USAGE: profiles directory is a symlink: {profiles}')
+            if os.path.islink(self.target.parent):
+                raise UsageError(f'LIVE_APPLY_USAGE: profile directory is a symlink: {self.target.parent}')
         if not (self.home / 'profiles' / 'headless' / 'package.json').is_file():
             raise UsageError(f'LIVE_APPLY_USAGE: probe profile headless does not exist in {self.home}')
         if not self.source.is_file():
             raise UsageError(f'LIVE_APPLY_USAGE: source is not a regular file: {self.source}')
-        if self.record.is_relative_to(self.home):
+        if Path(os.path.realpath(self.record)).is_relative_to(Path(os.path.realpath(self.home))):
             raise UsageError(f'LIVE_APPLY_USAGE: record directory is inside the harness home: {self.record}')
         if os.path.lexists(self.record) and not (self.record.is_dir() and not any(self.record.iterdir())):
             raise UsageError(f'LIVE_APPLY_USAGE: record directory is not empty: {self.record}')
@@ -121,9 +144,19 @@ class Apply:
 
     def run(self):
         try:
-            return self.steps()
-        except LiveApplyError as error:
-            return self.abort(error)
+            try:
+                status, code = self.steps()
+            except LiveApplyError as error:
+                status, code = self.abort(error)
+        except KeyboardInterrupt:
+            status, code = self.interrupted()
+        if status in ('error', 'interrupted') and self.ever_replaced:
+            try:
+                self.announce_services('LIVE_APPLY_CHECK_SERVICE',
+                                       'may have restarted while the new patch was in place')
+            except KeyboardInterrupt:
+                pass
+        return status, code
 
     def steps(self):
         try:
@@ -133,6 +166,7 @@ class Apply:
         if os.path.lexists(self.target):
             try:
                 self.old_bytes = self.target.read_bytes()
+                self.target_mode = stat.S_IMODE(os.stat(self.target).st_mode)
             except OSError as error:
                 raise LiveApplyError('read target', error)
         if self.old_bytes == self.new_bytes:
@@ -164,6 +198,29 @@ class Apply:
               file=sys.stderr)
         return 'rollback-failed', 6
 
+    def interrupted(self):
+        if self.replaced:
+            try:
+                self.restore()
+            except LiveApplyError as error:
+                if self.old_bytes is None:
+                    print(f'LIVE_APPLY_INTERRUPTED: remove {self.target} by hand: {error.error}',
+                          file=sys.stderr)
+                else:
+                    print(f'LIVE_APPLY_INTERRUPTED: restore {self.target} '
+                          f'from {self.record}/backup.yml by hand: {error.error}', file=sys.stderr)
+            else:
+                print(f'LIVE_APPLY_INTERRUPTED: {self.target} was restored', file=sys.stderr)
+        elif self.ever_replaced:
+            print(f'LIVE_APPLY_INTERRUPTED: {self.target} was already restored', file=sys.stderr)
+        else:
+            try:
+                self.temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            print('LIVE_APPLY_INTERRUPTED: the target was not changed', file=sys.stderr)
+        return 'interrupted', 130
+
     def abort(self, error):
         print(f'live-apply: {error.operation}: {error.error}', file=sys.stderr)
         if self.replaced and error.operation != 'restore target':
@@ -194,6 +251,7 @@ class Apply:
         self.record_started = True
         try:
             self.record.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.record, 0o700)
         except OSError as error:
             raise LiveApplyError('write record', error)
         self.write_record('source.yml', self.new_bytes)
@@ -203,20 +261,32 @@ class Apply:
             self.write_record('backup.yml', self.old_bytes)
 
     def write_record(self, name, data):
+        path = self.record / name
         try:
-            (self.record / name).write_bytes(data)
+            path.write_bytes(data)
+            os.chmod(path, 0o600)
         except OSError as error:
             raise LiveApplyError('write record', error)
 
     def replace_target(self, data, operation):
         temp = self.temp_path
+        mode = 0o600 if self.target_mode is None else self.target_mode
         try:
-            temp.write_bytes(data)
+            temp.unlink(missing_ok=True)
+            descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(descriptor, view):]
+                os.fchmod(descriptor, mode)
+            finally:
+                os.close(descriptor)
+            if operation == 'write target':
+                self.replaced = True
+                self.ever_replaced = True
             os.replace(temp, self.target)
         except OSError as error:
             raise LiveApplyError(operation, error)
-        if operation == 'write target':
-            self.replaced = True
 
     def restore(self):
         if self.old_bytes is None:
@@ -226,6 +296,7 @@ class Apply:
                 raise LiveApplyError('restore target', error)
         else:
             self.replace_target(self.old_bytes, 'restore target')
+        self.replaced = False
 
     def run_phase(self, phase):
         for name in self.config_profiles:
@@ -237,15 +308,16 @@ class Apply:
         return None
 
     def config_check(self, phase, name):
-        entry = {'phase': phase, 'name': f'config-{name}', 'attempt': 1}
+        check = f'config-{name}'
+        entry = {'phase': phase, 'name': check, 'attempt': 1}
         if not os.path.isfile(self.home / 'profiles' / name / 'package.json'):
             self.checks.append({**entry, 'ok': False, 'exitCode': None})
             return False
         code, out, err = self.run_child([self.dsh, '--profile', name, '--dump-config'],
                                         cwd=self.home)
-        self.write_attempt(phase, entry['name'], 1, out, err)
         ok = code == 0
         self.checks.append({**entry, 'ok': ok, 'exitCode': code})
+        self.write_attempt(phase, check, 1, out, err)
         return ok
 
     def model_probe(self, phase, name, route):
@@ -258,30 +330,33 @@ class Apply:
         return False
 
     def probe_attempt(self, phase, name, attempt, route):
+        entry = {'phase': phase, 'name': name, 'attempt': attempt}
         if not os.path.isfile(self.home / 'profiles' / 'headless' / 'package.json'):
-            self.checks.append({'phase': phase, 'name': name, 'attempt': attempt,
-                                'ok': False, 'exitCode': None})
+            self.checks.append({**entry, 'ok': False, 'exitCode': None})
             return False
         try:
             directory = Path(tempfile.mkdtemp(prefix='live-apply-probe-'))
         except OSError as error:
             raise LiveApplyError('probe directory', error)
-        code, out, err = self.run_child(
-            [self.run_worker, '--read-only', str(directory), 'dsh', *route],
-            cwd=directory, stdin_bytes=PROBE_TASK.encode('utf-8'))
-        self.write_attempt(phase, name, attempt, out, err)
         try:
-            empty = os.listdir(directory) == []
-        except OSError:
-            empty = False
-        ok = code == 0 and out.decode('utf-8', 'replace').strip() == '391' and empty
-        self.checks.append({'phase': phase, 'name': name, 'attempt': attempt,
-                            'ok': ok, 'exitCode': code})
-        try:
-            shutil.rmtree(directory)
-        except OSError as error:
-            raise LiveApplyError('probe directory', error)
-        return ok
+            code, out, err = self.run_child(
+                [self.run_worker, '--read-only', str(directory), 'dsh', *route],
+                cwd=directory, stdin_bytes=PROBE_TASK.encode('utf-8'))
+            try:
+                empty = os.listdir(directory) == []
+            except OSError:
+                empty = False
+            ok = code == 0 and out.decode('utf-8', 'replace').strip() == '391' and empty
+            self.checks.append({**entry, 'ok': ok, 'exitCode': code})
+            self.write_attempt(phase, name, attempt, out, err)
+            return ok
+        finally:
+            already_raising = sys.exc_info()[0] is not None
+            try:
+                shutil.rmtree(directory)
+            except OSError as error:
+                if not already_raising:
+                    raise LiveApplyError('probe directory', error)
 
     def write_attempt(self, phase, name, attempt, out, err):
         self.write_record(f'{phase}-{name}-{attempt}.out', out)
@@ -291,16 +366,43 @@ class Apply:
         environment = dict(os.environ)
         environment['DSH_HOME'] = str(self.home)
         environment['DSH_CLI'] = self.dsh
+        environment.pop('RUN_WORKER_EVENTS', None)
         try:
-            if stdin_bytes is None:
-                result = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL,
-                                        capture_output=True, env=environment)
-            else:
-                result = subprocess.run(argv, cwd=cwd, input=stdin_bytes,
-                                        capture_output=True, env=environment)
+            proc = subprocess.Popen(
+                argv, cwd=cwd, env=environment,
+                stdin=subprocess.DEVNULL if stdin_bytes is None else subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         except OSError as error:
             return None, b'', str(error).encode('utf-8')
-        return result.returncode, result.stdout, result.stderr
+        try:
+            try:
+                if stdin_bytes is None:
+                    out, err = proc.communicate(timeout=self.probe_timeout)
+                else:
+                    out, err = proc.communicate(input=stdin_bytes, timeout=self.probe_timeout)
+            except subprocess.TimeoutExpired:
+                self.kill_group(proc)
+                try:
+                    out, err = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    out, err = b'', b''
+                err += f'live-apply: timed out after {self.probe_timeout} seconds'.encode('utf-8')
+                return None, out, err
+            return proc.returncode, out, err
+        except KeyboardInterrupt:
+            self.kill_group(proc)
+            try:
+                proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+
+    @staticmethod
+    def kill_group(proc):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
     def emit(self, status):
         record = str(self.record) if self.record_started and self.record.exists() else None
@@ -317,8 +419,10 @@ class Apply:
         text = json.dumps(summary, ensure_ascii=False)
         print(text)
         if record is not None:
+            path = self.record / 'summary.json'
             try:
-                (self.record / 'summary.json').write_text(text + '\n', encoding='utf-8')
+                path.write_text(text + '\n', encoding='utf-8')
+                os.chmod(path, 0o600)
             except OSError as error:
                 print(f'live-apply: write summary: {error}', file=sys.stderr)
 
@@ -336,12 +440,20 @@ def main():
     patch.add_argument('--dsh', default='dsh', help='the DSH CLI')
     patch.add_argument('--retry-delay', type=retry_seconds, default=30,
                        help='seconds before the one retry of a failed model probe')
+    patch.add_argument('--probe-timeout', type=probe_timeout_seconds, default=600.0,
+                       help='seconds before a child is killed as a timeout')
     args = parser.parse_args()
     try:
         job = Apply(args)
     except UsageError as error:
         print(error, file=sys.stderr)
         return 2
+    except OSError as error:
+        print(f'live-apply: check usage: {error}', file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print('LIVE_APPLY_INTERRUPTED: the target was not changed', file=sys.stderr)
+        return 130
     status, code = job.run()
     job.emit(status)
     return code
