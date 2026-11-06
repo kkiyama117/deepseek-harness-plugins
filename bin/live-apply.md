@@ -78,7 +78,8 @@ python3 bin/live-apply.py patch --source <新しいpatch> --target ~/.dsh/profil
 - probeを流す前に、`headless` のprofileがあることを毎回確かめる（`dsh headless` が作ってしまうため）。probeの子プロセスは自分のsessionで動かし、`--probe-timeout`（既定600秒）を超えたらprocess groupごと止める。子の環境から `RUN_WORKER_EVENTS` を外す。
 - 対象は、symlinkをたどらない一時ファイル（`O_EXCL|O_NOFOLLOW`）を書いてから `os.replace` で置き換える。元のmodeを保ち、新しく作る対象は `0o600`。
 - 記録（`--record`）は、`source.yml`、`backup.yml`（または `backup-absent`）、確認ごとの `.out`/`.err`、`summary.json` を残す。ディレクトリは `0o700`、ファイルは `0o600`。homeの中（symlinkの別名を含む）には置けない。
-- SIGINTでは、対象を書き換えていれば元に戻してexit 130で終わる。
+- SIGINTでは、対象を書き換えていれば元に戻してexit 130で終わる。statusが決まったあと（後の確認が通ったあとなど）は、SIGINTをblockしたまま終わるので、そのSIGINTは無視される。probeの子プロセスはSIGINTをblockした状態で起動し、届いたSIGINTは起動の直後に受け取って、process groupごと止める。
+- 置き換えに失敗したときは、一時ファイルを消してから終わる。
 
 | exit | status | 意味 |
 |---|---|---|
