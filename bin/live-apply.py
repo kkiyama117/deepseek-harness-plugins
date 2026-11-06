@@ -148,14 +148,13 @@ class Apply:
                 status, code = self.steps()
             except LiveApplyError as error:
                 status, code = self.abort(error)
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         except KeyboardInterrupt:
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
             status, code = self.interrupted()
         if status in ('error', 'interrupted') and self.ever_replaced:
-            try:
-                self.announce_services('LIVE_APPLY_CHECK_SERVICE',
-                                       'may have restarted while the new patch was in place')
-            except KeyboardInterrupt:
-                pass
+            self.announce_services('LIVE_APPLY_CHECK_SERVICE',
+                                   'may have restarted while the new patch was in place')
         return status, code
 
     def steps(self):
@@ -274,18 +273,31 @@ class Apply:
         try:
             temp.unlink(missing_ok=True)
             descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+        except OSError as error:
+            raise LiveApplyError(operation, error)
+        try:
+            finished = False
             try:
                 view = memoryview(data)
                 while view:
                     view = view[os.write(descriptor, view):]
                 os.fchmod(descriptor, mode)
+                finished = True
             finally:
-                os.close(descriptor)
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    if finished:
+                        raise
             if operation == 'write target':
                 self.replaced = True
                 self.ever_replaced = True
             os.replace(temp, self.target)
         except OSError as error:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise LiveApplyError(operation, error)
 
     def restore(self):
@@ -367,14 +379,18 @@ class Apply:
         environment['DSH_HOME'] = str(self.home)
         environment['DSH_CLI'] = self.dsh
         environment.pop('RUN_WORKER_EVENTS', None)
+        proc = None
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
-            proc = subprocess.Popen(
-                argv, cwd=cwd, env=environment,
-                stdin=subprocess.DEVNULL if stdin_bytes is None else subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        except OSError as error:
-            return None, b'', str(error).encode('utf-8')
-        try:
+            try:
+                proc = subprocess.Popen(
+                    argv, cwd=cwd, env=environment,
+                    stdin=subprocess.DEVNULL if stdin_bytes is None else subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            except OSError as error:
+                return None, b'', str(error).encode('utf-8')
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
             try:
                 if stdin_bytes is None:
                     out, err = proc.communicate(timeout=self.probe_timeout)
@@ -390,11 +406,12 @@ class Apply:
                 return None, out, err
             return proc.returncode, out, err
         except KeyboardInterrupt:
-            self.kill_group(proc)
-            try:
-                proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
+            if proc is not None:
+                self.kill_group(proc)
+                try:
+                    proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
             raise
 
     @staticmethod

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Exercise live patch application against a fake worker and a fake DSH CLI."""
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 SCRIPT = Path(__file__).with_name('live-apply.py')
@@ -66,6 +69,12 @@ elif word == 'lock':
         os.chmod(directory, 0o500)
     print('391')
     sys.exit(0)
+elif word == 'sigblk':
+    with open('/proc/self/status') as status:
+        block = next(line.split()[1] for line in status if line.startswith('SigBlk:'))
+    with open(os.environ['FAKE_SIGBLK'], 'w') as output:
+        output.write(block)
+    print('391')
 '''
 
 DSH_BODY = '''
@@ -135,6 +144,12 @@ class LiveApplyTests(unittest.TestCase):
 
     def summary(self, result):
         return json.loads(result.stdout)
+
+    def load_module(self):
+        spec = importlib.util.spec_from_file_location('live_apply_under_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def keep_removable(self, *directories):
         for directory in directories:
@@ -449,13 +464,23 @@ class LiveApplyTests(unittest.TestCase):
                 self.fail(f'process {pid} is still running')
             time.sleep(0.1)
 
+    def test_probe_child_starts_with_sigint_blocked(self):
+        if not Path('/proc/self/status').exists():
+            self.skipTest('/proc/self/status is not available')
+        self.prepare_web()
+        sigblk = self.root / 'sigblk'
+        result = self.invoke(plan='sigblk ok ok ok', env={'FAKE_SIGBLK': str(sigblk)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        blocked = int(sigblk.read_text(), 16)
+        self.assertTrue(blocked & (1 << (signal.SIGINT - 1)))
+
     def test_probe_timeout_option_rejected(self):
         self.prepare_web()
         for value in ('0', 'inf'):
             result = self.invoke(probe_timeout=value)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertEqual(result.stdout, '')
-        self.assertEqual(self.calls(), [])
+            self.assertEqual(self.calls(), [])
 
     def test_interrupt_after_write_restores(self):
         self.prepare_web()
@@ -474,6 +499,31 @@ class LiveApplyTests(unittest.TestCase):
         self.assertEqual(self.target.read_text(), OLD)
         self.assertIn('LIVE_APPLY_INTERRUPTED: the target was not changed', result.stderr)
         self.assertEqual(self.summary(result)['status'], 'interrupted')
+
+    def test_run_blocks_sigint_after_status(self):
+        module = self.load_module()
+        job = module.Apply.__new__(module.Apply)
+        job.ever_replaced = False
+        job.steps = lambda: ('applied', 0)
+        with mock.patch.object(module.signal, 'pthread_sigmask') as sigmask:
+            self.assertEqual(job.run(), ('applied', 0))
+        sigmask.assert_called_with(signal.SIG_BLOCK, {signal.SIGINT})
+
+    def test_run_blocks_sigint_in_interrupt_handler(self):
+        module = self.load_module()
+        job = module.Apply.__new__(module.Apply)
+        job.replaced = False
+        job.ever_replaced = False
+        job.target = self.root / 'target.yml'
+
+        def steps():
+            raise KeyboardInterrupt
+
+        job.steps = steps
+        with mock.patch.object(module.signal, 'pthread_sigmask') as sigmask:
+            with mock.patch.object(module.sys, 'stderr'):
+                self.assertEqual(job.run(), ('interrupted', 130))
+        sigmask.assert_called_with(signal.SIG_BLOCK, {signal.SIGINT})
 
     def test_symlink_target_rejected(self):
         self.prepare_web()
