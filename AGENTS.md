@@ -47,9 +47,19 @@ These apply when you were given a card, one file per card in [tasks/](tasks/READ
 
 ### Done
 
-11. Run the gate on the card's `Done` line until it exits 0. The repository gate, and the narrower gate for a worker's sandbox, arrive with [#47](https://github.com/kkiyama117/deepseek-harness-plugins/issues/47); until then the `Done` line lists the exact commands. The card is done only when every one of them exits 0.
+11. Run the gate on the card's `Done` line, normally `python3 bin/gate.py`, until it exits 0. If a check fails only because your sandbox cannot run it, say which one in your report instead of working around it.
 12. Do not commit. The lead reviews the diff and commits it.
 13. Your final report has four parts: files changed, the last 20 lines of the gate output, anything in the card you could not do, and open questions.
+
+## Card-flow adapter
+
+For leads. This is how the kstack card-flow skill maps onto this repository.
+
+- **Cards.** `tasks/T<n>.md`, in the format of [tasks/README.md](tasks/README.md), committed on the issue branch.
+- **Implementer rules.** The section above.
+- **Gate.** `python3 bin/gate.py [--base REF]` runs the checks of every package changed since `origin/main` (listed in `bin/gate-checks.json`) and the document checks (`bin/check-layout-links.py`, and `git diff --check` against the merge base with `origin/main`), and exits 0 only when all pass. A changed package without an entry fails the gate; add its checks in a card. The lead and the worker run the same gate; it calls `python3`, not `uv run`, because the worker's sandbox cannot write the uv cache in the home directory ([#43](https://github.com/kkiyama117/deepseek-harness-plugins/issues/43)). Packages that need their own `node_modules` have no entry yet, so a card cannot change them.
+- **Dispatcher.** `python3 bin/dispatch.py ambiguity [ID ...] | card ID [--no-worker] | review ID [--main PATH ...] | land ID`, run from the issue worktree. Card worktrees are `reports/worktrees/T<n>` on `card/T<n>`, made from the issue branch; `land` fast-forwards `<land>`, the issue branch that the issue worktree has checked out, and refuses `main`. Worker answers and logs go to `reports/agents/<UTC>-<kind>.md` and `.log`. A `cause:harness` line means the worker did not start; stop the card.
+- **Dependency and build files.** Workers never edit them. A version or peer-range bump in one `package.json` that changes no lockfile is the lead's one-line fix: the lead makes it in the issue worktree, names it in the commit message, and has it checked with `dispatch.py review <ID> --main <path>`. Anything that changes a lockfile or adds a dependency goes to `dsh-manager` first.
 
 ## Where things belong
 
