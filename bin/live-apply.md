@@ -63,6 +63,36 @@ providerの一時的な失敗（`PI_AI_ERROR` の過負荷など）は、反映�
 
 probeはsessionを一つ作る。保存先はhomeのpatch（F）が決める。
 
+## 反映のscript
+
+`bin/live-apply.py` は、経路EとF（profileのpatchとhomeのpatch）を一つずつ反映する。ほかの経路はまだ扱わない。liveに向けて流すのは manager の go のあとだけで、本番に届くものは所有者の承認も要る。
+
+```sh
+python3 bin/live-apply.py patch --source <新しいpatch> --target ~/.dsh/profiles/<p>/cordis.patch.yml \
+  --record <homeの外の空のディレクトリ> [--owner-approved '<承認の出どころ>']
+```
+
+- 対象は `~/.dsh/cordis.patch.yml` か、`package.json` のあるprofileの `cordis.patch.yml` だけ。対象、`profiles`、profileのディレクトリがsymlinkなら拒む。`desktop` と、Coreが受け付けない名前のprofileも拒む。
+- 本番でないprofileは `web` だけとして扱い、homeのpatchと、ほかのすべてのprofileは `--owner-approved` がなければ拒む（exit 3）。中身が同じなら何もせず終わる（exit 0、承認は要らない）。
+- 手順: 前の確認（`dsh --profile <p> --dump-config`、workerとsecond reviewerの経路のprobe）、反映、後の確認、失敗したら元に戻して戻したあとの確認。後の確認と戻したあとの確認のprobeは、30秒あけて一度だけ流し直す。
+- probeを流す前に、`headless` のprofileがあることを毎回確かめる（`dsh headless` が作ってしまうため）。probeの子プロセスは自分のsessionで動かし、`--probe-timeout`（既定600秒）を超えたらprocess groupごと止める。子の環境から `RUN_WORKER_EVENTS` を外す。
+- 対象は、symlinkをたどらない一時ファイル（`O_EXCL|O_NOFOLLOW`）を書いてから `os.replace` で置き換える。元のmodeを保ち、新しく作る対象は `0o600`。
+- 記録（`--record`）は、`source.yml`、`backup.yml`（または `backup-absent`）、確認ごとの `.out`/`.err`、`summary.json` を残す。ディレクトリは `0o700`、ファイルは `0o600`。homeの中（symlinkの別名を含む）には置けない。
+- SIGINTでは、対象を書き換えていれば元に戻してexit 130で終わる。
+
+| exit | status | 意味 |
+|---|---|---|
+| 0 | `applied` / `unchanged` | 反映して後の確認が通った。または中身が同じで何もしなかった |
+| 1 | `error` | ファイル操作が失敗した。書き換えていれば元に戻した |
+| 2 | （なし） | 使い方の誤り。何も書いていない |
+| 3 | `refused` | 本番に届くのに承認がない |
+| 4 | `pre-probe-failed` | 前の確認が失敗した。対象は変えていない |
+| 5 | `rolled-back` | 後の確認が失敗し、元に戻して、戻したあとの確認が通った |
+| 6 | `rollback-failed` | 戻したあとの確認も失敗した、または元に戻せなかった。liveは壊れたままの可能性がある |
+| 130 | `interrupted` | SIGINTで止めた |
+
+反映が通っても、常駐のservice（bridge、web）はpatchを次の起動で読む。scriptは `LIVE_APPLY_RESTART_NEEDED` でそれを知らせるが、serviceを再起動はしない。exit 1、5、6、130では、新しいpatchが置かれていたあいだにserviceが落ちて再起動した可能性を `LIVE_APPLY_CHECK_SERVICE` で知らせる。
+
 ## #50: liveなbuildの出所と、Core分離の検査を通す案
 
 [#50](https://github.com/kkiyama117/deepseek-harness-plugins/issues/50)の調査（2026-11-06、読み取りのみ）。
