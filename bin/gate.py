@@ -94,8 +94,12 @@ def load_checks(root):
     return data
 
 
+def clean_env():
+    return {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
+
+
 def check_env(check):
-    env = dict(os.environ)
+    env = clean_env()
     for name, value in check.get('env', {}).items():
         env.setdefault(name, value)
     return env
@@ -121,7 +125,7 @@ def work_items(checks, keys):
 
 def run_in_index_copy(root, base, checks):
     with tempfile.TemporaryDirectory() as temporary:
-        environment = dict(os.environ)
+        environment = clean_env()
         index_copy = Path(temporary) / 'index'
         object_directory = Path(temporary) / 'objects'
         object_directory.mkdir()
@@ -191,7 +195,7 @@ def main(argv=None, root=ROOT):
         return 2
 
     try:
-        base = run_git(root, ['merge-base', args.base, 'HEAD'], dict(os.environ)).strip()
+        base = run_git(root, ['merge-base', args.base, 'HEAD'], clean_env()).strip()
     except GitFailure:
         print(f'gate: cannot find the merge base of {args.base} and HEAD', file=sys.stderr)
         return 2

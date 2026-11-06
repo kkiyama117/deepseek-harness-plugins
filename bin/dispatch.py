@@ -17,8 +17,8 @@ uncommitted change of the given paths. `land` fast-forwards the issue branch,
 then removes the worktree and `card/<ID>`.
 
 Every verb except `card` starts its worker with `--read-only`, so `review` runs
-the gate itself, before the reviewer, and puts the exit code and the last lines
-of its output in the brief. The worker's answer (stdout) goes to
+the gate itself, before the reviewer, and puts the exit code and one fixed gate
+line in the brief. The worker's answer (stdout) goes to
 `reports/agents/<UTC>-<name>.md` of the main checkout and its reasoning and
 errors (stderr) to the matching `.log`; a name already taken gains a `-2`,
 `-3`, ... suffix. Prints the paths and exits with the worker's code.
@@ -27,6 +27,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fnmatch
+import os
 from pathlib import Path
 import re
 import shutil
@@ -140,7 +141,7 @@ Output only this, as plain text:
 Be concrete. Skip style comments. Do not propose code.'''
 
 GATE_BLOCK = ('The dispatcher ran `python3 bin/gate.py` before you started; it exited {gate_code}. '
-              'The last lines of its output:\n\n```\n{gate_tail}\n```')
+              'Its result (the output of the checks is not shown to you):\n\n```\n{gate_tail}\n```')
 NO_GATE_BLOCK = 'bin/gate.py does not exist yet; the dispatcher ran no gate.'
 
 HARNESS_LINE = 'the worker did not start (cause:harness). Report it; do not switch the model or the runner.'
@@ -172,12 +173,19 @@ class Card:
     files: list
 
 
+def clean_env():
+    return {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
+
+
 def git(*args, cwd=None, allow_failure=False):
     done = subprocess.run(['git', *[str(arg) for arg in args]], cwd=cwd,
-                          capture_output=True, text=True)
-    if done.returncode and not allow_failure:
-        raise DispatchError(f'git {" ".join(str(arg) for arg in args)}: {done.stderr.strip()}')
-    return done
+                          capture_output=True, env=clean_env())
+    result = subprocess.CompletedProcess(
+        done.args, done.returncode, os.fsdecode(done.stdout),
+        done.stderr.decode('utf-8', errors='replace'))
+    if result.returncode and not allow_failure:
+        raise DispatchError(f'git {" ".join(str(arg) for arg in args)}: {result.stderr.strip()}')
+    return result
 
 
 def parse_card(path):
@@ -246,11 +254,21 @@ def run_gate(tree):
     if not (Path(tree) / 'bin/gate.py').is_file():
         print('gate skipped: no bin/gate.py')
         return None, ''
-    done = subprocess.run(GATE, shell=True, cwd=tree, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, errors='replace')
-    tail = '\n'.join(done.stdout.splitlines()[-40:])
+    done = subprocess.run(GATE, shell=True, cwd=tree, env=clean_env(),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    output = done.stdout.decode('utf-8', errors='replace')
     print(f'gate exit {done.returncode}')
-    return done.returncode, tail or '(no output)'
+    if output:
+        print(output, end='')
+        if not output.endswith('\n'):
+            print()
+    tail = 'gate: FAIL'
+    if done.returncode == 0:
+        lines = [line for line in output.splitlines() if line]
+        match = re.fullmatch(r'gate: PASS \(([0-9]+) checks\)', lines[-1]) if lines else None
+        if match:
+            tail = f'gate: PASS ({int(match.group(1))} checks)'
+    return done.returncode, tail
 
 
 def _status_paths(tree):
@@ -278,6 +296,21 @@ def off_list(worktree, card):
 def _untracked(tree, pathspec=()):
     out = git('ls-files', '--others', '--exclude-standard', '-z', *pathspec, cwd=tree).stdout
     return [path for path in out.split('\0') if path]
+
+
+def _untracked_for_review(tree, pathspec=()):
+    paths = []
+    for name in _untracked(tree, pathspec):
+        path = Path(tree) / name
+        if path.is_symlink():
+            try:
+                target = os.readlink(path)
+            except OSError:
+                target = '(unreadable)'
+            print(f'untracked symlink not shown to the reviewer: {path} -> {target}')
+            continue
+        paths.append(str(path))
+    return paths
 
 
 def _opening():
@@ -405,7 +438,8 @@ def run_worker(agents, name, workdir, route, brief, read_only, worker=WORKER, ch
     answer, log, stdout, stderr = _open_outputs(agents, stamp, name)
     command = [str(worker), *(['--read-only'] if read_only else []), str(workdir), *route]
     with stdout, stderr:
-        code = subprocess.run(command, input=brief, text=True,
+        code = subprocess.run(command, input=brief, text=True, encoding='utf-8',
+                              errors='surrogateescape', env=clean_env(),
                               stdout=stdout, stderr=stderr).returncode
     print(f'answer {answer}')
     print(f'log {log}')
@@ -499,7 +533,7 @@ def _review(args, root, worker):
     if args.main:
         card = find_card(root, args.id)
         diff = git('diff', 'HEAD', '--', *args.main, cwd=root).stdout
-        untracked = [str(root / path) for path in _untracked(root, ('--', *args.main))]
+        untracked = _untracked_for_review(root, ('--', *args.main))
         if not diff.strip() and not untracked:
             raise DispatchError('no changes in the given paths')
         gate_code, gate_tail = run_gate(root)
@@ -515,7 +549,7 @@ def _review(args, root, worker):
         raise DispatchError(f'no worktree {worktree}')
     base = git('merge-base', 'HEAD', branch, cwd=worktree).stdout.strip()
     diff = git('diff', base, cwd=worktree).stdout
-    untracked = [str(worktree / path) for path in _untracked(worktree)]
+    untracked = _untracked_for_review(worktree)
     gate_code, gate_tail = run_gate(worktree)
     code, _ = run_worker(main / 'reports/agents', f'review-{card.id}', worktree, REVIEW_ROUTE,
                          review_brief(main, worktree, branch, card, diff, untracked,
