@@ -43,7 +43,7 @@ function readText(log) {
 
 function parseEvents(log, text) {
   const pieces = text.split('\n');
-  if (!text.endsWith('\n')) pieces.pop();
+  const dropped = text.endsWith('\n') ? undefined : pieces.pop();
   const events = [];
   for (let index = 0; index < pieces.length; index += 1) {
     if (pieces[index] === '') continue;
@@ -56,7 +56,7 @@ function parseEvents(log, text) {
     if (!isRecord(event)) return { error: `${log}:${index + 1}: not a JSON event` };
     events.push(event);
   }
-  return { events };
+  return { events, dropped };
 }
 
 // The marker itself was appended when the child was seeded, so it belongs to the copied prefix.
@@ -70,8 +70,24 @@ function inheritedCount(events) {
   return 0;
 }
 
-function inspect(events) {
+// A marker torn at the end of the file is not parsed, so an ancestor's marker would be read as the child's.
+function endsInInheritedMarker(events, dropped) {
+  if (dropped === undefined || dropped === '') return false;
+  if (dropped.includes('session/end-seed')) return true;
+  const first = events[0];
+  return first?.type === 'session' && first.isSeeded === true
+    && '{"type":"session/end-seed"'.startsWith(dropped);
+}
+
+function inspect(log, events, dropped) {
   const inherited = inheritedCount(events);
+  const first = events[0];
+  if (first?.type === 'session' && first.isSeeded === true && inherited === 0) {
+    return { error: `${log}: a seeded log has no inherited marker` };
+  }
+  if (endsInInheritedMarker(events, dropped)) {
+    return { error: `${log}: the log ends in an unfinished inherited marker` };
+  }
   const own = events.slice(inherited);
   const descriptor = own.find(event => event.type === 'subagent/descriptor' && isRecord(event.data))?.data;
   const routes = [];
@@ -131,7 +147,9 @@ function main() {
   if (read.error !== undefined) return report(read.error);
   const parsed = parseEvents(log, read.text);
   if (parsed.error !== undefined) return report(parsed.error);
-  const { inherited, descriptor, routes } = inspect(parsed.events);
+  const inspected = inspect(log, parsed.events, parsed.dropped);
+  if (inspected.error !== undefined) return report(inspected.error);
+  const { inherited, descriptor, routes } = inspected;
   if (routes.length === 0) return report(`no request/header route in ${log}`);
   process.stdout.write(`${describe(log, inherited, descriptor, routes).join('\n')}\n`);
   return 0;
