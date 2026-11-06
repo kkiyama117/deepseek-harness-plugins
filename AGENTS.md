@@ -55,6 +55,7 @@ These apply when you were given a card, one file per card in [tasks/](tasks/READ
 
 - Repository map: [README.md#repository-structure](README.md#repository-structure). Runtime layering and verification limits: [ARCHITECTURE.md](ARCHITECTURE.md).
 - The DSH checkout follows the official upstream master. Local features, policies, presets and operation scripts belong in this repository, not in Core; the only reviewed Core exception is in [SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md).
+- Never open a pull request against upstream DSH (`deepseek-ai/deepseek-harness`), and do not file issues there either, except for a critical bug whose cause lies in DSH alone, with the owner's approval. Fix a Core problem in this repository (a plugin, preset, config, script, or local fork under `plugins/`) or in kstack's `run-worker.sh`.
 - Private reports, release archives and deployment inventories stay out of Git (see [README.md#repository-scope-and-ownership](README.md#repository-scope-and-ownership)).
 - When adding or removing a plugin, preset or skill directory, update its row in both [README.md](README.md) and [README.ja.md](README.ja.md).
 - Documentation languages follow [README.md#development](README.md#development), and existing translation pairs are kept in sync in the same change.
