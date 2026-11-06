@@ -53,6 +53,8 @@ def validate_check(root, package, check):
         raise GateError(f'{package}: run is not a non-empty string')
     if PurePosixPath(cwd).is_absolute():
         raise GateError(f'{package}: cwd is absolute')
+    if '\0' in cwd:
+        raise GateError(f'{package}: cwd is not a valid path')
     resolved = (root / cwd).resolve()
     try:
         resolved.relative_to(root)
@@ -100,10 +102,10 @@ def check_env(check):
 
 
 def run_git(root, argv, env):
-    result = subprocess.run(['git', *argv], cwd=root, env=env, capture_output=True, text=True)
+    result = subprocess.run(['git', *argv], cwd=root, env=env, capture_output=True)
     if result.returncode != 0:
-        raise GitFailure(['git', *argv], result.stderr.strip())
-    return result.stdout
+        raise GitFailure(['git', *argv], result.stderr.decode('utf-8', errors='replace').strip())
+    return os.fsdecode(result.stdout)
 
 
 def work_items(checks, keys):

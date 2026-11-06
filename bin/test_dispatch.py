@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import io
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -31,8 +32,12 @@ COMMIT_CONFIG = ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid'
                  '-c', 'commit.gpgsign=false']
 
 
+def clean_git_env():
+    return {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
+
+
 def git(*args, cwd):
-    return subprocess.run(['git', *args], cwd=cwd, check=True,
+    return subprocess.run(['git', *args], cwd=cwd, check=True, env=clean_git_env(),
                           capture_output=True, text=True).stdout
 
 
@@ -83,6 +88,9 @@ def fake_worker(directory, record, stdout_lines=('answer',), stderr_lines=('reas
 
 class DispatchTest(unittest.TestCase):
     def setUp(self):
+        patcher = mock.patch.dict(os.environ, clean_git_env(), clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name).resolve()
         self.root = make_repo(self.base)
@@ -154,6 +162,23 @@ class DispatchTest(unittest.TestCase):
         git('worktree', 'add', '-b', 'side', str(second), cwd=self.root)
         self.assertEqual(dispatch.main_checkout(second), self.root)
 
+    def test_git_helpers_ignore_the_callers_git_environment(self):
+        fresh = self.base / 'fresh'
+        trap = self.base / 'trap'
+        fresh.mkdir()
+        trap.mkdir()
+        with mock.patch.dict(os.environ, {'GIT_INDEX_FILE': str(trap / 'index'),
+                                          'GIT_DIR': str(trap / 'nothing')}):
+            root = make_repo(fresh)
+            with mock.patch.dict(os.environ, clean_git_env(), clear=True):
+                code, out, err = self.invoke('card', 'T1', '--no-worker', root=root)
+        self.assertEqual(code, 0)
+        self.assertEqual(list(trap.iterdir()), [])
+        worktree = root / 'reports/worktrees/T1'
+        self.assertTrue(worktree.is_dir())
+        self.assertEqual(git('symbolic-ref', '--short', 'HEAD', cwd=worktree).strip(),
+                         'card/T1')
+
     def test_card_refuses_main(self):
         git('switch', 'main', cwd=self.root)
         code, out, err = self.invoke('card', 'T1', '--no-worker')
@@ -165,6 +190,28 @@ class DispatchTest(unittest.TestCase):
         code, out, err = self.invoke('card', 'T1', '--no-worker')
         self.assertEqual(code, 2)
         self.assertIn('not on a branch', err)
+
+    def test_malformed_card_id_is_refused(self):
+        cases = {
+            'ambiguity': ('ambiguity', 'Z9'),
+            'card': ('card', 't1'),
+            'review': ('review', 'T1x'),
+            'land': ('land', '../T1'),
+        }
+        for name, argv in cases.items():
+            with self.subTest(name):
+                code, out, err = self.invoke(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn('not a card ID:', err)
+                self.assertIn(argv[1], err)
+        self.assertEqual(self.runs(), 0)
+        git('switch', 'main', cwd=self.root)
+        code, out, err = self.invoke('card', 'Z9')
+        self.assertEqual(code, 2)
+        self.assertIn('not a card ID: Z9', err)
+        self.assertNotIn('on main', err)
+        self.assertEqual(self.runs(), 0)
+        self.assertFalse((self.root / 'reports').exists())
 
     def test_card_without_worker(self):
         tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
@@ -335,6 +382,11 @@ class DispatchTest(unittest.TestCase):
                          ['summary: no TOTAL line; read the answer'])
         self.assertEqual(dispatch.summarize_ambiguity(text, ['T2', 'T1']), expected)
 
+    def test_summarize_ambiguity_reads_backticked_lines(self):
+        text = '`T1 | 2 | a | b | c`\n`TOTAL 1`'
+        self.assertEqual(dispatch.summarize_ambiguity(text, ['T1']),
+                         ['T1: kind1=0 kind2=1 kind3=0 kind4=0 kind5=0 blocking=1'])
+
     def test_ambiguity_without_cards(self):
         self.commit_card(card_text('T1', 'Card dispatcher', done=True))
         code, out, err = self.invoke('ambiguity')
@@ -437,6 +489,7 @@ class DispatchTest(unittest.TestCase):
         (self.worktree / 'bin').mkdir()
         (self.worktree / 'bin/a.py').write_text('x\n')
         commit(self.worktree, 'implement T1')
+        card_head = git('rev-parse', 'HEAD', cwd=self.worktree).strip()
         main_tip = git('rev-parse', 'main', cwd=self.root).strip()
         git('switch', 'main', cwd=self.root)
         code, out, err = self.invoke('land', 'T1')
@@ -444,6 +497,10 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('on main', err)
         self.assertEqual(git('rev-parse', 'main', cwd=self.root).strip(), main_tip)
         self.assertTrue(self.worktree.is_dir())
+        self.assertEqual(git('symbolic-ref', '--short', 'HEAD', cwd=self.worktree).strip(),
+                         'card/T1')
+        self.assertEqual(git('rev-parse', 'HEAD', cwd=self.worktree).strip(), card_head)
+        self.assertEqual(git('status', '--porcelain', cwd=self.worktree).strip(), '')
 
     def test_land_refuses_when_the_issue_branch_moved(self):
         self.invoke('card', 'T1', '--no-worker')

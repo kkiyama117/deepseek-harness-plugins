@@ -40,6 +40,7 @@ WORKER_ROUTE = ['dsh', 'ollama-cloud', 'deepseek-v4.1-flash', 'high']
 REVIEW_ROUTE = ['dsh', 'openai-codex', 'gpt-6.1-sol', 'high']
 GATE = 'python3 bin/gate.py'
 HEADING = re.compile(r'^## (T[0-9]+)\. (.+)$')
+CARD_ID = re.compile(r'^T[0-9]+$')
 
 CARD_BRIEF = '''{opening}
 
@@ -339,8 +340,15 @@ def main_review_brief(main, root, card, diff, untracked, gate_code, gate_tail):
         gate_block=_gate_block(gate_code, gate_tail))
 
 
+def _unquote(line):
+    line = line.strip()
+    if len(line) >= 2 and line.startswith('`') and line.endswith('`'):
+        return line[1:-1]
+    return line
+
+
 def summarize_ambiguity(text, ids):
-    lines = text.splitlines()
+    lines = [_unquote(line) for line in text.splitlines()]
     if not any(re.match(r'^TOTAL [0-9]+$', line) for line in lines):
         return ['summary: no TOTAL line; read the answer']
     counts = {card_id: [0, 0, 0, 0, 0] for card_id in ids}
@@ -546,6 +554,12 @@ def _land(args, root):
     return 0
 
 
+def _check_ids(ids):
+    for card_id in ids:
+        if not CARD_ID.fullmatch(card_id):
+            raise DispatchError(f'not a card ID: {card_id}')
+
+
 def main(argv=None, root=ROOT, worker=WORKER):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -563,6 +577,7 @@ def main(argv=None, root=ROOT, worker=WORKER):
     args = parser.parse_args(argv)
     root = Path(root).resolve()
     try:
+        _check_ids(args.ids if args.verb == 'ambiguity' else [args.id])
         if args.verb == 'ambiguity':
             return _ambiguity(args, root, worker)
         if args.verb == 'card':

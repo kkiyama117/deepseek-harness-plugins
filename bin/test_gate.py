@@ -20,9 +20,13 @@ COMMIT_CONFIG = ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid'
                  '-c', 'commit.gpgsign=false']
 
 
+def clean_git_env():
+    return {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
+
+
 def git(*args, cwd):
     return subprocess.run(['git', *COMMIT_CONFIG, *args], cwd=cwd, check=True,
-                          capture_output=True, text=True).stdout
+                          env=clean_git_env(), capture_output=True, text=True).stdout
 
 
 def commit(directory, message):
@@ -66,6 +70,11 @@ def last_line(output):
 
 class PackageTest(unittest.TestCase):
 
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, clean_git_env(), clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_package_of(self):
         cases = {
             'plugins/dsh-web-ui/packages/modlens/src/a.ts': 'plugins/dsh-web-ui/packages/modlens',
@@ -87,6 +96,27 @@ class PackageTest(unittest.TestCase):
 
 
 class GateTest(unittest.TestCase):
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, clean_git_env(), clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_git_helpers_ignore_the_callers_git_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / 'repo'
+            repo.mkdir()
+            trap = Path(tmp) / 'trap'
+            trap.mkdir()
+            with mock.patch.dict(os.environ, {'GIT_INDEX_FILE': str(trap / 'index'),
+                                              'GIT_DIR': str(trap / 'nothing')}):
+                make_repo(repo, dump({'p': [{'cwd': '.', 'run': 'true'}]}))
+                (repo / 'p').mkdir()
+                (repo / 'p' / 'x.txt').write_text('x\n')
+                with mock.patch.dict(os.environ, clean_git_env(), clear=True):
+                    code, out, _ = run_gate(repo)
+            self.assertEqual(code, 0)
+            self.assertEqual(list(trap.iterdir()), [])
 
     def test_gate_passes_when_every_changed_package_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,6 +215,15 @@ class GateTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn('gate: p: ok', out)
 
+    def test_gate_keeps_a_carriage_return_in_a_file_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp, dump({'p': [{'cwd': '.', 'run': 'touch marker'}]}))
+            (repo / 'p').mkdir()
+            (repo / 'p' / 'a\rb.txt').write_text('x\n')
+            code, _, _ = run_gate(repo)
+            self.assertEqual(code, 0)
+            self.assertTrue((repo / 'marker').exists())
+
     def test_gate_env_does_not_override_the_caller(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(tmp, dump({'p': [{'cwd': '.', 'run': 'printf %s "$X" > marker',
@@ -207,6 +246,7 @@ class GateTest(unittest.TestCase):
             'missing cwd': dump({'p': [{'run': 'touch marker'}]}),
             'missing run': dump({'p': [{'cwd': '.'}]}),
             'cwd that does not exist': dump({'p': [{'cwd': 'nope', 'run': 'touch marker'}]}),
+            'cwd with a NUL': dump({'p': [{'cwd': 'bin\u0000x', 'run': 'touch marker'}]}),
             'cwd of ..': dump({'p': [{'cwd': '..', 'run': 'touch marker'}]}),
             'env that is a list': dump({'p': [{'cwd': '.', 'run': 'touch marker', 'env': []}]}),
             'env value that is a number': dump({'p': [{'cwd': '.', 'run': 'touch marker', 'env': {'A': 1}}]}),
@@ -259,11 +299,13 @@ class GateTest(unittest.TestCase):
             (repo / 'p').mkdir()
             (repo / 'p' / 'x.txt').write_text('x\n')
             result = subprocess.run(['python3', 'bin/gate.py', '--base', 'main'],
-                                    cwd=repo, capture_output=True, text=True)
+                                    cwd=repo, env=clean_git_env(),
+                                    capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             (repo / 'bin' / 'gate-checks.json').write_text('{')
             result = subprocess.run(['python3', 'bin/gate.py', '--base', 'main'],
-                                    cwd=repo, capture_output=True, text=True)
+                                    cwd=repo, env=clean_git_env(),
+                                    capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
 
     def test_gate_without_a_merge_base(self):
@@ -274,6 +316,11 @@ class GateTest(unittest.TestCase):
 
 
 class RepositoryChecksTest(unittest.TestCase):
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, clean_git_env(), clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_repository_checks_file_is_valid(self):
         checks = gate.load_checks(gate.ROOT)
