@@ -13,13 +13,13 @@
 | `ai-reference-store-daily.service`（本番） | timerで毎日1回。`daily-start.sh` 経由 | `ai-reference-store-daily` | 次のtimer起動 |
 | `dsh-web-managed.service` | 常駐。`dsh web` | `web` | serviceの再起動（client bundleは下の注を参照） |
 
-一回の起動は、profileの `package.json` の `dsh.profile.bundles` の順に各bundleのpatch、profileの `cordis.patch.yml`、homeの `~/.dsh/cordis.patch.yml`、`--patch` の順に重ねる（`apps/cli/src/profile-boot.ts`）。どの起動もprofileの `cordis.yml` を同じ空の内容で書き直すので、`--dump-config` も含め、`dsh` の起動は `~/.dsh` を書く操作である。Coreに同梱されたテンプレートの名前（`headless`、`web` など）のprofileが無いまま起動すると、そのprofileを作ってしまう（`loadProfile`）。ほかの名前は作らずに失敗する。反映のscriptとprobeは、`dsh` を呼ぶ前にそのprofileの `package.json` があることを確かめ、なければ止まる。
+一回の起動は、profileの `package.json` の `dsh.profile.bundles` の順に各bundleのpatch、profileの `cordis.patch.yml`、homeの `~/.dsh/cordis.patch.yml`、`--patch` の順に重ねる（`apps/cli/src/profile-boot.ts`）。どの起動もprofileの `cordis.yml` を同じ空の内容で書き直すので、`--dump-config` も含め、`dsh` の起動は `~/.dsh` を書く操作である。Coreに同梱されたテンプレートの名前（`headless`、`web` など）のprofileが無いまま起動すると、そのprofileを作ってしまう（`loadProfile`）。ほかの名前は作らずに失敗する。反映のscriptとprobeは、`dsh` を呼ぶ前にそのprofileの `package.json` があることを確かめ、なければ `dsh` を起動しない。scriptは `package.json` のあるprofileのpatchだけを扱う。
 
 `headless` profileはworkerと本番の両方が使う。`headless` に届く変更は、次のworker実行にすぐ届き、本番にはbridgeの次の再起動で届く。後者は人が再起動しなくても、bridgeが落ちれば起きる。
 
 ## 反映の経路
 
-「本番」は、その経路が `headless`・`ai-reference-store-daily` のprofileか本番のserviceに届くことを表す。本番に届く反映は所有者の承認が要る。反映のscriptは、本番でないと決めたprofile（いまは `web` だけ）の一覧を持ち、一覧にないprofileはすべて本番として扱う。
+「本番」は、その経路が `headless`・`ai-reference-store-daily` のprofileか本番のserviceに届くことを表す。本番に届く反映は所有者の承認が要る。中身が同じで何も変えない実行は、承認を要らない。反映のscriptは、本番でないと決めたprofile（いまは `web` だけ）の一覧を持ち、一覧にないprofileはすべて本番として扱う。
 
 | 経路 | 何が変わるか | 届く先と時期 | 戻し方 | 本番 |
 |---|---|---|---|---|
