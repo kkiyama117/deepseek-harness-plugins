@@ -13,7 +13,7 @@
 | `ai-reference-store-daily.service`（本番） | timerで毎日1回。`daily-start.sh` 経由 | `ai-reference-store-daily` | 次のtimer起動 |
 | `dsh-web-managed.service` | 常駐。`dsh web` | `web` | serviceの再起動（client bundleは下の注を参照） |
 
-一回の起動は、profileの `package.json` の `dsh.profile.bundles` の順に各bundleのpatch、profileの `cordis.patch.yml`、homeの `~/.dsh/cordis.patch.yml`、`--patch` の順に重ねる（`apps/cli/src/profile-boot.ts`）。どの起動もprofileの `cordis.yml` を同じ空の内容で書き直すので、`--dump-config` も含め、`dsh` の起動は `~/.dsh` を書く操作である。存在しないprofile名で起動すると、そのprofileを作ってしまう（`prepareProfile`）。反映のscriptとprobeは、`dsh` を呼ぶ前にそのprofileの `package.json` があることを確かめ、なければ止まる。
+一回の起動は、profileの `package.json` の `dsh.profile.bundles` の順に各bundleのpatch、profileの `cordis.patch.yml`、homeの `~/.dsh/cordis.patch.yml`、`--patch` の順に重ねる（`apps/cli/src/profile-boot.ts`）。どの起動もprofileの `cordis.yml` を同じ空の内容で書き直すので、`--dump-config` も含め、`dsh` の起動は `~/.dsh` を書く操作である。Coreに同梱されたテンプレートの名前（`headless`、`web` など）のprofileが無いまま起動すると、そのprofileを作ってしまう（`loadProfile`）。ほかの名前は作らずに失敗する。反映のscriptとprobeは、`dsh` を呼ぶ前にそのprofileの `package.json` があることを確かめ、なければ止まる。
 
 `headless` profileはworkerと本番の両方が使う。`headless` に届く変更は、次のworker実行にすぐ届き、本番にはbridgeの次の再起動で届く。後者は人が再起動しなくても、bridgeが落ちれば起きる。
 
@@ -27,7 +27,7 @@
 | B. Coreのcheckoutの更新（upstreamのmerge） | ソースと、bundleのpatch（`packages/bundle/*/cordis.patch.yml` などのyml） | bundleのymlはbuildなしで次の起動に届く。コードはAのbuildまで届かない | 前のcommitに戻し、Aを戻す。Coreの作業ツリーと未コミットの変更は所有者のもの | 届く |
 | C. profileへのbundleの追加・更新（`dsh plugin --profile <p> add ...`。profileの中でpnpmを動かす） | profileの `package.json`、`pnpm-lock.yaml`、`node_modules` | そのprofileの次の起動 | 3ファイルと `node_modules` の写しから戻す。`file:` のtarballは導入時に `node_modules` へ展開されるので、`releases/` のtarballを上書きしても再導入まで届かない。戻すには前の版のtarballを残しておく | `web` 以外のprofileなら届く。`web` でも、homeのpatchが読むプラグインなら届く（下の「経路をまたぐつながり」） |
 | D. `link:` の依存 | リンク先のディレクトリの中身 | そのprofileの次の起動。導入もbuildも要らない（`.mjs` のプラグイン）。Coreへの `link:` はA・Bに従う | リンク先を前の内容に戻す | リンク先とprofileによる |
-| E. profileのpatch（`~/.dsh/profiles/<p>/cordis.patch.yml`） | そのprofileの行の上書き | そのprofileの次の起動 | 前のファイルの写しを戻す | `web` 以外のprofileなら届く（一覧にないprofileは本番として扱う） |
+| E. profileのpatch（`~/.dsh/profiles/<p>/cordis.patch.yml`。`desktop` はElectronのアプリだけが扱うので対象外） | そのprofileの行の上書き | そのprofileの次の起動 | 前のファイルの写しを戻す | `web` 以外のprofileなら届く（一覧にないprofileは本番として扱う） |
 | F. homeのpatch（`~/.dsh/cordis.patch.yml`） | 全profileの行。sessionとstorageの保存先（[#45](https://github.com/kkiyama117/deepseek-harness-plugins/issues/45)）を含む | 全profileの次の起動 | 前のファイルの写しを戻す | 届く |
 | G. このcheckoutのdaemon patch（`configs/dsh-slack-worker-config/daemon.patch.yml`） | 本番bridgeの行 | bridgeの次の再起動だけ | 前の内容に戻し、bridgeを再起動する | 届く |
 | H. このリポジトリの主checkoutの更新（`git pull` など） | DとGのリンク先 | `web` が `link:` で読むプラグイン（`plugins/llm-fallback`、`configs/*-mcp*` など）と、bridgeが読むdaemon patch。PRのmergeだけではliveは変わらず、主checkoutを更新したときに変わる | 前のcommitの内容に戻す | `configs/dsh-slack-worker-config/` が変われば届く |
