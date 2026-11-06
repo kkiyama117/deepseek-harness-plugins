@@ -1,0 +1,28 @@
+{
+  "name": "@kkiyama117/dsh-pi-ai-server-recovery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Classify pi-ai failures that report a 5xx status only as text as server errors for the existing bounded retry policy.",
+  "exports": {
+    ".": "./index.mjs",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "locale",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.2-alpha.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

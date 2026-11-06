@@ -1,0 +1,3 @@
+- insert:
+    - id: pi-ai-server-recovery
+      name: '@kkiyama117/dsh-pi-ai-server-recovery'

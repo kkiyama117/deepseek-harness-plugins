@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "pi-ai server error recovery",
+    "description": "Treat 5xx failures that pi-ai reports only as status text as server errors, so the existing bounded retry handles them."
+  }
+}
