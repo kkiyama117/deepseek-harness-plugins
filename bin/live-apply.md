@@ -19,15 +19,15 @@
 
 ## 反映の経路
 
-「本番」は、その経路が `headless`・`ai-reference-store-daily` のprofileか本番のserviceに届くことを表す。本番に届く反映は所有者の承認が要る。
+「本番」は、その経路が `headless`・`ai-reference-store-daily` のprofileか本番のserviceに届くことを表す。本番に届く反映は所有者の承認が要る。反映のscriptは、本番でないと決めたprofile（いまは `web` だけ）の一覧を持ち、一覧にないprofileはすべて本番として扱う。
 
 | 経路 | 何が変わるか | 届く先と時期 | 戻し方 | 本番 |
 |---|---|---|---|---|
 | A. Coreのbuild（Coreで `pnpm build`） | `apps/*/lib`・`packages/*/lib` の全部。Gitの管理外 | 全profile。workerは次の実行、常駐serviceは再起動、dailyは次の起動 | build前に全 `lib/` の写し（tar）を取り、戻すときはそれを展開する。Gitからは戻せない | 届く |
 | B. Coreのcheckoutの更新（upstreamのmerge） | ソースと、bundleのpatch（`packages/bundle/*/cordis.patch.yml` などのyml） | bundleのymlはbuildなしで次の起動に届く。コードはAのbuildまで届かない | 前のcommitに戻し、Aを戻す。Coreの作業ツリーと未コミットの変更は所有者のもの | 届く |
-| C. profileへのbundleの追加・更新（`dsh plugin --profile <p> add ...`。profileの中でpnpmを動かす） | profileの `package.json`、`pnpm-lock.yaml`、`node_modules` | そのprofileの次の起動 | 3ファイルと `node_modules` の写しから戻す。`file:` のtarballは導入時に `node_modules` へ展開されるので、`releases/` のtarballを上書きしても再導入まで届かない。戻すには前の版のtarballを残しておく | `headless`・`ai-reference-store-daily` なら届く |
+| C. profileへのbundleの追加・更新（`dsh plugin --profile <p> add ...`。profileの中でpnpmを動かす） | profileの `package.json`、`pnpm-lock.yaml`、`node_modules` | そのprofileの次の起動 | 3ファイルと `node_modules` の写しから戻す。`file:` のtarballは導入時に `node_modules` へ展開されるので、`releases/` のtarballを上書きしても再導入まで届かない。戻すには前の版のtarballを残しておく | `web` 以外のprofileなら届く。`web` でも、homeのpatchが読むプラグインなら届く（下の「経路をまたぐつながり」） |
 | D. `link:` の依存 | リンク先のディレクトリの中身 | そのprofileの次の起動。導入もbuildも要らない（`.mjs` のプラグイン）。Coreへの `link:` はA・Bに従う | リンク先を前の内容に戻す | リンク先とprofileによる |
-| E. profileのpatch（`~/.dsh/profiles/<p>/cordis.patch.yml`） | そのprofileの行の上書き | そのprofileの次の起動 | 前のファイルの写しを戻す | `headless`・`ai-reference-store-daily` なら届く |
+| E. profileのpatch（`~/.dsh/profiles/<p>/cordis.patch.yml`） | そのprofileの行の上書き | そのprofileの次の起動 | 前のファイルの写しを戻す | `web` 以外のprofileなら届く（一覧にないprofileは本番として扱う） |
 | F. homeのpatch（`~/.dsh/cordis.patch.yml`） | 全profileの行。sessionとstorageの保存先（[#45](https://github.com/kkiyama117/deepseek-harness-plugins/issues/45)）を含む | 全profileの次の起動 | 前のファイルの写しを戻す | 届く |
 | G. このcheckoutのdaemon patch（`configs/dsh-slack-worker-config/daemon.patch.yml`） | 本番bridgeの行 | bridgeの次の再起動だけ | 前の内容に戻し、bridgeを再起動する | 届く |
 | H. このリポジトリの主checkoutの更新（`git pull` など） | DとGのリンク先 | `web` が `link:` で読むプラグイン（`plugins/llm-fallback`、`configs/*-mcp*` など）と、bridgeが読むdaemon patch。PRのmergeだけではliveは変わらず、主checkoutを更新したときに変わる | 前のcommitの内容に戻す | `configs/dsh-slack-worker-config/` が変われば届く |
@@ -57,7 +57,7 @@ printf 'What is 17*23? Reply with only the number.' |
 
 成功は、exit 0、標準出力を空白で整えたものがちょうど `391`、`$d` が空のまま、の三つがそろうこと。second reviewerの経路（`dsh openai-codex gpt-6.1-sol high`）も同じprobeを流す。この経路はprofileの `credentials` 行と保存済みのproviderのloginを通るので、workerの経路では見えない壊れ方を見つける。
 
-providerの一時的な失敗（`PI_AI_ERROR` の過負荷など）は、反映が壊したことと区別できない。後のprobeが失敗したら、30秒あけて一度だけ流し直し、二度とも失敗したら失敗とする。前のprobeが失敗したら反映しない。
+providerの一時的な失敗（`PI_AI_ERROR` の過負荷など）は、反映が壊したことと区別できない。後のprobeと、戻したあとのprobeが失敗したら、30秒あけて一度だけ流し直し、二度とも失敗したら失敗とする。前のprobeが失敗したら反映しない。
 
 probeはsessionを一つ作る。保存先はhomeのpatch（F）が決める。
 
