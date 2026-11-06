@@ -6,8 +6,8 @@ A card is one reviewable diff that belongs to one issue. Leads write cards for t
 
 - One card per file: `tasks/T<n>.md` holds the section `## T<n>. <title>`. Cards are written in English.
 - Card numbers are unique across the repository. `dsh-manager` gives each lead a range; use only numbers from your range.
-- A card is committed on its issue's branch `issue/<N>-<slug>`, in the issue worktree `reports/worktrees/issue-<N>`. The card's own worktree is `reports/worktrees/T<n>` on branch `card/T<n>`, made from the issue branch. A card lands by `git merge --ff-only` into the issue branch, never into `main`; `main` changes only through a pull request that the human merges.
-- A card gets `Status: done` once its commit is on the issue branch. The issue is done when its pull request is merged into `main`.
+- Cards land on `<land>`, card-flow's name for the branch that cards are committed on. Here `<land>` is the issue's branch `issue/<N>-<slug>`, checked out in the issue worktree `reports/worktrees/issue-<N>`, because `main` changes only through a pull request that the human merges. The card's own worktree is `reports/worktrees/T<n>` on branch `card/T<n>`, made from `<land>`. A card lands by `git merge --ff-only` into `<land>`, never into `main`.
+- A card gets `Status: done` once its commit is on `<land>`. The issue is done when its pull request is merged into `main`.
 
 ## Card format
 
@@ -37,6 +37,6 @@ Status: done
 - `Issue:` names the one issue the card belongs to.
 - `Files:` never lists a dependency or build file (see the implementer rules). A card that needs one is not a card; the lead reports it to the manager.
 - The test table gives exact test names and asserts that a user of the code can observe.
-- Add one `Must fail without:` line per privacy, contract, or safety guard that the card adds. Leave the line out when the card adds no such guard.
-- `Done:` names the gate. The repository gate and the narrower gate that a worker can run in its sandbox are added in [#47](https://github.com/kkiyama117/deepseek-harness-plugins/issues/47); until then, `Done:` lists the exact commands, always including `uv run --no-project bin/check-layout-links.py` and `git diff --check`.
+- Add one `Must fail without:` line per privacy, contract, or safety guard that the card adds as code: a check that the lead can delete to watch the named tests fail (card-flow section 4, step 5). A rule that only forbids an action, such as "never open Session files" or "print no dump", with no guard code to delete, gets no line. Leave the line out when the card adds no such guard code.
+- `Done:` names the gate, normally `python3 bin/gate.py` (see [Card-flow adapter](../AGENTS.md#card-flow-adapter)). A card that runs before the gate exists lists the exact commands instead, always including `python3 bin/check-layout-links.py` and a whitespace check that also sees the card's new, untracked files (`git diff --check` alone does not).
 - Add `Status: done` only after the land. A card without it is not done.

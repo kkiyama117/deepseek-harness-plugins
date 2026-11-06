@@ -138,6 +138,8 @@ pnpm dsh plugin --help
 
 そのワークスペースに入っていないパッケージは、それぞれのREADMEとパッケージのスクリプトに従ってください。リポジトリ直下のビルドやテストが通ったことを、それらのパッケージが手元のDSHで動く証拠にしないでください。ビルドが必要なパッケージが読み込むのは生成物であり、編集したソースではありません。パッケージの再ビルドと再読み込みの手順に従ってください。
 
+リポジトリのgate、`python3 bin/gate.py`は、`origin/main`から変わったパッケージのうち`bin/gate-checks.json`に載っているものの検査と、文書の検査を流します。定義のないパッケージが変わっていれば失敗します。card-flowの作業では、カードのdispatcher、`python3 bin/dispatch.py`と組み合わせて使います。[card-flowのadapter](AGENTS.md#card-flow-adapter)を参照してください。
+
 読み取り専用の[ローカル設定の診断](scripts/local-setup.mjs)は、ローカルのDSHプロファイルを調べます。`plugins/dsh-market/lib/check.js`をimportするため、リポジトリ直下のワークスペース外にあるビルド済みのMarketパッケージが必要です。クローン直後に実行する設定コマンドでも、インストーラでもありません。
 
 ## リポジトリの公開範囲と管理
