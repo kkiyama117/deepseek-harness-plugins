@@ -127,7 +127,7 @@ pnpm dsh plugin --help
 
 不具合の報告や改善の提案は[Issues](https://github.com/kkiyama117/deepseek-harness-plugins/issues)へお願いします。[CONTRIBUTING.md](CONTRIBUTING.md)に、人間とAI agentが共有する開発の流れと、このリポジトリの検証と公開範囲を書いています。
 
-本READMEが英語の正本であり、README.ja.mdは行単位で対になる日本語訳です。両方を同時に変更してください。AGENTS.md、ARCHITECTURE.md、各パッケージのREADMEは英語で記述します。パッケージの翻訳（README.zh.mdまたはREADME.ja.md）は任意ですが、存在する場合はREADME.i18n.yamlの記録を含めて同一の変更で更新します。以下のプロセス・方針文書は日本語のみで維持されます: [CONTRIBUTING.md](CONTRIBUTING.md)、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)、[docs/maintenance-scope.md](docs/maintenance-scope.md)、[bin/runtime-placement.md](bin/runtime-placement.md)、およびissue-driven-developmentスキル（[skills/issue-driven-development/SKILL.md](skills/issue-driven-development/SKILL.md)）。
+本READMEが英語の正本であり、README.ja.mdは行単位で対になる日本語訳です。両方を同時に変更してください。AGENTS.md、ARCHITECTURE.md、各パッケージのREADMEは英語で記述します。パッケージの翻訳（README.zh.mdまたはREADME.ja.md）は任意ですが、存在する場合はREADME.i18n.yamlの記録を含めて同一の変更で更新します。以下のプロセス・方針文書は日本語のみで維持されます: [CONTRIBUTING.md](CONTRIBUTING.md)、[SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)、[docs/maintenance-scope.md](docs/maintenance-scope.md)、[bin/runtime-placement.md](bin/runtime-placement.md)、[bin/live-apply.md](bin/live-apply.md)、およびissue-driven-developmentスキル（[skills/issue-driven-development/SKILL.md](skills/issue-driven-development/SKILL.md)）。
 
 リポジトリ直下の[パッケージマニフェスト](package.json)は、pnpmを`11.7.0`に固定しています。リポジトリ直下のワークスペースに入っているのはWeb Search、Cursor、Web UI系の5パッケージで、このリポジトリの全パッケージではありません。
 
