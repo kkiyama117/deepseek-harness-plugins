@@ -48,7 +48,7 @@
 - リポジトリ直下の[pnpmワークスペース](pnpm-workspace.yaml)は、DSH `0.1.0-rc.8`系の開発依存を残しています。そのビルドとテストは、リポジトリ全体の互換性検査ではありません。
 - 古いアダプタは、パッケージごとに要件が異なります。特にWeb SearchとCursorのinvariant companionは、現在のDSH masterには無いレジストリに依存します。古いインストール例を、現行版の手引きとして扱わないでください。
 
-[保守対象と保管対象](docs/maintenance-scope.md)では、保守している拡張、参考として残している実装、削除したmanaged providerを区別しています。`managed-standard`と`managed-cordis`というプリセット名は、削除済みのproviderを使っていることを意味しません。
+[保守対象と保管対象](docs/maintenance-scope.md)では、保守している拡張、参考として残している実装、削除したmanaged providerを区別しています。
 
 ## プラグインとプリセット
 
@@ -58,7 +58,7 @@
 |---|---|
 | [DSH Evolve](plugins/dsh-evolve/README.md) | ツールの失敗と繰り返しの呼び出しを観測します。インストール時はLLM呼び出しを行わない観測モードが既定で、提案の生成はオプトインです。有効化とロールバックは人のコマンドで行います。 |
 | [Prompt Compact](plugins/dsh-prompt-compact/README.md) | WorkflowとRalphのプロンプト節に対する、プリセット単位のオプトインの代替です。ツールのスキーマと実行の挙動は変わらず、Cordis Skillも登録しません。 |
-| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | 元の依頼を保持し、Goalの完了判定と最初の委任について証拠の記録を確認します。共有Hostで有効にする前に、[限定運用のpilot](plugins/dsh-request-acceptance-pilot/README.md)を読んでください。 |
+| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | 元の依頼を保持し、Goalの完了判定と最初の委任について証拠の記録を確認します。 |
 | [Workflow result selection](plugins/dsh-workflow-results/README.md) | `resultKeys`で選んだフィールドを返す前に、ワークフローの結果全体を保存します。選んだプリセットでツールの置き換えが必要です。 |
 | [Codex transport recovery](plugins/dsh-codex-transport-recovery/README.md) | 特定の早期WebSocket切断を通信エラーとして分類し、公式の再試行方針で扱えるようにします。再試行の追加やモデルの変更はしません。 |
 | [pi-aiサーバーエラー補正](plugins/dsh-pi-ai-server-recovery/README.md) | 数字のない5xxの状態文で返るpi-aiの失敗をサーバーエラーとして分類し、公式の再試行方針で扱えるようにします。再試行の追加やモデルの変更はしません。 |
@@ -70,6 +70,7 @@
 | コンポーネント | 目的 |
 |---|---|
 | [Web Search](plugins/dsh-web-search/README.md) — `@kkiyama117/dsh-web-search` | [pi-web-access](https://github.com/nicobailon/pi-web-access)から移植した、キー不要のDuckDuckGo HTML検索です。 |
+| [Exa検索の互換版](plugins/dsh-web-search-exa-compat/README.md) — `@local/dsh-web-search-exa-compat` | DSH 0.2.2-rc.1でCoreから外れたExa検索のproviderを、0.2.2-alpha.2の実装のまま提供します。有効にする前に、旧い行の設定を新しい行へ写してください。 |
 | [Cursor adapter](plugins/dsh-llm-cursor/README.md) — `@kkiyama117/dsh-llm-cursor` | harnessのモデル呼び出しごとにCursor SDKのagentを実行し、replay stateでセッションを継続します。 |
 | [Web UI family](plugins/dsh-web-ui/packages/) | UI、SSH、Git graph、設定、Modlensの各パッケージのローカル複製です。それぞれのREADMEを参照してください。 |
 | [Market](plugins/dsh-market/README.md) | 独自のビルドと互換性検査を持つ、プラグインマーケットのローカル複製です。 |
@@ -78,14 +79,13 @@
 
 | コンポーネント | 目的 |
 |---|---|
-| [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | 受理ポリシーを特定のSession IDに限定し、公式のGoal/subagent行を外部サブクラスに差し替えます。指定されたSession ID以外には適用されません。 |
 | [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | 決定的な受け入れ検査を、2つの合成Sessionだけに一時的に隔離します。マシンローカルのDSHチェックアウトパスからimportします。 |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | `session/disposed`を監視してセッション資源の同期解放を要求します。全Sessionの一括破棄や相手方ソケットの切断待機は行いません。 |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | 指定したローカルアプリURL向けにキャッシュ可能な汎用フォールバックアイコンを提供します。未登録アイコンの自動探索やランチャーの変更は行いません。 |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | 構造化されたreaderおよびreviewer子Session向けに`aistore-native`プリセットを宣言し、ツール利用を制限します。プリセット不在時は親の設定に縮退せず生成を拒否します。 |
 | [Slack intake](plugins/dsh-slack-intake/README.md) | DSHプロファイルをGo aistore CLIに接続し、固定されたネイティブAgent経路を通じて取得済みのreaderまたはreviewerタスクを1件実行します。実行ファイルとストアの絶対パスが必須で、他のモデルやプロバイダの選択は行いません。 |
 | [LLM fallback](plugins/llm-fallback/README.md) | コンテンツ生成前の設定済みエラー（クォータやレート制限など）の発生時に、明示的な経路リスト上で設定済みの送信元プロバイダ／モデルのみを再試行します。それ以外の要求されたモデルへの代替は行いません。 |
-| [Local presets](presets/) | `ai-reference-store-next`、`cordis-kura`、`managed-cordis`、`managed-standard`において現行upstreamのsubagent制御下でローカルの動作を維持し、各upstreamの基準を`UPSTREAM.json`に記録しています。 |
+| [Local presets](presets/) | `ai-reference-store-next`において現行upstreamのsubagent制御下でローカルの動作を維持し、各upstreamの基準を`UPSTREAM.json`に記録しています。 |
 
 [plugins/subagent-fallback/](plugins/subagent-fallback/)はバンドルではなく、implement-taskの参考用としてのみ残しています。
 

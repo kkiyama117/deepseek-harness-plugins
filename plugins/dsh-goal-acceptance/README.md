@@ -9,8 +9,6 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Version 1.2.0 targets DSH `0.2.2-rc.1`: activation `parent` and `prompt` are direct fields, not a nested `request`. The configured Session scope, retained checkpoint format and caller-owned disposal remain unchanged. This candidate must not replace the earlier adapter on an older Host.
-
 Keep human quotations separate from inferred targets, examples, execution environments, and retrieved material. Record acceptance conditions before design, delegation, failure repair, and completion. The plugin rejects missing citations, removal of retained acceptance conditions, unsupported target promotion, and Goal completion without outcome observations. It carries the retained request into initial child prompts without an evaluation model. These checks enforce record consistency, not semantic truth.
 
 ## Table of Contents

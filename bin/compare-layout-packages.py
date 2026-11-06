@@ -17,7 +17,7 @@ root = Path(__file__).resolve().parent.parent
 baseline = args.baseline.resolve(strict=True)
 env = dict(os.environ, npm_config_cache=str(root / '.cache' / 'npm'))
 groups = {
-    'plugins': 'dsh-evolve dsh-prompt-compact dsh-goal-acceptance dsh-workflow-results dsh-session-cleanup dsh-codex-transport-recovery dsh-open-in-app-icons dsh-request-acceptance-pilot dsh-acceptance-pilot-isolation dsh-aistore-native-preset dsh-slack-intake llm-fallback dsh-web-search dsh-llm-cursor dsh-market dsh-web-ui/packages/dsh-aionui-panel dsh-web-ui/packages/dsh-git-graph dsh-web-ui/packages/dsh-ssh dsh-web-ui/packages/dsh-web-ui-settings dsh-web-ui/packages/dsh-web-ui-all dsh-web-ui/packages/modlens'.split(),
+    'plugins': 'dsh-evolve dsh-prompt-compact dsh-goal-acceptance dsh-workflow-results dsh-session-cleanup dsh-codex-transport-recovery dsh-open-in-app-icons dsh-acceptance-pilot-isolation dsh-aistore-native-preset dsh-slack-intake llm-fallback dsh-web-search dsh-llm-cursor dsh-market dsh-web-ui/packages/dsh-aionui-panel dsh-web-ui/packages/dsh-git-graph dsh-web-ui/packages/dsh-ssh dsh-web-ui/packages/dsh-web-ui-settings dsh-web-ui/packages/dsh-web-ui-all dsh-web-ui/packages/modlens'.split(),
     'configs': 'zotero-mcp chrome-devtools-mcp-config dsh-inspector-origin dsh-slack-worker-config'.split(),
 }
 

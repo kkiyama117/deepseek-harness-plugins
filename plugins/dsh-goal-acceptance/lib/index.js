@@ -5,10 +5,10 @@ import { z as zod } from 'zod';
 import { HarnessError } from '@deepseek-ai/dsh-llm';
 import { SessionSeq } from '@deepseek-ai/dsh-session';
 import { createScope } from '@deepseek-ai/dsh-scope';
-import AcceptanceGoalProvider from "./goal-provider.js";
-import AcceptanceSubagentProvider from "./subagent-provider.js";
-import { checkRecord, eventText, isHuman, missingItems } from "./check.js";
-import { checkpointSchema, recordSchema, stateSchema } from "./schema.js";
+import AcceptanceGoalProvider from './goal-provider.js';
+import AcceptanceSubagentProvider from './subagent-provider.js';
+import { checkRecord, eventText, isHuman, missingItems } from './check.js';
+import { checkpointSchema, recordSchema, stateSchema } from './schema.js';
 export const name = 'goal-acceptance';
 export const inject = ['agents', 'goals', 'tools', 'systemPrompt', 'sessionProjections', 'sessionQuery'];
 export const Config = z.object({

@@ -27,13 +27,13 @@ export default class AcceptanceSubagentProvider extends SubagentRuntime {
    */
   override async startActivation(spec: SubagentActivationSpec): Promise<SubagentActivation> {
     const provider = this.getProvider(spec.provider)
-    if (provider === undefined || this.ctx.get('agents')?.get(spec.parent.id) !== spec.parent
+    if (provider === undefined || this.ctx.get('agents')?.get(spec.request.parent.id) !== spec.request.parent
       || (spec.childId !== undefined && provider.prepareContinuable === undefined)) {
       return super.startActivation(spec)
     }
-    const additions = [...this.acceptanceContexts].flatMap(contribute => contribute(spec.parent))
+    const additions = [...this.acceptanceContexts].flatMap(contribute => contribute(spec.request.parent))
     return super.startActivation(additions.length === 0 ? spec : {
-      ...spec, prompt: [...spec.prompt, ...additions],
+      ...spec, request: { ...spec.request, prompt: [...spec.request.prompt, ...additions] },
     })
   }
 }

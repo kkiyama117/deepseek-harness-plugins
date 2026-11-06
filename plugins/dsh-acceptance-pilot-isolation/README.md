@@ -1,6 +1,6 @@
 # Acceptance pilot isolation
 
-`@local/dsh-acceptance-pilot-isolation` is a disposable test fixture, not a production Goal policy or a shared preset change; it supports deterministic acceptance checks for the [request acceptance pilot](../dsh-request-acceptance-pilot/README.md).
+`@local/dsh-acceptance-pilot-isolation` is a disposable test fixture, not a production Goal policy or a shared preset change; it supports deterministic acceptance checks for the request acceptance pilot, which [#72](https://github.com/kkiyama117/deepseek-harness-plugins/issues/72) removed.
 
 ## Behavior
 

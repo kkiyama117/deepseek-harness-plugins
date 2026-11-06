@@ -199,6 +199,7 @@ async function runModel(subagents, sessionQuery, provider, parent, packet, signa
       label: `aistore ${packet.kind}`,
       delivery: 'caller',
       signal: controller.signal,
+      request: {
       parent,
       prompt: [{ type: 'text', text: packet.kind === 'reader'
         ? readerPrompt(packet.packet)
@@ -208,6 +209,7 @@ async function runModel(subagents, sessionQuery, provider, parent, packet, signa
         reasoningEffort: packet.route.effort, maxTokens: packet.max_tokens },
       outputSchema: packet.kind === 'reader' ? READER_SCHEMA : packet.kind === 'content_review' ? CONTENT_REVIEW_SCHEMA : REVIEWER_SCHEMA,
       agentPreset: 'aistore-native',
+      },
     });
     // The admission signal no longer owns cancellation after publication.
     controller.signal.addEventListener('abort', dispose, { once: true });
