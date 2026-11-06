@@ -28,6 +28,7 @@
 | [bin/](bin/) | パッケージのビルド・梱包・検査を行う保守用スクリプト、週次保守の補助スクリプト、[配置検査](bin/runtime-placement.md)のメモです。公開CLIではありません。 |
 | [scripts/](scripts/) | 読み取り専用の[ローカル設定の診断](scripts/local-setup.mjs)です。 |
 | [tests/](tests/) | パッケージ内に置かないVitestの設定と、アップグレードの回帰テストです。 |
+| [tasks/](tasks/) | kstack card-flow の変更カードです。1 枚 1 ファイルで、それぞれ一つの Issue に属します。[README](tasks/README.md)を参照してください。 |
 | [docs/](docs/) | [レイアウト移行](docs/layout-migration.md)と[保守対象と保管対象](docs/maintenance-scope.md)のメモ、および残している[implement-taskフロー図](docs/implement-task-flow.html)です。 |
 | [.agents/](.agents/) | このリポジトリの開発で使うメモと、harness側のスキルです。 |
 
