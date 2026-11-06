@@ -44,6 +44,7 @@ Each check below proves one narrow thing; do not substitute one for another.
 |---|---|---|
 | Package tests and builds (see each package README) | Package source behaves as its tests specify | Compatibility with the user's DSH version; that the runtime loads rebuilt output |
 | Root `pnpm build` / `pnpm test` | Root workspace members build and pass | Packages outside the root workspace |
+| `bin/gate.py` | Every changed package listed in `bin/gate-checks.json` passes its checks, and the document checks pass | Packages without an entry (it fails instead), packages that need their own `node_modules`, or the live install |
 | `bin/check-layout-links.py` | Local Markdown links resolve to tracked targets | That linked content is accurate |
 | `bin/check-core-separation.py` | The Core checkout differs from upstream only by the recorded, hash-matched exception ([SOURCE-OWNERSHIP.md](SOURCE-OWNERSHIP.md)) | Runtime placement or profile composition |
 | `bin/check-runtime-placement.py`, `bin/verify-runtime-location.mjs` | Services start from the intended checkout and dependency paths ([bin/runtime-placement.md](bin/runtime-placement.md)) | Package behavior inside those services |

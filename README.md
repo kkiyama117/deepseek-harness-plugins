@@ -137,6 +137,8 @@ The root [package manifest](package.json) pins pnpm to `11.7.0`. The root worksp
 
 For packages outside that workspace, follow their own README and package scripts. Do not use a passing root build or test run as evidence that those packages work with your DSH version. Compiled packages load generated output, not edited source; follow the package's rebuild and reload instructions.
 
+The repository gate, `python3 bin/gate.py`, runs the checks of every package changed since `origin/main` that `bin/gate-checks.json` lists, plus the document checks, and fails for a changed package without an entry. Card-flow work uses it with the card dispatcher, `python3 bin/dispatch.py`; see the [card-flow adapter](AGENTS.md#card-flow-adapter).
+
 The read-only [local setup diagnostic](scripts/local-setup.mjs) inspects a local DSH profile. It imports `plugins/dsh-market/lib/check.js`, so it requires a built Market package, which is outside the root workspace. It is not a fresh-clone setup command or an installer.
 
 ## Repository scope and ownership
