@@ -28,7 +28,7 @@ The adapter cannot resume a stopped graph or reuse child sessions. Before anothe
 
 ## Confirm the effective model
 
-Requested routes are not observed identity ([acceptance evidence](acceptance-evidence.md)). The Session root is composed from the profile, its bundles, the profile's and the home `cordis.patch.yml`, and any `--patch` overlay, so searching a fixed `<DSH_HOME>/sessions` path can read a stale store and miss the run entirely.
+Requested routes are not observed identity ([acceptance evidence](acceptance-evidence.md)). The Session root is composed from the profile, its bundles, the profile's and the home `cordis.patch.yml`, and any `--patch` overlay. Searching a fixed `<DSH_HOME>/sessions` path can read a stale store and miss the run entirely.
 
 Resolve the log from the same composition that ran the work. From this skill directory, pass the profile and the same `--patch` overlays as the run:
 
@@ -36,7 +36,7 @@ Resolve the log from the same composition that ran the work. From this skill dir
 node bin/session-log-path.mjs --profile <profile> [--patch <overlay>]... --session-id <child-id>
 ```
 
-It prints the effective `root`, the config `layer` that set it, and the `log` path of the newest generation, chosen as the Session backend chooses it. When nothing matches, it exits 1 and prints the pattern it searched and the effective root with its layer; that output is the coverage gap to report, rather than a reason to search other roots by hand. It reads directory listings only and never opens a Session file. Like every `dsh` start, it rewrites the profile's fixed `cordis.yml`; it refuses a profile that does not exist yet, so a lookup never creates one. When the launcher cannot run in the current environment, save `dsh --profile <profile> --dump-config` where it can run, pass that file with `--dump-file`, and record why.
+It prints the effective `root`, the config `layer` that set it, and the `log` path of the newest generation, chosen as the Session backend chooses it. On no match, it exits 1 and prints the searched pattern and the effective root with its layer. That output is the coverage gap to report, rather than a reason to search other roots by hand. The lookup reads directory listings only and never opens a Session file. Like every `dsh` start, it rewrites the profile's fixed `cordis.yml` and refuses a profile that does not exist yet. A lookup never creates one. When the launcher cannot run in the current environment, save `dsh --profile <profile> --dump-config` where it can run. Pass that file with `--dump-file` and record why.
 
 Then read the route recorded in that log:
 
@@ -44,7 +44,7 @@ Then read the route recorded in that log:
 node bin/session-route.mjs <log>
 ```
 
-It prints the `log`, how many `inherited` events a forked child copied from its parent (those are skipped), the `descriptor` the parent wrote when it created the child, and one `route` line per distinct `request/header` route after the inherited events. A continuable child's descriptor names the requested route (`agentProvider`, `agentModel`, `agentReasoningEffort`); `subagentProvider` is the subagent provider, not an LLM provider; a one-shot child's descriptor has no route. The `route` lines are what each request was prepared with, so they are the evidence for the effective model. The tool prints only these values and never other Session content; still run it only when an actual-model claim needs it. A missing log, or a log without a route, is not evidence that a different model ran, and it is not evidence for the requested route either.
+It prints the `log`, how many `inherited` events a forked child copied from its parent, the `descriptor` the parent wrote when it created the child, and one `route` line per distinct `request/header` route after the inherited events. `session-route.mjs` skips a forked child's inherited events. It prints only the listed values and never other Session content. Still run it only when an actual-model claim needs it. The descriptor names the requested route of a continuable child (`agentProvider`, `agentModel`, `agentReasoningEffort`). A one-shot child's descriptor has none. `subagentProvider` is not an LLM provider. The `route` lines are what each request was prepared with. They are the evidence for the effective model. A missing log or a log without a route is evidence neither for a different model nor for the requested route.
 
 ## Verify
 
