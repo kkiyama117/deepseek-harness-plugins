@@ -118,7 +118,7 @@ python3 bin/live-apply.py patch --source <新しいpatch> --target ~/.dsh/profil
 
 ### 検査を通す状態に戻す手順の案
 
-1. **所有者が決める。** 未コミットの変更と未追跡のファイルの扱い（このリポジトリへ移す、upstreamに出す、捨てる）を所有者が決める。運用スクリプトはこのリポジトリの `bin/` に置く（[管理区分](../SOURCE-OWNERSHIP.md)）。決まるまでCoreの作業ツリーとstashに触らない。inspectorの変更を捨てると、次のbuildでWebのinspectorの画面からその変更が消える。
+1. **所有者が決める。** 未コミットの変更と未追跡のファイルの扱い（このリポジトリのpluginか `plugins/` の下のlocal forkへ移す、または捨てる）を所有者が決める。upstreamにはPRもissueも出さない。運用スクリプトはこのリポジトリの `bin/` に置く（[管理区分](../SOURCE-OWNERSHIP.md)）。決まるまでCoreの作業ツリーとstashに触らない。inspectorの変更を捨てると、次のbuildでWebのinspectorの画面からその変更が消える。
 2. **例外を再レビューする。** `ce7073d512` を基準に、sidebarの5ファイルの差分をsecond reviewerに読ませる。upstreamはその間にsidebarのpackageを変えている。そのため、ガードが新しいviewでも意味を保つかを確かめる。人が承認したら、`core-exceptions.json` の `approvedUpstreamBase` と `patchSha256` を、作業ツリーがcleanな状態で検査が出す値に変えるPRを出す。失敗を通すためだけにhashを変えない。
-3. **buildし直す。** 作業ツリーがcleanになったあと、Coreでbuildする。これは経路Aの反映であり、全profileと本番に届く。前後のprobe、全 `lib/` の写し、人の承認のもと、反映のscriptで行う。
+3. **buildし直す。** 作業ツリーがcleanになったあと、Coreでbuildする。これは経路Aの反映であり、全profileと本番に届く。前後のprobe、全 `lib/` の写し、人の承認のもとで行う。今の反映のscriptは経路Aを扱わないので、手で行うか、経路Aを扱うカードを足す。
 4. **記録する。** 検査が `passed` になること、build時の `HEAD` と作業ツリーがcleanだったことを `reports/agents/` に残す。buildの出所をあとから確かめられるよう、build時の `HEAD` と作業ツリーの状態を書き出す仕組みは別のissueで扱う。
