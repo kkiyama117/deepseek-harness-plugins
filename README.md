@@ -58,7 +58,7 @@ These entry points describe each component's setup, behavior, and limitations; t
 |---|---|
 | [DSH Evolve](plugins/dsh-evolve/README.md) | Observes tool failures and repeated calls. Installation defaults to observation without LLM calls; proposal generation is opt-in, and activation and rollback require human commands. |
 | [Prompt Compact](plugins/dsh-prompt-compact/README.md) | Opt-in, preset-scoped alternatives for the Workflow and Ralph prompt sections. Tool schemas and execution behavior remain unchanged; it registers no Cordis Skill. |
-| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | Retains the original request and checks evidence records for Goal completion and initial delegation. |
+| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | Retains the original request and checks evidence records for Goal completion and initial delegation. Unused since the request acceptance pilot was removed, and not updated for DSH 0.2.2-rc.1, where some of its tests fail. |
 | [Workflow result selection](plugins/dsh-workflow-results/README.md) | Saves a complete workflow result before returning selected fields through `resultKeys`; requires a tool replacement in the chosen preset. |
 | [Codex transport recovery](plugins/dsh-codex-transport-recovery/README.md) | Classifies specific premature WebSocket closures as transport errors so the official retry policy can handle them. Does not add retries or change models. |
 | [pi-ai server error recovery](plugins/dsh-pi-ai-server-recovery/README.md) | Classifies pi-ai failures that report a 5xx status only as text as server errors so the official retry policy can handle them. Does not add retries or change models. |

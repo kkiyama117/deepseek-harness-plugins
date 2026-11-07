@@ -58,7 +58,7 @@
 |---|---|
 | [DSH Evolve](plugins/dsh-evolve/README.md) | ツールの失敗と繰り返しの呼び出しを観測します。インストール時はLLM呼び出しを行わない観測モードが既定で、提案の生成はオプトインです。有効化とロールバックは人のコマンドで行います。 |
 | [Prompt Compact](plugins/dsh-prompt-compact/README.md) | WorkflowとRalphのプロンプト節に対する、プリセット単位のオプトインの代替です。ツールのスキーマと実行の挙動は変わらず、Cordis Skillも登録しません。 |
-| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | 元の依頼を保持し、Goalの完了判定と最初の委任について証拠の記録を確認します。 |
+| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | 元の依頼を保持し、Goalの完了判定と最初の委任について証拠の記録を確認します。受け入れpilotを廃止したため今は使われておらず、DSH 0.2.2-rc.1向けの更新もしていません（rc.1では一部のテストが失敗します）。 |
 | [Workflow result selection](plugins/dsh-workflow-results/README.md) | `resultKeys`で選んだフィールドを返す前に、ワークフローの結果全体を保存します。選んだプリセットでツールの置き換えが必要です。 |
 | [Codex transport recovery](plugins/dsh-codex-transport-recovery/README.md) | 特定の早期WebSocket切断を通信エラーとして分類し、公式の再試行方針で扱えるようにします。再試行の追加やモデルの変更はしません。 |
 | [pi-aiサーバーエラー補正](plugins/dsh-pi-ai-server-recovery/README.md) | 数字のない5xxの状態文で返るpi-aiの失敗をサーバーエラーとして分類し、公式の再試行方針で扱えるようにします。再試行の追加やモデルの変更はしません。 |
