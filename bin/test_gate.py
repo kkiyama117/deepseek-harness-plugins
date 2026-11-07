@@ -118,6 +118,18 @@ class GateTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(list(trap.iterdir()), [])
 
+    def test_gate_ignores_the_callers_git_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp, dump({'p': [{'cwd': '.', 'run': 'true'}]}))
+            trap = Path(tmp) / 'trap'
+            trap.mkdir()
+            (repo / 'p').mkdir()
+            (repo / 'p' / 'x.txt').write_text('x\n')
+            with mock.patch.dict(os.environ, {'GIT_DIR': str(trap)}):
+                code, _, _ = run_gate(repo)
+            self.assertEqual(code, 0)
+            self.assertEqual(list(trap.iterdir()), [])
+
     def test_gate_passes_when_every_changed_package_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(tmp, dump({'p': [{'cwd': '.', 'run': 'true'}]}))
@@ -283,6 +295,17 @@ class GateTest(unittest.TestCase):
                 code, _, _ = run_gate(repo)
             self.assertEqual(code, 0)
             self.assertEqual((repo / 'marker').read_text(), 'unset')
+
+    def test_package_checks_ignore_the_callers_git_index_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp, dump({'p': [{'cwd': '.',
+                                              'run': 'printf %s "${GIT_INDEX_FILE:-unset}" > env.txt'}]}))
+            (repo / 'p').mkdir()
+            (repo / 'p' / 'x.txt').write_text('x\n')
+            with mock.patch.dict(os.environ, {'GIT_INDEX_FILE': '/elsewhere'}):
+                code, _, _ = run_gate(repo)
+            self.assertEqual(code, 0)
+            self.assertEqual((repo / 'env.txt').read_text(), 'unset')
 
     def test_gate_skips_a_deleted_package_without_an_entry(self):
         with tempfile.TemporaryDirectory() as tmp:

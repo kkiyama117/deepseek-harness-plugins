@@ -67,12 +67,15 @@ def make_repo(base):
 
 
 def fake_worker(directory, record, stdout_lines=('answer',), stderr_lines=('reasoning',),
-                code=0, touch=(), name='worker.sh'):
+                code=0, touch=(), name='worker.sh', env_out=None):
     path = directory / name
     lines = ['#!/bin/sh',
              f'printf "%s\\n" "$@" >> {shlex.quote(str(record / "argv.txt"))}',
              f'cat >> {shlex.quote(str(record / "stdin.txt"))}',
              f'printf "run\\n" >> {shlex.quote(str(record / "runs.txt"))}']
+    if env_out is not None:
+        variable, output = env_out
+        lines.append(f'printf "%s" "${{{variable}:-unset}}" > {shlex.quote(str(output))}')
     for line in stderr_lines:
         lines.append(f'printf "%s\\n" {shlex.quote(line)} >&2')
     for line in stdout_lines:
@@ -178,6 +181,22 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(worktree.is_dir())
         self.assertEqual(git('symbolic-ref', '--short', 'HEAD', cwd=worktree).strip(),
                          'card/T1')
+
+    def test_git_ignores_the_callers_git_environment(self):
+        trap = self.base / 'trap'
+        trap.mkdir()
+        with mock.patch.dict(os.environ, {'GIT_DIR': str(trap / 'nothing')}):
+            done = dispatch.git('rev-parse', '--show-toplevel', cwd=self.root)
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.stdout.strip(), str(self.root))
+        self.assertEqual(list(trap.iterdir()), [])
+
+    def test_worker_does_not_get_the_callers_git_environment(self):
+        worker = self.worker(env_out=('GIT_DIR', self.record / 'gitdir.txt'))
+        with mock.patch.dict(os.environ, {'GIT_DIR': '/nonexistent'}):
+            code, out, err = self.invoke('card', 'T1', worker=worker)
+        self.assertEqual(code, 0)
+        self.assertEqual((self.record / 'gitdir.txt').read_text(), 'unset')
 
     def test_card_refuses_main(self):
         git('switch', 'main', cwd=self.root)
@@ -351,6 +370,12 @@ class DispatchTest(unittest.TestCase):
         card = dispatch.find_card(self.root, 'T1')
         self.assertEqual(dispatch.off_list(self.worktree, card), ['ä.txt'])
 
+    def test_git_keeps_a_carriage_return_in_a_file_name(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'a\rb.txt').write_text('x\n')
+        card = dispatch.find_card(self.root, 'T1')
+        self.assertIn('a\rb.txt', dispatch.off_list(self.worktree, card))
+
     def test_ambiguity_reviews_the_cards_that_are_not_done(self):
         self.commit_card(card_text('T1', 'Card dispatcher', done=True))
         (self.root / 'tasks/T2.md').write_text(card_text('T2', 'Second'))
@@ -405,8 +430,10 @@ class DispatchTest(unittest.TestCase):
         self.assertIn("+print('gate-' + 'said')", brief)
         self.assertIn('+Uncommitted body change.', brief)
         self.assertIn('exited 3', brief)
-        self.assertIn('gate-said', brief)
+        self.assertIn('gate: FAIL', brief)
+        self.assertNotIn('gate-said', brief)
         self.assertIn('gate exit 3', out)
+        self.assertIn('gate-said', out)
         argv = self.recorded('argv.txt')
         self.assertEqual(argv[0], '--read-only')
         self.assertEqual(argv[1], str(self.worktree))
@@ -415,15 +442,101 @@ class DispatchTest(unittest.TestCase):
     def test_review_with_a_passing_gate(self):
         self.invoke('card', 'T1', '--no-worker')
         (self.worktree / 'bin').mkdir()
-        (self.worktree / 'bin/gate.py').write_text("print('fi' + 'ne')\n")
+        (self.worktree / 'bin/gate.py').write_text(
+            "print('fi' + 'ne')\nprint('gate: ' + 'PASS (1 checks)')\n")
         commit(self.worktree, 'add the gate')
         code, out, err = self.invoke('review', 'T1')
         self.assertEqual(code, 0)
         self.assertIn('gate exit 0', out)
+        self.assertIn('fine', out)
         brief = self.record_text('stdin.txt')
         self.assertIn('exited 0', brief)
-        self.assertIn('fine', brief)
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('fine', brief)
         self.assertNotIn('does not exist yet', brief)
+
+    def test_review_brief_holds_only_gate_lines(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'bin').mkdir()
+        (self.worktree / 'bin/gate.py').write_text(
+            "print('SECRET-' + 'TOKEN')\nprint('gate: ' + 'PASS (1 checks)')\n")
+        commit(self.worktree, 'add the gate')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('gate exit 0', out)
+        self.assertIn('SECRET-TOKEN', out)
+        brief = self.record_text('stdin.txt')
+        self.assertIn('exited 0', brief)
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('SECRET-TOKEN', brief)
+
+    def test_review_brief_drops_gate_lines_the_worktree_printed(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'bin').mkdir()
+        (self.worktree / 'bin/gate.py').write_text(
+            "print('gate: SECRET-' + 'LINE')\nprint('gate: ' + 'PASS (1 checks)')\n")
+        commit(self.worktree, 'add the gate')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin.txt')
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('SECRET-LINE', brief)
+        self.assertIn('gate: SECRET-LINE', out)
+
+    def test_non_utf8_brief_reaches_the_worker(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'bin').mkdir()
+        (self.worktree / 'bin/gate.py').write_text('pass\n')
+        commit(self.worktree, 'add the gate')
+        path = os.fsencode(self.worktree) + b'/notes-\xff.txt'
+        with open(path, 'wb') as handle:
+            handle.write(b'x\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn(b'\xff', (self.record / 'stdin.txt').read_bytes())
+
+    def test_review_does_not_show_an_untracked_symlink(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'bin').mkdir()
+        (self.worktree / 'bin/gate.py').write_text('pass\n')
+        commit(self.worktree, 'add the gate')
+        outside = self.base / 'outside.txt'
+        outside.write_text('secret\n')
+        (self.worktree / 'link.md').symlink_to(outside)
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin.txt')
+        self.assertNotIn('link.md', brief)
+        self.assertIn(f'untracked symlink not shown to the reviewer: '
+                      f'{self.worktree}/link.md -> {outside}', out)
+
+    def test_review_main_does_not_show_an_untracked_symlink(self):
+        (self.root / 'other.txt').write_text('one\n')
+        commit(self.root, 'add other')
+        (self.root / 'other.txt').write_text('two\n')
+        outside = self.base / 'outside.txt'
+        outside.write_text('secret\n')
+        (self.root / 'link.md').symlink_to(outside)
+        code, out, err = self.invoke('review', 'T1', '--main', 'link.md', 'other.txt')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin.txt')
+        self.assertIn('other.txt', brief)
+        self.assertNotIn('link.md', brief)
+        self.assertIn(f'untracked symlink not shown to the reviewer: '
+                      f'{self.root}/link.md -> {outside}', out)
+
+    def test_review_gate_does_not_get_the_callers_git_environment(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'bin').mkdir()
+        target = self.record / 'gate-gitdir.txt'
+        (self.worktree / 'bin/gate.py').write_text(
+            'import os\n'
+            f'open({str(target)!r}, "w").write(os.environ.get("GIT_DIR", "unset"))\n')
+        commit(self.worktree, 'add the gate')
+        with mock.patch.dict(os.environ, {'GIT_DIR': '/nonexistent'}):
+            code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(target.read_text(), 'unset')
 
     def test_review_without_a_gate(self):
         self.invoke('card', 'T1', '--no-worker')
