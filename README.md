@@ -48,7 +48,7 @@ Choose an individual package and read its README before installing it. Packages 
 - The root [pnpm workspace](pnpm-workspace.yaml) retains development dependencies from the DSH `0.1.0-rc.8` line. Its build and test scripts are not a repository-wide compatibility check.
 - Older adapters have package-specific requirements. In particular, the Web Search and Cursor invariant companions depend on a registry absent from current DSH master. Do not treat their older installation examples as current-version guidance.
 
-The [maintenance scope](docs/maintenance-scope.md) distinguishes maintained extensions, retained reference implementations, and removed managed providers. The `managed-standard` and `managed-cordis` preset names do not imply use of those removed providers.
+The [maintenance scope](docs/maintenance-scope.md) distinguishes maintained extensions, retained reference implementations, and removed managed providers.
 
 ## Plugins and presets
 
@@ -58,7 +58,7 @@ These entry points describe each component's setup, behavior, and limitations; t
 |---|---|
 | [DSH Evolve](plugins/dsh-evolve/README.md) | Observes tool failures and repeated calls. Installation defaults to observation without LLM calls; proposal generation is opt-in, and activation and rollback require human commands. |
 | [Prompt Compact](plugins/dsh-prompt-compact/README.md) | Opt-in, preset-scoped alternatives for the Workflow and Ralph prompt sections. Tool schemas and execution behavior remain unchanged; it registers no Cordis Skill. |
-| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | Retains the original request and checks evidence records for Goal completion and initial delegation. See the [restricted pilot](plugins/dsh-request-acceptance-pilot/README.md) before enabling it in a shared Host. |
+| [Goal acceptance](plugins/dsh-goal-acceptance/README.md) | Retains the original request and checks evidence records for Goal completion and initial delegation. Unused since the request acceptance pilot was removed, and not updated for DSH 0.2.2-rc.1, where some of its tests fail. |
 | [Workflow result selection](plugins/dsh-workflow-results/README.md) | Saves a complete workflow result before returning selected fields through `resultKeys`; requires a tool replacement in the chosen preset. |
 | [Codex transport recovery](plugins/dsh-codex-transport-recovery/README.md) | Classifies specific premature WebSocket closures as transport errors so the official retry policy can handle them. Does not add retries or change models. |
 | [pi-ai server error recovery](plugins/dsh-pi-ai-server-recovery/README.md) | Classifies pi-ai failures that report a 5xx status only as text as server errors so the official retry policy can handle them. Does not add retries or change models. |
@@ -70,6 +70,7 @@ Older integrations and local forks:
 | Component | Purpose |
 |---|---|
 | [Web Search](plugins/dsh-web-search/README.md) — `@kkiyama117/dsh-web-search` | Keyless DuckDuckGo HTML search, ported from [pi-web-access](https://github.com/nicobailon/pi-web-access). |
+| [Exa search compatibility](plugins/dsh-web-search-exa-compat/README.md) — `@local/dsh-web-search-exa-compat` | Keeps the Exa search provider of DSH 0.2.2-alpha.2 on 0.2.2-rc.1, which removed it from Core. Copy the old row's configuration to the new row before enabling it. |
 | [Cursor adapter](plugins/dsh-llm-cursor/README.md) — `@kkiyama117/dsh-llm-cursor` | Runs a Cursor SDK agent for each harness model call, with replay-state session continuity. |
 | [Web UI family](plugins/dsh-web-ui/packages/) | Local copies of UI, SSH, Git graph, settings, and Modlens packages; consult each package's README. |
 | [Market](plugins/dsh-market/README.md) | Local plugin-market copy with its own build and compatibility checks. |
@@ -78,14 +79,12 @@ Deployment-specific bundles and presets:
 
 | Component | Purpose |
 |---|---|
-| [Request acceptance pilot](plugins/dsh-request-acceptance-pilot/README.md) | Confines the acceptance policy to exact Session ids and disables official Goal/subagent rows in favor of external subclasses; restricted to fixed Session ids. |
-| [Acceptance pilot isolation](plugins/dsh-acceptance-pilot-isolation/README.md) | Temporarily isolates deterministic acceptance checks to exactly two synthetic Sessions. It imports from a machine-local DSH checkout path. |
 | [Session connection cleanup](plugins/dsh-session-cleanup/README.md) | Listens to `session/disposed` and requests synchronous closure of session resources; does not clear all Sessions or await peer socket closure. |
 | [Open-in-app icons](plugins/dsh-open-in-app-icons/README.md) | Serves cacheable generic fallback icons for selected local application URLs; does not discover missing icons automatically or alter existing launcher routes. |
 | [Aistore structured reader](plugins/dsh-aistore-native-preset/README.md) | Declares the `aistore-native` preset for reader and reviewer child Sessions with scoped tool restrictions; missing presets reject creation without falling back. |
 | [Slack intake](plugins/dsh-slack-intake/README.md) | Connects a DSH profile to the Go aistore CLI and runs one claimed reader or reviewer task through a fixed native Agent route; requires absolute paths to the executable and store, and never selects another model or provider. |
 | [LLM fallback](plugins/llm-fallback/README.md) | Retries only the configured source provider/model on its explicit route list after a configured error before content (such as quota or rate limits); other requested models are not substituted. |
-| [Local presets](presets/) | Preserves local behavior on current upstream subagent controls across `ai-reference-store-next`, `cordis-kura`, `managed-cordis`, and `managed-standard`, each recording its upstream base in `UPSTREAM.json`. |
+| [Local presets](presets/) | Preserves local behavior on current upstream subagent controls in `ai-reference-store-next`, recording its upstream base in `UPSTREAM.json`. |
 
 [plugins/subagent-fallback/](plugins/subagent-fallback/) is not a bundle; it remains only as a reference for implement-task.
 

@@ -4,15 +4,15 @@
 
 ## 現行運用
 
-稼働対象は各profileの依存・bundle選択と上位patchから確認します。現在のWeb、headless、日次profileは、次の旧managed 5点セットを参照していません。現行プリセットは公式部品と必要な独自拡張を組み合わせます。`managed-standard`などの互換preset名は、旧managed providerの使用を意味しません。
+稼働対象は各profileの依存・bundle選択と上位patchから確認します。現在のWeb、headless、日次profileは、次の旧managed 5点セットを参照していません。現行プリセットは公式部品と必要な独自拡張を組み合わせます。
 
-[Goal acceptance](../plugins/dsh-goal-acceptance/README.md)は現在の外部保守パッケージです。Goal/subagentの提供方もこのパッケージが所有し、[限定pilot](../plugins/dsh-request-acceptance-pilot/README.md)から読み込みます。試験は[パッケージ内](../plugins/dsh-goal-acceptance/tests/acceptance.spec.ts)で管理します。Core内の実装や登録API追加には戻しません。[本体と外部実装の管理区分](../SOURCE-OWNERSHIP.md)に従います。
+[Goal acceptance](../plugins/dsh-goal-acceptance/README.md)は現在の外部保守パッケージです。Goal/subagentの提供方もこのパッケージが所有します。試験は[パッケージ内](../plugins/dsh-goal-acceptance/tests/acceptance.spec.ts)で管理します。Core内の実装や登録API追加には戻しません。[本体と外部実装の管理区分](../SOURCE-OWNERSHIP.md)に従います。
 
 ## 削除した旧managed 5点セット
 
 `dsh-managed-runtime`、`dsh-managed-subagents`、`dsh-managed-session-jsonl`、`dsh-managed-cordis`、`dsh-ui-settings-host-describe`は削除済みです。現行profile・skill・サービスからの利用はなく、専用の旧release／起動helper、lockfileの旧importer、workspaceリンクも削除しました。生成物・内蔵の旧テストを含むディレクトリは残していません。
 
-別の場所へソース一式をコピーして保管することはしません。旧実装が調査に必要になった場合はGit履歴を参照します。`managed-standard`／`managed-cordis`という名前の現行互換プリセットとは別物です。削除によってSession履歴を変更したり、未知の必須イベントや保存済み世代を削除したりすることはありません。
+別の場所へソース一式をコピーして保管することはしません。旧実装が調査に必要になった場合はGit履歴を参照します。削除によってSession履歴を変更したり、未知の必須イベントや保存済み世代を削除したりすることはありません。
 
 ## 削除しない参照実装
 
