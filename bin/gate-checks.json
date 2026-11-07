@@ -1,4 +1,13 @@
 {
+  ".": [
+    {
+      "cwd": ".",
+      "run": "b=$(git merge-base origin/main HEAD) || exit 1; if git diff --quiet \"$b\" -- core-exceptions.json; then echo \"core-exceptions.json unchanged since the merge base; Core separation check skipped\"; else python3 bin/check-core-separation.py --core \"$DSH_UPSTREAM_ROOT\"; fi",
+      "env": {
+        "DSH_UPSTREAM_ROOT": "/data/softwares/deepseek-harness"
+      }
+    }
+  ],
   "bin": [
     {
       "cwd": ".",

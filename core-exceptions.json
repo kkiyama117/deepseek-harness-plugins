@@ -1,5 +1,5 @@
 {
-  "approvedUpstreamBase": "22ddee3792402c3e70ec5f86a63c3e3e895a2f60",
+  "approvedUpstreamBase": "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159",
   "exception": {
     "id": "sidebar-disposed-opening-diagnostic",
     "files": [
@@ -9,7 +9,7 @@
       "packages/client/ui-sidebar-right/src/client/session-view.ts",
       "packages/client/ui-sidebar-right/tests/session-views.client.spec.ts"
     ],
-    "patchSha256": "064c6667e8759481333c0e27d7928863c8e06aaaa05d2344a902e52eb135fca5",
+    "patchSha256": "cbbd2bbde27e9ce8f05f1eed79ae8243eba3c68b65d8e54624d12d957564f8e4",
     "reason": "The disposed flag and opening-error handler are private to the upstream view. No public service or Slot exposes this diagnostic; a console-wide filter or replacement of the entire sidebar would broaden the change.",
     "sourceCommit": "b5059f530faec33b8485da5f89b74b70d4f925a9"
   },
