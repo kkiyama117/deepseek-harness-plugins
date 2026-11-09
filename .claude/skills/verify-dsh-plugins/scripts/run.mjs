@@ -98,7 +98,9 @@ export async function up(packages, settings) {
   const state = {
     id, run: join(settings.runRoot, id), evidence: join(settings.evidenceRoot, id), dshRoot: settings.dshRoot, packages: [],
   };
-  mkdirSync(join(state.run, 'home'), { recursive: true });
+  mkdirSync(join(state.run, 'home/.config'), { recursive: true });
+  // Without a Documents user dir, `xdg-user-dir DOCUMENTS` prints $HOME and DSH skips the first-use Default workspace.
+  writeFileSync(join(state.run, 'home/.config/user-dirs.dirs'), 'XDG_DOCUMENTS_DIR="$HOME/Documents"\n');
   mkdirSync(join(state.run, 'bin'));
   mkdirSync(state.evidence, { recursive: true });
   writeFileSync(join(state.run, 'bin/dsh'), `#!/bin/sh\nexec node '${join(state.dshRoot, 'apps/cli/lib/bin.js')}' "$@"\n`);

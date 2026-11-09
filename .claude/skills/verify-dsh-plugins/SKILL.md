@@ -43,7 +43,7 @@ RUN=latest                                 # or the printed "run" path
 4. Starts `dsh --profile web --port 0 --host 127.0.0.1 --no-open` and waits for the line `dsh web: http://127.0.0.1:<port>/?token=…`.
 5. Runs doctor. `up` exits 1 unless the instance is usable: the UI loads and every row of the packages under test is `active`. On failure it leaves the run up for inspection; run `down` afterwards.
 
-Expect about 5 seconds. `dshv state <run>` prints the run's paths, pids, URLs, and packages (`<run>/state.json`). A first web start also creates a "Default workspace" under `<run>/home/ドキュメント/` or `Documents/`. That is normal.
+Expect about 20 seconds. `dshv state <run>` prints the run's paths, pids, URLs, and packages (`<run>/state.json`). A first web start also creates a "Default workspace" at `<run>/home/Documents/deepseek-harness/default-workspace`. That is normal: `up` writes `<run>/home/.config/user-dirs.dirs` so that DSH finds a Documents directory, as it would for a real user. Without one, the UI shows the alert `Unable to create default workspace` and the composer stays disabled until a workspace is chosen.
 
 ## Doctor
 
@@ -69,9 +69,10 @@ $D web "$RUN" wait  --in "tree=Sessions" --role treeitem --name attach-project
 $D web "$RUN" attr  --in "tree=Sessions" --role treeitem --name attach-project --attribute aria-expanded
 $D web "$RUN" open --reload
 $D web "$RUN" screenshot workspace-attach/after.png      # relative paths land in the run's evidence
+$D web "$RUN" fetch /open-in-app/icon/cursor             # GET from the signed-in page: status, content type, cache-control, body start
 ```
 
-Stable handles (en-US): buttons `New session`, `Add workspace`, `Plugins`, `More`, `Send message`. The tree `Sessions` holds workspace headers (treeitems with `aria-expanded`), the session rows after each header, and an `Ungrouped` header. The dialog `Select Workspace Directory` has an `Edit path` button that turns into a textbox, then `Open`. The composer is the textbox `Describe what you want to build, / commands, @ files or sessions`.
+Stable handles (en-US): buttons `New session`, `Add workspace`, `Plugins`, `More`, `Send message`. The tree `Sessions` holds workspace headers (treeitems with `aria-expanded`), the session rows after each header, and an `Ungrouped` header. The dialog `Select Workspace Directory` has an `Edit path` button that turns into a textbox, then `Open`. The composer is the textbox `Describe what you want to build, / commands, @ files or sessions` on a new session, and `Message or run a task, / commands, @ files or sessions` once the session has a message; `--name "commands, @ files"` matches both. Each session row has a button `Session actions for <title>`, whose menu has `Open in` with one menuitem per local application.
 
 **CLI.** `dshv headless <run> [--cd DIR] [--env K=V]... "<task>"` runs `dsh --profile headless --json` in the isolated environment and prints `exitCode`, `sessionId`, `finished`, `text`, `warnings`, and the saved `transcript`. Against the default mock, `text` is `mock response recovered`. `dshv exec <run> [--cd DIR] -- <command>` runs anything else there, with the checkout's `dsh` on `PATH`.
 

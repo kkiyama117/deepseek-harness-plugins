@@ -32,10 +32,10 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 
 | Feature | Package | Last proven |
 |---|---|---|
-| [Install a bundle into a profile](./bundle-install.md) | any bundle | 2026-11-02, source dir and release `.tgz` |
-| [Headless sessions join a web workspace](./workspace-attach.md) | `plugins/dsh-workspace-attach` | 2026-11-03, `journey-workspace-attach.mjs` (`attach-cwd` only; `attach-id` and `attach-reject` not yet run) |
-| [Generic icons for open-in-app targets](./open-in-app-icons.md) | `plugins/dsh-open-in-app-icons` | not yet run |
-| [Model fallback on quota or rate limit](./llm-fallback.md) | `plugins/llm-fallback` | not yet run |
-| [Evolve human commands](./evolve-commands.md) | `plugins/dsh-evolve` | not yet run |
+| [Install a bundle into a profile](./bundle-install.md) | any bundle | 2026-11-09, source dir on DSH 0.2.2-rc.1 (release `.tgz` last 2026-11-02) |
+| [Headless sessions join a web workspace](./workspace-attach.md) | `plugins/dsh-workspace-attach` | 2026-11-09, `journey-workspace-attach.mjs`, `attach-id`, `attach-reject` |
+| [Generic icons for open-in-app targets](./open-in-app-icons.md) | `plugins/dsh-open-in-app-icons` | 2026-11-09, routes and session `Open in` menu |
+| [Model fallback on quota or rate limit](./llm-fallback.md) | `plugins/llm-fallback` | 2026-11-09, `fallback-quota` and the `fallback-other-model` control, against the mock |
+| [Evolve human commands](./evolve-commands.md) | `plugins/dsh-evolve` | not yet run; install rejected on DSH 0.2.2-rc.1 |
 
 Other bundles (goal acceptance, workflow results, Codex transport recovery, session cleanup, prompt compact, Slack intake, presets) have no recipe yet. Add one when a change touches them.

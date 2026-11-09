@@ -19,7 +19,7 @@ A user adds one of this repository's bundles to a DSH profile. After that, the b
 
 Preconditions:
 
-- None beyond a package directory under `plugins/` or an archive under `releases/`. `dshv up` performs the install.
+- A package directory under `plugins/` or an archive under `releases/` whose `engines.dsh` and `@deepseek-ai/dsh-*` peer ranges include the checkout's DSH version. `dshv up` performs the install.
 
 - **Install.** Run `dshv up plugins/<pkg>` (or `releases/<pkg>.tgz`). Exit code 0; the JSON has `"run"` and `"doctor": {"ok": true}`.
 - **Composed tree.** Run `dshv exec "$RUN" -- dsh --profile web --dump-config`. The output has a `# == <package name>` section listing the bundle's row ids.
@@ -29,6 +29,6 @@ Preconditions:
 ## Gotchas
 
 - `dsh plugin add link:` prints a peerDependencies warning for `@deepseek-ai/cordis`. It is harmless when doctor shows the rows active.
-- A bundle whose manifest pins DSH versions (`engines.dsh`, peer ranges) can install and still fail to mount on another DSH version. Doctor's `failed` rows show this; the DSH version is the first doctor line.
+- `dsh plugin add` checks `engines.dsh` (or, without it, the `@deepseek-ai/dsh-*` peer ranges) before installing. A bundle pinned to another DSH version is rejected with `installation rejected: Plugin <name>@<version> is incompatible with dsh <version>`, `nothing was installed`, and `dshv up` fails at the install step. The checkout's DSH version is the `dsh build` check, the first doctor line. The `@deepseek-ai/cordis` peer range is not checked, so a stale cordis pin only warns.
 - `link:` tests the working tree, including uncommitted edits. Pass the `.tgz` to test what will ship.
 - Rows that inject a web-only service (for example `workspaceRegistry`) stay `pending` in headless by design. That is not a failure of this feature.

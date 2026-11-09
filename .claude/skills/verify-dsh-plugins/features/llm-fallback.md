@@ -19,14 +19,33 @@ When a call to the configured source model fails with a configured error before 
 Preconditions:
 
 - `DSHV_MOCK_SEQUENCE=quota_exceeded,success dshv up plugins/llm-fallback`.
-- An overlay patch, `fallback.yml`, that points both `ollama-cloud` and `openrouter` providers of the `llm-pi-ai` row at `$(dshv state "$RUN" mockUrl)` with a Messages-compatible API and key `mock-key`, declares the models `glm-5.3-flash` and `deepseek/deepseek-v4-flash-0731`, and sets `agent-default-model` to `ollama-cloud` / `glm-5.3-flash`. Start from the `llm-pi-ai` provider block in `dshv exec "$RUN" -- dsh --profile headless --dump-config`, or from your own profile's `cordis.patch.yml`, with the URLs and keys replaced.
+- An overlay patch, `fallback.yml`, written by hand: the fresh profile's `llm-pi-ai` row has no providers to copy. `<origin>` is `$(dshv state "$RUN" mockUrl)` without its trailing `/v1`, because the Messages client appends `/v1/messages` itself. `DEEPSEEK_API_KEY` is `mock-key` in the run. An explicit `models` list replaces the catalog, so declare the control's `glm-5.3` too, or the control fails with `UNKNOWN_MODEL` before any request.
 
-- **Fallback run.** Run `dshv headless "$RUN" --patch fallback.yml "Say hello"`. `finished` is true, and `text` is `mock response recovered`.
-- **Side effect.** `dshv logs "$RUN" mock.out` has two `request` records: `quota_exceeded` then `success`. If the mock records the requested model, the second request names the route model.
-- **Control.** Repeat on a fresh run with `agent-default-model` set to `ollama-cloud` / `glm-5.3`. The run reports the quota error, and `mock.out` has one request.
+  ```yaml
+  - id: llm-pi-ai
+    config:
+      providers:
+        ollama-cloud:
+          api: anthropic-messages
+          baseURL: <origin>
+          apiKeyEnv: DEEPSEEK_API_KEY
+          models: [{ id: glm-5.3-flash }, { id: glm-5.3 }]
+        openrouter:
+          api: anthropic-messages
+          baseURL: <origin>
+          apiKeyEnv: DEEPSEEK_API_KEY
+          models: [{ id: deepseek/deepseek-v4-flash-0731 }]
+  - id: agent-default-model
+    config:
+      provider: ollama-cloud
+      model: glm-5.3-flash
+  ```
+
+- **Fallback run.** Run `dshv headless "$RUN" --patch fallback.yml "Say hello"`. `exitCode` is 0, `finished` is true, and `text` is `mock response recovered`.
+- **Side effect.** `dshv logs "$RUN" mock.out` has `request` records `quota_exceeded`, then `success` (the route), then one more for the session title. The mock does not record the model. The session store does: `zstdcat $(dshv state "$RUN" run)/home/.dsh/sessions/*/<sessionId>/session.v4.jsonl.zstd` shows `"provider":"openrouter"` and `"model":"deepseek/deepseek-v4-flash-0731"` next to the `ollama-cloud` request.
+- **Control.** Repeat on a fresh run with `agent-default-model` set to `ollama-cloud` / `glm-5.3`. `exitCode` is 1 and `text` is empty; the saved transcript and the session store carry `"code":"QUOTA"`. `mock.out` has the `quota_exceeded` request and the session-title request only, and the session store has no `openrouter` entry.
 
 ## Gotchas
 
-- Not yet executed with `dshv`. The provider overlay is the uncertain part: confirm that `llm-pi-ai` accepts a Messages-compatible API pointed at the mock, and record the working overlay here.
 - This proves the waterfall against a scripted endpoint only. It says nothing about the live OpenRouter or Ollama credentials, quotas, or model ids.
 - `DSHV_MOCK_SEQUENCE` is read at `up` time. Changing the sequence needs a new run.
