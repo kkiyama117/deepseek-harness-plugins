@@ -54,6 +54,12 @@
       }
     }
   ],
+  "plugins/dsh-sandbox-facts": [
+    {
+      "cwd": "plugins/dsh-sandbox-facts",
+      "run": "node --test tests/*.test.mjs"
+    }
+  ],
   "plugins/dsh-session-cleanup": [
     {
       "cwd": ".",
