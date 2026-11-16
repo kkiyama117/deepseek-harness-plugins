@@ -73,13 +73,16 @@ def make_repo(base):
     return repo
 
 
-def fake_worker(directory, record, stdout_lines=('answer',), stderr_lines=('reasoning',),
-                code=0, touch=(), name='worker.sh'):
+def fake_worker(directory, record, stdout_lines=('answer', 'TOTAL 0'),
+                stderr_lines=('reasoning',), code=0, touch=(), name='worker.sh'):
     path = directory / name
     lines = ['#!/bin/sh',
              f'printf "%s\\n" "$@" >> {shlex.quote(str(record / "argv.txt"))}',
-             f'cat >> {shlex.quote(str(record / "stdin.txt"))}',
-             f'printf "run\\n" >> {shlex.quote(str(record / "runs.txt"))}']
+             f'printf "run\\n" >> {shlex.quote(str(record / "runs.txt"))}',
+             f'n=$(wc -l < {shlex.quote(str(record / "runs.txt"))} | tr -d " ")',
+             f'cat > {shlex.quote(str(record))}/stdin-$n.txt',
+             f'cat {shlex.quote(str(record))}/stdin-$n.txt '
+             f'>> {shlex.quote(str(record / "stdin.txt"))}']
     for line in stderr_lines:
         lines.append(f'printf "%s\\n" {shlex.quote(line)} >&2')
     for line in stdout_lines:
@@ -96,7 +99,12 @@ def fake_worker(directory, record, stdout_lines=('answer',), stderr_lines=('reas
 def fake_accept(directory):
     path = directory / 'kstack-accept'
     path.write_text("#!/bin/sh\n"
-                    "printf 'state-%s\\n' \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"\n")
+                    "if [ -n \"$(git -C \"$2\" status --porcelain)\" ]; then\n"
+                    "  prefix=dirty-\n"
+                    "else\n"
+                    "  prefix=\n"
+                    "fi\n"
+                    "printf '%s%s\\n' \"$prefix\" \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"\n")
     path.chmod(0o755)
     return path
 
@@ -151,7 +159,16 @@ class DispatchTest(unittest.TestCase):
         commit(self.worktree, 'add the gate')
 
     def state(self):
-        return 'state-' + git('rev-parse', 'HEAD^{tree}', cwd=self.worktree).strip()
+        return git('rev-parse', 'HEAD^{tree}', cwd=self.worktree).strip()
+
+    def dispose(self, *rows):
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        lines = ['id\tdisposition\tdetail', *(f'{row[0]}\t{row[1]}\t{row[2]}' for row in rows)]
+        (self.evidence / 'findings.tsv').write_text('\n'.join(lines) + '\n')
+
+    def commit_change(self, name, text='x\n'):
+        (self.worktree / name).write_text(text)
+        commit(self.worktree, f'change {name}')
 
     def load(self, name):
         return json.loads((self.evidence / name).read_text())
@@ -160,7 +177,12 @@ class DispatchTest(unittest.TestCase):
         path = self.base / 'kstack-accept-check'
         script = ['#!/bin/sh',
                   'if [ "$1" = "state" ]; then',
-                  "  printf 'state-%s\\n' \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"",
+                  "  if [ -n \"$(git -C \"$2\" status --porcelain)\" ]; then",
+                  '    prefix=dirty-',
+                  '  else',
+                  '    prefix=',
+                  '  fi',
+                  "  printf '%s%s\\n' \"$prefix\" \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"",
                   '  exit 0',
                   'fi',
                   f'printf "check\\n" >> {shlex.quote(str(self.record / "checks.txt"))}']
@@ -599,6 +621,7 @@ class DispatchTest(unittest.TestCase):
         self.invoke('card', 'T1', '--no-worker')
         self.add_gate("print('gate-' + 'said')\n")
         (self.worktree / 'tasks/T1.md').write_text(CARD_T1 + '\nUncommitted body change.\n')
+        commit(self.worktree, 'body change')
         code, out, err = self.invoke('review', 'T1')
         self.assertEqual(code, 0)
         brief = self.record_text('stdin.txt')
@@ -632,15 +655,15 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('gate skipped: no bin/gate.py', out)
         self.assertIn('bin/gate.py does not exist yet', self.record_text('stdin.txt'))
 
-    def test_review_lists_untracked_files_as_absolute_paths(self):
+    def test_review_refuses_a_dirty_worktree(self):
         self.invoke('card', 'T1', '--no-worker')
-        (self.worktree / 'bin').mkdir()
-        (self.worktree / 'bin/gate.py').write_text('pass\n')
-        commit(self.worktree, 'add the gate')
+        self.add_gate('pass\n')
         (self.worktree / 'notes.txt').write_text('note\n')
         code, out, err = self.invoke('review', 'T1')
-        self.assertEqual(code, 0)
-        self.assertIn(f'- {self.worktree}/notes.txt', self.record_text('stdin.txt'))
+        self.assertEqual(code, 2)
+        self.assertIn('commit the worktree first: deepseek-harness-plugins has changes that '
+                      'HEAD does not hold', err)
+        self.assertEqual(self.runs(), 0)
 
     def test_review_ignores_commits_the_issue_branch_gained(self):
         self.invoke('card', 'T1', '--no-worker')
@@ -768,6 +791,9 @@ class DispatchTest(unittest.TestCase):
             'state': {'deepseek-harness-plugins': self.state()},
             'state_after': {'deepseek-harness-plugins': self.state()},
             'covers_from': None,
+            'heads': {'deepseek-harness-plugins':
+                      git('rev-parse', 'HEAD', cwd=self.worktree).strip()},
+            'bases': {'deepseek-harness-plugins': self.load('scope.json')['repos'][0]['base']},
         }
         self.assertEqual(record, expected)
         self.assertEqual(list(record), list(expected))
@@ -785,7 +811,7 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('gate reused gate.json (exit 0)', out)
         (self.worktree / 'x.txt').write_text('x\n')
         commit(self.worktree, 'x')
-        code, out, err = self.invoke('review', 'T1')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round', '--reason', 'test')
         self.assertEqual(code, 0)
         self.assertEqual(len(path.read_text().splitlines()), 2)
         self.assertEqual(self.load('review-2.json')['round'], 2)
@@ -794,7 +820,7 @@ class DispatchTest(unittest.TestCase):
         self.invoke('card', 'T1', '--no-worker')
         self.add_gate('pass\n')
         self.invoke('review', 'T1')
-        code, out, err = self.invoke('review', 'T1')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round', '--reason', 'test')
         self.assertEqual(code, 0)
         record = self.load('review-2.json')
         self.assertEqual(record['round'], 1)
@@ -896,6 +922,206 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('finding 1.2 c.py:3 | Medium | z | w\n', out)
         for line in out.splitlines():
             self.assertNotIn('fenced', line)
+
+    def test_review_records_heads_and_bases(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        record = self.load('review-1.json')
+        self.assertEqual(record['heads'], {
+            'deepseek-harness-plugins': git('rev-parse', 'HEAD', cwd=self.worktree).strip()})
+        self.assertEqual(record['bases'], {
+            'deepseek-harness-plugins': self.load('scope.json')['repos'][0]['base']})
+        self.assertEqual(list(record)[-2:], ['heads', 'bases'])
+
+    def test_review_derives_round_first(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('kind round (derived)', out)
+        record = self.load('review-1.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 1)
+
+    def test_review_derives_fixcheck_after_a_round(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('kind fixcheck (derived)', out)
+        record = self.load('review-2.json')
+        self.assertEqual(record['kind'], 'fixcheck')
+        self.assertEqual(record['covers_from'], self.load('review-1.json')['state'])
+
+    def test_review_derives_round_for_a_new_lineage(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        record = self.load('review-1.json')
+        record['lineage'] = 'other'
+        (self.evidence / 'review-1.json').write_text(json.dumps(record, indent=2) + '\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-2.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 1)
+
+    def test_review_derives_round_2_after_a_real_high(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e', 'TOTAL 1')))
+        self.dispose(('2.1', 'fixed', 'abc'))
+        self.commit_change('y.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-3.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 2)
+
+    def test_review_derives_fixcheck_after_a_wrong_high(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e', 'TOTAL 1')))
+        self.dispose(('2.1', 'wrong', 'not a bug'))
+        self.commit_change('y.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load('review-3.json')['kind'], 'fixcheck')
+
+    def test_review_refuses_undisposed_findings(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y', 'TOTAL 1')))
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('dispose the findings of run 1 first: findings.tsv has no row 1.1', err)
+        self.assertEqual(self.runs(), 1)
+
+    def test_review_refuses_a_row_without_a_detail(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y', 'TOTAL 1')))
+        self.dispose(('1.1', 'fixed', ''))
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('dispose the findings of run 1 first: row 1.1 needs fixed, wrong or open '
+                      'and a detail', err)
+
+    def test_review_refuses_a_kind_that_differs_without_a_reason(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round')
+        self.assertEqual(code, 2)
+        self.assertIn('--kind round differs from the derived kind fixcheck; pass --reason to '
+                      'override', err)
+
+    def test_review_prints_the_reason_for_a_kind_override(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round', '--reason', 'rerun')
+        self.assertEqual(code, 0)
+        self.assertIn('kind round instead of derived fixcheck: rerun', out)
+        self.assertEqual(self.load('review-2.json')['kind'], 'round')
+
+    def test_fixcheck_brief_shows_the_delta_and_the_findings(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | medium | x | y', 'TOTAL 1')))
+        self.dispose(('1.1', 'fixed', 'c0ffee'))
+        self.commit_change('fix.txt', 'fixed-text\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin-2.txt')
+        head = self.load('review-1.json')['heads']['deepseek-harness-plugins']
+        self.assertIn(f'This run is a fix check of run 1. Change since that run '
+                      f'(`git diff {head} HEAD`):', brief)
+        self.assertIn('- 1.1 | fixed | c0ffee | a.py:1 | medium | x | y', brief)
+        delta = brief[brief.index('Change since that run'):brief.index('Findings of the covered run')]
+        self.assertIn('+fixed-text', delta)
+        self.assertNotIn('bin/gate.py', delta)
+        self.assertNotIn('The base moved since that run', brief)
+
+    def test_fixcheck_brief_shows_a_range_diff_after_a_rebase(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        (self.root / 'later.txt').write_text('later\n')
+        commit(self.root, 'later')
+        git(*COMMIT_CONFIG, 'rebase', 'issue/1-x', cwd=self.worktree)
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin-2.txt')
+        self.assertIn("The base moved since that run, so here is how the card's own diff changed",
+                      brief)
+        self.assertIn('- none', brief)
+        self.assertNotIn('Change since that run', brief)
+
+    def test_fixcheck_brief_without_heads_warns(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        record = self.load('review-1.json')
+        del record['heads']
+        (self.evidence / 'review-1.json').write_text(json.dumps(record, indent=2) + '\n')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('warning: run 1 has no heads; the fix check shows the full diff', out)
+        self.assertNotIn('This run is a fix check', self.record_text('stdin-2.txt'))
+
+    def test_review_records_an_incomplete_answer_without_findings_as_optional(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('STOPPED no access',)))
+        self.assertEqual(code, 0)
+        self.assertIn('review-1.json written as optional: the answer is incomplete and has no '
+                      'finding', out)
+        record = self.load('review-1.json')
+        self.assertEqual(record['kind'], 'optional')
+        self.assertIsNone(record['round'])
+
+    def test_review_keeps_the_kind_of_an_incomplete_answer_with_findings(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y',)))
+        self.assertEqual(code, 0)
+        self.assertIn('review-1.json keeps kind round: the answer is incomplete but has 1 finding '
+                      'lines', out)
+        self.assertEqual(self.load('review-1.json')['kind'], 'round')
+
+    def test_review_refreshes_the_base_when_gate_json_is_reused(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('gate', 'T1')
+        scope = self.load('scope.json')
+        scope['repos'][0]['base'] = '0' * 40
+        self.scope.write_text(json.dumps(scope, indent=2) + '\n')
+        real = git('merge-base', 'card/T1', 'issue/1-x', cwd=self.root).strip()
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('gate reused gate.json (exit 0)', out)
+        self.assertIn(f'base deepseek-harness-plugins {"0" * 40} -> {real}\n', out)
+        self.assertEqual(self.load('scope.json')['repos'][0]['base'], real)
 
     def test_review_brief_asks_for_one_bash_call(self):
         self.invoke('card', 'T1', '--no-worker')
@@ -1241,7 +1467,7 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in agents.iterdir()),
                          ['20260102T030405Z-x-2.log', '20260102T030405Z-x-2.md',
                           '20260102T030405Z-x.log', '20260102T030405Z-x.md'])
-        self.assertEqual((agents / '20260102T030405Z-x.md').read_text(), 'answer\n')
+        self.assertEqual((agents / '20260102T030405Z-x.md').read_text(), 'answer\nTOTAL 0\n')
 
     def test_harness_failure_is_reported_once(self):
         worker = self.worker(stderr_lines=('dsh: UNKNOWN_MODEL',), code=1)
@@ -1269,6 +1495,21 @@ class DispatchTest(unittest.TestCase):
             dispatch.run_worker(agents, 'x', self.root, ['dsh'], 'brief',
                                 read_only=False, worker=worker)
         self.assertIn(dispatch.HARNESS_LINE, out.getvalue())
+
+    def test_parse_answer(self):
+        path = self.base / 'answer.md'
+        path.write_text('a.py:1 | high | x | y\n```\nb.py:2 | low | fenced | z\n'
+                        'STOPPED inside\n```\nTOTAL 1\n')
+        self.assertEqual(dispatch.parse_answer(path), (['a.py:1 | high | x | y'], True))
+
+    def test_read_findings(self):
+        directory = self.base / 'findings'
+        directory.mkdir()
+        (directory / 'findings.tsv').write_text('id\tdisposition\tdetail\n'
+                                                '1.1\tfixed\tabc\n\n1.2\topen\n')
+        self.assertEqual(dispatch.read_findings(directory),
+                         {'1.1': ('fixed', 'abc'), '1.2': ('', '')})
+        self.assertIsNone(dispatch.read_findings(self.base / 'no-findings'))
 
     def test_runtime_rev(self):
         repo = self.base / 'dsh'
