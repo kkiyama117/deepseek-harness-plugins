@@ -16,7 +16,7 @@ read_when:
 
 粘贴的图片会落成真实的临时文件，消息里带着形如 `<image name=[Image #1] path="/tmp/xxxx.png">` 的标签。skill 直接从标签里读出路径。`recover-paste` 检测到 Codex 后会拒绝执行，并把你指回这个标签。
 
-纯文本模型有一个坑：一旦 `models.json` 声明了 `input_modalities: ["text"]`，Codex TUI 会直接拦下 Ctrl+V 粘贴。改为把文件拖进终端、手动输入路径，或使用 `codex exec -i image.png "..."`。
+纯文本模型有一个坑：一旦 `models.json` 声明了 `input_modalities: ["text"]`，Codex TUI 会直接拦下 Ctrl+V 粘贴。改为把文件拖进终端，或手动输入路径。
 
 ## Claude Code、Pi、OpenCode
 
