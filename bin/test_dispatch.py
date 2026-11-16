@@ -106,6 +106,7 @@ class DispatchTest(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, clean_git_env(), clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        os.environ.pop('KSTACK_ACCEPT', None)
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name).resolve()
         self.root = make_repo(self.base)
@@ -154,6 +155,47 @@ class DispatchTest(unittest.TestCase):
 
     def load(self, name):
         return json.loads((self.evidence / name).read_text())
+
+    def fake_check(self, exit, lines, commit=None, stderr='', killed=False):
+        path = self.base / 'kstack-accept-check'
+        script = ['#!/bin/sh',
+                  'if [ "$1" = "state" ]; then',
+                  "  printf 'state-%s\\n' \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"",
+                  '  exit 0',
+                  'fi',
+                  f'printf "check\\n" >> {shlex.quote(str(self.record / "checks.txt"))}']
+        for line in lines:
+            script.append(f'printf "%s\\n" {shlex.quote(line)}')
+        if stderr:
+            script.append(f'printf "%s\\n" {shlex.quote(stderr)} >&2')
+        if commit is not None:
+            payload = json.dumps({'schema': 'kstack-accept/result/1',
+                                  'commits': {'deepseek-harness-plugins': commit}})
+            script.append('mkdir -p "$2/evidence/$3"')
+            script.append(f'printf "%s\\n" {shlex.quote(payload)} > "$2/evidence/$3/accept.json"')
+        script.append('kill -9 $$' if killed else f'exit {exit}')
+        path.write_text('\n'.join(script) + '\n')
+        path.chmod(0o755)
+        patcher = mock.patch.object(dispatch, 'ACCEPT', path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def rows(self):
+        path = self.root / 'reports/agents/accept-shadow.tsv'
+        if not path.exists():
+            return []
+        return [line.split('\t') for line in path.read_text().splitlines()]
+
+    def ready_card(self):
+        code, out, err = self.invoke('card', 'T1', '--no-worker')
+        self.assertEqual(code, 0)
+        (self.worktree / 'bin').mkdir(exist_ok=True)
+        (self.worktree / 'bin/a.py').write_text('x\n')
+        commit(self.worktree, 'implement T1')
+        return git('rev-parse', 'card/T1', cwd=self.root).strip()
+
+    def copies(self):
+        return sorted(path.name for path in self.evidence.glob('accept-*.json'))
 
     def commit_card(self, text):
         (self.root / 'tasks/T1.md').write_text(text)
@@ -941,6 +983,245 @@ class DispatchTest(unittest.TestCase):
         code, out, err = self.invoke('land', 'T1')
         self.assertEqual(code, 2)
         self.assertEqual((self.root / 'ignored.txt').read_text(), 'keep\n')
+
+    def test_land_off_runs_no_check(self):
+        head = self.ready_card()
+        self.fake_check(0, ['ACCEPT'], head)
+        code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertFalse((self.record / 'checks.txt').exists())
+        self.assertEqual(self.rows(), [])
+
+    def test_land_refuses_an_unknown_mode(self):
+        self.ready_card()
+        tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+        self.fake_check(0, ['ACCEPT'])
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'on'}):
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('KSTACK_ACCEPT must be off, shadow or enforce, not on', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        self.assertFalse((self.record / 'checks.txt').exists())
+
+    def test_land_shadow_accept_writes_a_row(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, [f'ACCEPT T1 deepseek-harness-plugins={head}'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertIn(f'ACCEPT T1 deepseek-harness-plugins={head}\n', out)
+        rows = self.rows()
+        self.assertEqual(rows[0], dispatch.SHADOW_HEADER.split('\t'))
+        utc = rows[1][0]
+        self.assertRegex(utc, r'^[0-9]{8}T[0-9]{6}Z$')
+        copy = self.evidence / f'accept-{utc}.json'
+        self.assertEqual(rows[1], [utc, 'T1', 'R0', 'accept', '0', '',
+                                   f'deepseek-harness-plugins={head}', 'landed', str(copy)])
+        self.assertEqual(copy.read_text(), (self.evidence / 'accept.json').read_text())
+
+    def test_land_shadow_refuse_still_lands(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(1, ['GATE_MISSING', 'REVIEW_MISSING', 'REFUSE T1 2 reasons'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'refuse')
+        self.assertEqual(row[4], '1')
+        self.assertEqual(row[5], 'GATE_MISSING;REVIEW_MISSING')
+        self.assertEqual(row[7], 'landed')
+
+    def test_land_shadow_check_error_keeps_no_copy(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(2, [], stderr='boom')
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertIn('boom', err)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[4], '2')
+        self.assertEqual(row[5], '')
+        self.assertEqual(row[6], '')
+        self.assertEqual(row[8], '')
+        self.assertEqual(self.copies(), [])
+
+    def test_land_shadow_step_failure_writes_an_error_row(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            with mock.patch.object(dispatch, 'ACCEPT', self.base / 'missing'):
+                code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertIn('warning: kstack-accept step failed: FileNotFoundError', err)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[4], '')
+        self.assertEqual(row[5], 'exception:FileNotFoundError')
+
+    def test_land_shadow_precondition_failure_writes_a_refused_row(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.worktree / 'untracked.txt').write_text('x\n')
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('the worktree has uncommitted changes', err)
+        self.assertEqual(self.recorded('checks.txt'), ['check'])
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'accept')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_shadow_failed_fast_forward_writes_a_failed_row(self):
+        (self.root / 'ignored.txt').write_text('keep\n')
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            self.ready_card()
+            (self.worktree / 'ignored.txt').write_text('tracked now\n')
+            git('add', '-f', 'ignored.txt', cwd=self.worktree)
+            commit(self.worktree, 'track the ignored path')
+            head = git('rev-parse', 'card/T1', cwd=self.root).strip()
+            self.fake_check(0, ['ACCEPT'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertEqual(self.rows()[1][7], 'failed')
+
+    def test_land_shadow_writes_the_header_once(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.worktree / 'untracked.txt').write_text('x\n')
+            code, out, err = self.invoke('land', 'T1')
+            self.assertEqual(code, 2)
+            (self.worktree / 'untracked.txt').unlink()
+            code, out, err = self.invoke('land', 'T1')
+            self.assertEqual(code, 0)
+        rows = self.rows()
+        header = dispatch.SHADOW_HEADER.split('\t')
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0], header)
+        self.assertNotIn(header, rows[1:])
+        self.assertEqual([row[7] for row in rows[1:]], ['refused', 'landed'])
+
+    def test_land_keeps_numbered_copies(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            self.evidence.mkdir(parents=True, exist_ok=True)
+            (self.evidence / 'accept-20261116T000000Z.json').write_text('kept\n')
+            with mock.patch.object(dispatch, 'utc_stamp', lambda: '20261116T000000Z'):
+                code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.copies(), ['accept-20261116T000000Z-2.json',
+                                         'accept-20261116T000000Z.json'])
+        self.assertTrue(self.rows()[1][8].endswith('accept-20261116T000000Z-2.json'))
+
+    def test_land_tier_is_empty_without_scope_json(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            (self.evidence / 'scope.json').unlink()
+            self.fake_check(1, ['REFUSE T1 1 reasons'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rows()[1][2], '')
+
+    def test_land_enforce_accept_lands(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'accept')
+        self.assertEqual(row[7], 'landed')
+
+    def test_land_enforce_refuse_exits_7(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            head = self.ready_card()
+            tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+            self.fake_check(1, ['GATE_MISSING', 'REFUSE T1 1 reasons'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 7)
+        self.assertIn('land refused by kstack-accept (KSTACK_ACCEPT=enforce)', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        self.assertTrue(self.worktree.is_dir())
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'refuse')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_enforce_check_error_exits_7(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            self.ready_card()
+            self.fake_check(2, [])
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 7)
+        self.assertNotEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(),
+                            git('rev-parse', 'card/T1', cwd=self.root).strip())
+
+    def test_land_enforce_step_failure_stops_the_land(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            self.ready_card()
+            with mock.patch.object(dispatch, 'ACCEPT', self.base / 'missing'):
+                code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack-accept step failed: FileNotFoundError', err)
+        self.assertNotEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(),
+                            git('rev-parse', 'card/T1', cwd=self.root).strip())
+        self.assertTrue(self.worktree.is_dir())
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_shadow_signal_is_a_step_failure(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], killed=True)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[4], '')
+        self.assertEqual(row[5], 'exception:ChildProcessError')
+
+    def test_land_enforce_refuses_a_moved_card_branch(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            self.ready_card()
+            tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+            self.fake_check(0, ['ACCEPT'], '0' * 40)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 7)
+        self.assertIn('card/T1 moved after kstack-accept check; land refused', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'accept')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_enforce_unwritable_log_stops_the_land(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            head = self.ready_card()
+            tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.root / 'reports/agents/accept-shadow.tsv').mkdir()
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack-accept shadow row not written:', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_land_survives_a_failed_row_write(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.root / 'reports/agents/accept-shadow.tsv').mkdir()
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertEqual(err.count('warning: kstack-accept shadow row not written:'), 2)
 
     def test_run_worker_never_overwrites_output(self):
         agents = self.base / 'agents'

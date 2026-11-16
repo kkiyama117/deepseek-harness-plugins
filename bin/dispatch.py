@@ -39,6 +39,12 @@ gate stops the review. `review --kind round|fixcheck|supplement|optional`
 writes review-<seq>.json for kstack-accept; a reviewer that exits nonzero is
 recorded as optional. `gate`, and `review` without `--main`, refuse a card
 without scope.json.
+
+`land` reads KSTACK_ACCEPT: `off` (the default) lands as before; `shadow`
+runs `kstack-accept check` first, keeps accept-<UTC>.json beside the
+evidence, appends one row to reports/agents/accept-shadow.tsv, and lands
+whatever the verdict; `enforce` does the same but exits 7 without landing
+when the check does not accept or card/<ID> moved after it.
 """
 import argparse
 from dataclasses import dataclass
@@ -68,6 +74,9 @@ ACCEPT = KSTACK / 'bin/kstack-accept'
 REVIEW_KINDS = ('round', 'fixcheck', 'supplement', 'optional')
 GATE_SCHEMA = 'kstack-accept/gate/1'
 REVIEW_SCHEMA = 'kstack-accept/review/1'
+ACCEPT_MODES = ('off', 'shadow', 'enforce')
+REFUSED_EXIT = 7
+SHADOW_HEADER = 'utc\tcard\ttier\tverdict\texit\treasons\tcommits\told_land\taccept_json'
 HEADING = re.compile(r'^## (T[0-9]+)\. (.+)$')
 CARD_ID = re.compile(r'^T[0-9]+$')
 FINDING = re.compile(r'^(?P<loc>[^|]+?)\s*\|\s*(?P<sev>high|medium|low)\s*\|', re.IGNORECASE)
@@ -837,29 +846,208 @@ def _gate(args, root):
     return gate_step(main, root, args.id, worktree, branch)[0]
 
 
+def utc_stamp():
+    return datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+
+
+def _shadow_path(agents):
+    return Path(agents) / 'accept-shadow.tsv'
+
+
+def _scope_tier(evidence):
+    try:
+        record = json.loads((Path(evidence) / 'scope.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return ''
+    tier = record.get('tier') if isinstance(record, dict) else None
+    return tier if isinstance(tier, str) else ''
+
+
+def _copy_accept(evidence, utc):
+    evidence = Path(evidence)
+    target = evidence / f'accept-{utc}.json'
+    index = 2
+    while target.exists():
+        target = evidence / f'accept-{utc}-{index}.json'
+        index += 1
+    shutil.copyfile(evidence / 'accept.json', target)
+    return target
+
+
+def _accept_record(agents, evidence, card_id):
+    record = {
+        'utc': utc_stamp(),
+        'card': card_id,
+        'tier': _scope_tier(evidence),
+        'verdict': 'error',
+        'exit': '',
+        'reasons': '',
+        'commits': '',
+        'copy': None,
+        'step_error': None,
+    }
+    try:
+        done = subprocess.run([str(ACCEPT), 'check', str(agents), card_id],
+                              capture_output=True, text=True)
+        sys.stdout.write(done.stdout)
+        sys.stderr.write(done.stderr)
+        if done.returncode < 0:
+            raise ChildProcessError(f'kstack-accept check killed by signal {-done.returncode}')
+        record['exit'] = done.returncode
+        record['verdict'] = {0: 'accept', 1: 'refuse'}.get(done.returncode, 'error')
+        if done.returncode in (0, 1):
+            copy = _copy_accept(evidence, record['utc'])
+            copied = json.loads(copy.read_text(encoding='utf-8'))
+            record['commits'] = ';'.join(f'{name}={commit}' for name, commit
+                                         in copied['commits'].items())
+            record['copy'] = copy
+            lines = [line for line in done.stdout.splitlines() if line.strip()]
+            record['reasons'] = ';'.join(line.split()[0] for line in lines[:-1])
+    except Exception as error:
+        record.update(verdict='error', exit='', reasons=f'exception:{type(error).__name__}',
+                      commits='', copy=None, step_error=error)
+        print(f'warning: kstack-accept step failed: {type(error).__name__}: {error}',
+              file=sys.stderr)
+    return record
+
+
+def _shadow_line(record, old_land):
+    copy = record['copy']
+    return '\t'.join([record['utc'], record['card'], record['tier'], record['verdict'],
+                      str(record['exit']), record['reasons'], record['commits'], old_land,
+                      str(copy) if copy is not None else '']) + '\n'
+
+
+def _error_record(record, error):
+    return {**record, 'verdict': 'error', 'exit': '',
+            'reasons': f'exception:{type(error).__name__}', 'commits': '', 'copy': None}
+
+
+def _append_row(agents, line):
+    path = _shadow_path(agents)
+    with path.open('a', encoding='utf-8') as handle:
+        if path.stat().st_size == 0:
+            handle.write(SHADOW_HEADER + '\n')
+        handle.write(line)
+
+
+def _shadow_warning(agents, error, record, old_land):
+    print(f'warning: kstack-accept shadow row not written: {error}', file=sys.stderr)
+    try:
+        _append_row(agents, _shadow_line(_error_record(record, error), old_land))
+    except OSError as second:
+        print(f'warning: kstack-accept shadow row not written: {second}', file=sys.stderr)
+
+
+def _append_shadow(agents, record, old_land):
+    try:
+        _append_row(agents, _shadow_line(record, old_land))
+    except OSError as error:
+        _shadow_warning(agents, error, record, old_land)
+
+
+def _finish_shadow(handle, agents, record, old_land):
+    if handle is None:
+        _append_shadow(agents, record, old_land)
+        return
+    try:
+        with handle:
+            handle.write(_shadow_line(record, old_land))
+    except OSError as error:
+        _shadow_warning(agents, error, record, old_land)
+
+
+def _shadow_stop(error):
+    print(f'warning: kstack-accept shadow row not written: {error}', file=sys.stderr)
+    raise DispatchError(f'kstack-accept shadow row not written: {error}') from None
+
+
+def _open_shadow(agents):
+    path = _shadow_path(agents)
+    try:
+        handle = path.open('a', encoding='utf-8')
+    except OSError as error:
+        _shadow_stop(error)
+    try:
+        if path.stat().st_size == 0:
+            handle.write(SHADOW_HEADER + '\n')
+    except OSError as error:
+        try:
+            handle.close()
+        except OSError:
+            pass
+        _shadow_stop(error)
+    return handle
+
+
+def _recorded_commit(copy):
+    try:
+        record = json.loads(Path(copy).read_text(encoding='utf-8'))
+        return record['commits'][LAND_REPO]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _land(args, root):
-    branch = issue_branch(root)
+    mode = os.environ.get('KSTACK_ACCEPT') or 'off'
+    if mode not in ACCEPT_MODES:
+        raise DispatchError(f'KSTACK_ACCEPT must be off, shadow or enforce, not {mode}')
     main = main_checkout(root)
+    agents = main / 'reports/agents'
+    evidence = evidence_dir(main, args.id)
+    shadow = None if mode == 'off' else _accept_record(agents, evidence, args.id)
     card_branch = f'card/{args.id}'
     worktree = _worktree(main, args.id)
-    if not worktree.is_dir():
-        raise DispatchError(f'no worktree {worktree}')
-    head = git('symbolic-ref', '--quiet', '--short', 'HEAD', cwd=worktree, allow_failure=True)
-    if head.returncode or head.stdout.strip() != card_branch:
-        raise DispatchError(f'the worktree is not on {card_branch}')
-    if _status_paths(worktree):
-        raise DispatchError('the worktree has uncommitted changes')
-    commits = git('rev-list', '--count', f'{branch}..{card_branch}', cwd=root).stdout.strip()
-    if commits == '0':
-        raise DispatchError(f'{card_branch} has no commits to land')
-    ancestor = git('merge-base', '--is-ancestor', branch, card_branch, cwd=root, allow_failure=True)
-    if ancestor.returncode:
-        raise DispatchError(f'{branch} has moved since the dispatch. Rebase {card_branch} onto '
-                            f'{branch} in {worktree}, run the full gate again, then land again.')
+    try:
+        branch = issue_branch(root)
+        if not worktree.is_dir():
+            raise DispatchError(f'no worktree {worktree}')
+        head = git('symbolic-ref', '--quiet', '--short', 'HEAD', cwd=worktree, allow_failure=True)
+        if head.returncode or head.stdout.strip() != card_branch:
+            raise DispatchError(f'the worktree is not on {card_branch}')
+        if _status_paths(worktree):
+            raise DispatchError('the worktree has uncommitted changes')
+        commits = git('rev-list', '--count', f'{branch}..{card_branch}', cwd=root).stdout.strip()
+        if commits == '0':
+            raise DispatchError(f'{card_branch} has no commits to land')
+        ancestor = git('merge-base', '--is-ancestor', branch, card_branch, cwd=root,
+                       allow_failure=True)
+        if ancestor.returncode:
+            raise DispatchError(f'{branch} has moved since the dispatch. Rebase {card_branch} onto '
+                                f'{branch} in {worktree}, run the full gate again, then land again.')
+    except DispatchError:
+        if shadow is not None:
+            _append_shadow(agents, shadow, 'refused')
+        raise
+    shadow_handle = None
+    if mode == 'enforce':
+        step_error = shadow['step_error']
+        if step_error is not None:
+            _append_shadow(agents, shadow, 'refused')
+            raise DispatchError(f'kstack-accept step failed: {type(step_error).__name__}: '
+                                f'{step_error}')
+        if shadow['verdict'] != 'accept':
+            _append_shadow(agents, shadow, 'refused')
+            print('land refused by kstack-accept (KSTACK_ACCEPT=enforce)', file=sys.stderr)
+            return REFUSED_EXIT
+        try:
+            current = git('rev-parse', card_branch, cwd=root).stdout.strip()
+        except DispatchError:
+            _append_shadow(agents, shadow, 'refused')
+            raise
+        if _recorded_commit(shadow['copy']) != current:
+            _append_shadow(agents, shadow, 'refused')
+            print(f'{card_branch} moved after kstack-accept check; land refused', file=sys.stderr)
+            return REFUSED_EXIT
+        shadow_handle = _open_shadow(agents)
     merged = git('merge', '--ff-only', '--no-overwrite-ignore', card_branch, cwd=root,
                  allow_failure=True)
     if merged.returncode:
+        if shadow is not None:
+            _finish_shadow(shadow_handle, agents, shadow, 'failed')
         raise DispatchError(f'the fast-forward failed: {merged.stderr.strip()}')
+    if shadow is not None:
+        _finish_shadow(shadow_handle, agents, shadow, 'landed')
     for command in (('worktree', 'remove', '--force', worktree), ('branch', '-d', card_branch)):
         done = git(*command, cwd=root, allow_failure=True)
         if done.returncode:
