@@ -4,7 +4,8 @@ Run from the issue worktree:
 
     python3 bin/dispatch.py ambiguity [ID ...]
     python3 bin/dispatch.py card ID [--no-worker]
-    python3 bin/dispatch.py review ID [--main PATH ...]
+    python3 bin/dispatch.py gate ID
+    python3 bin/dispatch.py review ID [--kind KIND] [--main PATH ...]
     python3 bin/dispatch.py land ID
 
 Cards are `tasks/<ID>.md`. `ambiguity` with IDs reviews those cards whatever
@@ -16,9 +17,9 @@ issue branch to a second reviewer; with `--main`, it pipes the lead's
 uncommitted change of the given paths. `land` fast-forwards the issue branch,
 then removes the worktree and `card/<ID>`.
 
-Every verb except `card` starts its worker with `--read-only`, so `review` runs
-the gate itself, before the reviewer, and puts the exit code and the last lines
-of its output in the brief. The worker's answer (stdout) goes to
+Every verb that starts a worker, except `card`, starts it with `--read-only`, so
+`review` runs the gate itself, before the reviewer, and puts the exit code and
+the last lines of its output in the brief. The worker's answer (stdout) goes to
 `reports/agents/<UTC>-<name>.md` of the main checkout and its reasoning and
 errors (stderr) to the matching `.log`; a name already taken gains a `-2`,
 `-3`, ... suffix. Prints the paths and exits with the worker's code.
@@ -29,6 +30,15 @@ checkout for kstack-accept, before the worker starts: the tier from the card's
 made), the implementer lineage of the worker's model, the card worktree, and
 its base, the merge base of `card/<ID>` and the issue branch. Workers never
 read or write that directory.
+
+`gate` refreshes the base in scope.json (the merge base of `card/<ID>` and the
+issue branch), runs the full gate in the card worktree, and writes gate.json
+and gate.log beside scope.json. `review` reuses gate.json when its states
+still match the worktree, and runs the same gate step otherwise; a failing
+gate stops the review. `review --kind round|fixcheck|supplement|optional`
+writes review-<seq>.json for kstack-accept; a reviewer that exits nonzero is
+recorded as optional. `gate`, and `review` without `--main`, refuse a card
+without scope.json.
 """
 import argparse
 from dataclasses import dataclass
@@ -39,6 +49,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -53,8 +64,14 @@ SCOPE_SCHEMA = 'kstack-accept/scope/1'
 LAND_REPO = 'deepseek-harness-plugins'
 REVIEW_ROUTE = ['dsh', 'openai-codex', 'gpt-6.1-sol', 'high']
 GATE = 'python3 bin/gate.py'
+ACCEPT = KSTACK / 'bin/kstack-accept'
+REVIEW_KINDS = ('round', 'fixcheck', 'supplement', 'optional')
+GATE_SCHEMA = 'kstack-accept/gate/1'
+REVIEW_SCHEMA = 'kstack-accept/review/1'
 HEADING = re.compile(r'^## (T[0-9]+)\. (.+)$')
 CARD_ID = re.compile(r'^T[0-9]+$')
+FINDING = re.compile(r'^(?P<loc>[^|]+?)\s*\|\s*(?P<sev>high|medium|low)\s*\|', re.IGNORECASE)
+FENCE = re.compile(r'^\s*(```|~~~)')
 
 CARD_BRIEF = '''{opening}
 
@@ -103,7 +120,7 @@ Goal of the owner: a worker implemented one card of this repository. You are the
 
 `{wt}/AGENTS.md` holds the rules the worker had to follow. It overrides everything else, including the poteto-agent file.
 
-Card {id}, worktree `{wt}`, branched from `{branch}`. Read `{wt}/AGENTS.md`, `{wt}/tasks/README.md`, the card below, and the files in `{wt}` that the diff touches. {never} Do not run any command that builds or tests code: you run read-only. {gate_block}
+Card {id}, worktree `{wt}`, branched from `{branch}`. Read `{wt}/AGENTS.md`, `{wt}/tasks/README.md`, the card below, and the files in `{wt}` that the diff touches. {never} Do not run any command that builds or tests code: you run read-only. Run one bash command, `pwd`, before anything else; the sandbox evidence needs at least one bash call. {gate_block}
 
 Card:
 
@@ -274,20 +291,110 @@ def scope_record(root, card, worktree, branch, tier, lineage):
     }
 
 
-def write_scope(main, card_id, record):
-    directory = Path(main) / 'reports/agents/evidence' / card_id
+def evidence_dir(main, card_id):
+    return Path(main) / 'reports/agents/evidence' / card_id
+
+
+def write_evidence(main, card_id, name, text):
+    directory = evidence_dir(main, card_id)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / 'scope.json'
-    descriptor, name = tempfile.mkstemp(prefix='scope.json.', suffix='.tmp', dir=directory)
-    temporary = Path(name)
+    path = directory / name
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f'.{name}.', suffix='.tmp', dir=directory)
+    temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
-            handle.write(json.dumps(record, indent=2) + '\n')
+            handle.write(text)
         os.replace(temporary, path)
     except OSError:
         temporary.unlink(missing_ok=True)
         raise
     return path
+
+
+def write_scope(main, card_id, record):
+    return write_evidence(main, card_id, 'scope.json', json.dumps(record, indent=2) + '\n')
+
+
+def read_scope(main, card_id):
+    path = evidence_dir(main, card_id) / 'scope.json'
+    if not path.exists():
+        raise DispatchError(f'no scope.json for {card_id}; run card first')
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+    except ValueError:
+        raise DispatchError(f'bad scope.json for {card_id}') from None
+    repos = record.get('repos') if isinstance(record, dict) else None
+    if (not isinstance(repos, list) or not repos
+            or any(not isinstance(entry, dict)
+                   or any(not isinstance(entry.get(key), str) for key in ('name', 'path', 'base'))
+                   for entry in repos)):
+        raise DispatchError(f'bad scope.json for {card_id}')
+    return record
+
+
+def work_state(path):
+    done = subprocess.run([str(ACCEPT), 'state', str(path)], capture_output=True, text=True)
+    if done.returncode or not done.stdout.strip():
+        raise DispatchError(f'kstack-accept state failed for {path}: {done.stderr.strip()}')
+    return done.stdout.strip()
+
+
+def runtime_rev():
+    cli = os.environ.get('DSH_CLI') or shutil.which('dsh')
+    if not cli:
+        return 'unknown'
+    directory = Path(cli).resolve().parent
+    while not (directory / '.git').exists():
+        if directory.parent == directory:
+            return 'unknown'
+        directory = directory.parent
+    head = git('rev-parse', 'HEAD', cwd=directory, allow_failure=True)
+    status = git('status', '--porcelain', cwd=directory, allow_failure=True)
+    if head.returncode or status.returncode:
+        return 'unknown'
+    return head.stdout.strip() + ('-dirty' if status.stdout.strip() else '')
+
+
+def worker_command(worker, workdir, route, read_only):
+    return [str(worker), *(['--read-only'] if read_only else []), str(workdir), *route]
+
+
+def gate_step(main, root, card_id, worktree, branch):
+    scope = read_scope(main, card_id)
+    moved = False
+    for entry in scope['repos']:
+        new = git('merge-base', f'card/{card_id}', branch, cwd=entry['path']).stdout.strip()
+        if new != entry['base']:
+            print(f'base {entry["name"]} {entry["base"]} -> {new}')
+            entry['base'] = new
+            moved = True
+    if moved:
+        try:
+            write_scope(main, card_id, scope)
+        except OSError as error:
+            raise DispatchError(f'cannot write scope.json: {error}') from None
+    states = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
+    for entry in scope.get('gate_repos') or []:
+        states[entry['name']] = work_state(entry['path'])
+    started = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    done = subprocess.run(GATE, shell=True, cwd=worktree, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, errors='replace')
+    ended = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    write_evidence(main, card_id, 'gate.log', done.stdout)
+    path = write_evidence(main, card_id, 'gate.json', json.dumps({
+        'schema': GATE_SCHEMA,
+        'command': GATE,
+        'cwd': str(worktree),
+        'exit': done.returncode,
+        'started_utc': started,
+        'ended_utc': ended,
+        'log': 'gate.log',
+        'states': states,
+    }, indent=2) + '\n')
+    print(f'gate exit {done.returncode}')
+    print(f'gate.json {path}')
+    tail = '\n'.join(done.stdout.splitlines()[-40:])
+    return done.returncode, tail or '(no output)'
 
 
 def main_checkout(root):
@@ -465,13 +572,13 @@ def _harness_failure(log, answer, changed):
     return False
 
 
-def run_worker(agents, name, workdir, route, brief, read_only, worker=WORKER, changed=None):
+def run_worker(agents, name, workdir, route, brief, read_only, worker=WORKER, changed=None, env=None):
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     answer, log, stdout, stderr = _open_outputs(agents, stamp, name)
-    command = [str(worker), *(['--read-only'] if read_only else []), str(workdir), *route]
+    command = worker_command(worker, workdir, route, read_only)
     with stdout, stderr:
         code = subprocess.run(command, input=brief, text=True,
-                              stdout=stdout, stderr=stderr).returncode
+                              stdout=stdout, stderr=stderr, env=env).returncode
     print(f'answer {answer}')
     print(f'log {log}')
     print(f'exit {code}')
@@ -587,14 +694,147 @@ def _review(args, root, worker):
     worktree = _worktree(main, card.id)
     if not worktree.is_dir():
         raise DispatchError(f'no worktree {worktree}')
+    head = git('symbolic-ref', '--quiet', '--short', 'HEAD', cwd=worktree, allow_failure=True)
+    if head.returncode or head.stdout.strip() != f'card/{card.id}':
+        raise DispatchError(f'the worktree is not on card/{card.id}')
+    scope = read_scope(main, card.id)
+    directory = evidence_dir(main, card.id)
+    records = []
+    for path in directory.glob('review-*.json'):
+        match = re.fullmatch(r'review-([0-9]+)\.json', path.name)
+        if match:
+            records.append((int(match.group(1)), path))
+    history = []
+    for n, path in sorted(records):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except ValueError:
+            raise DispatchError(f'bad review record {path}') from None
+        kind = record.get('kind') if isinstance(record, dict) else None
+        if (not isinstance(record, dict) or type(record.get('seq')) is not int
+                or record['seq'] != n or kind not in REVIEW_KINDS
+                or (kind in ('round', 'fixcheck') and not isinstance(record.get('state'), dict))
+                or (kind == 'round' and not (type(record.get('round')) is int
+                                             and record['round'] >= 1))):
+            raise DispatchError(f'bad review record {path}')
+        if kind in ('round', 'fixcheck'):
+            history.append(record)
+    latest = history[-1] if history else None
+    numbers = [int(match.group(1)) for path in directory.iterdir()
+               if (match := re.match(r'^review-([0-9]+)\.', path.name))]
+    seq = max(numbers, default=0) + 1
+    if args.kind in ('fixcheck', 'supplement') and latest is None:
+        raise DispatchError(f'review --kind {args.kind} needs an earlier round or fixcheck')
+    if not (worktree / 'bin/gate.py').is_file():
+        print('gate skipped: no bin/gate.py')
+        gate_code, gate_tail = None, ''
+    else:
+        states = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
+        for entry in scope.get('gate_repos') or []:
+            states[entry['name']] = work_state(entry['path'])
+        gate_path = directory / 'gate.json'
+        log_path = directory / 'gate.log'
+        gate_code, gate_tail = None, ''
+        if gate_path.exists() and log_path.exists():
+            try:
+                gate_record = json.loads(gate_path.read_text(encoding='utf-8'))
+            except ValueError:
+                gate_record = None
+            if (isinstance(gate_record, dict) and type(gate_record.get('exit')) is int
+                    and gate_record.get('states') == states):
+                gate_code = gate_record['exit']
+                gate_tail = '\n'.join(
+                    log_path.read_text(encoding='utf-8', errors='replace').splitlines()[-40:])
+                gate_tail = gate_tail or '(no output)'
+                print(f'gate reused gate.json (exit {gate_code})')
+        if gate_code is None:
+            gate_code, gate_tail = gate_step(main, root, card.id, worktree, branch)
+        if gate_code != 0:
+            raise DispatchError(f'the gate exited {gate_code}; the review does not start')
     base = git('merge-base', 'HEAD', branch, cwd=worktree).stdout.strip()
     diff = git('diff', base, cwd=worktree).stdout
     untracked = [str(worktree / path) for path in _untracked(worktree)]
-    gate_code, gate_tail = run_gate(worktree)
-    code, _ = run_worker(main / 'reports/agents', f'review-{card.id}', worktree, REVIEW_ROUTE,
-                         review_brief(main, worktree, branch, card, diff, untracked,
-                                      gate_code, gate_tail), read_only=True, worker=worker)
+    brief = review_brief(main, worktree, branch, card, diff, untracked, gate_code, gate_tail)
+    state = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
+    rounds = [record for record in history if record['kind'] == 'round']
+    round_number = None
+    if args.kind == 'round':
+        latest_round = rounds[-1] if rounds else None
+        if latest_round is not None and latest_round['state'] == state:
+            round_number = latest_round['round']
+        else:
+            round_number = 1 + max((record['round'] for record in rounds), default=0)
+    covers = latest['seq'] if args.kind == 'supplement' else None
+    covers_from = latest['state'] if args.kind == 'fixcheck' else None
+    events = directory / f'review-{seq}.events.jsonl'
+    directory.mkdir(parents=True, exist_ok=True)
+    argv = worker_command(worker, worktree, REVIEW_ROUTE, True)
+    code, answer = run_worker(
+        main / 'reports/agents', f'review-{card.id}', worktree, REVIEW_ROUTE, brief,
+        read_only=True, worker=worker,
+        env={**os.environ, 'RUN_WORKER_EVENTS': str(events)})
+    log = answer.with_suffix('.log')
+    if any(line.startswith('run-worker.sh: RUN_WORKER_EVENTS ')
+           for line in log.read_text(encoding='utf-8', errors='replace').splitlines()):
+        print('no review record: the wrapper refused the events file')
+        return code
+    state_after = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
+    kind = args.kind
+    if code != 0 and kind != 'optional':
+        print(f'review-{seq}.json written as optional: the reviewer exited {code}')
+        kind = 'optional'
+    if kind == 'optional':
+        round_number, covers, covers_from = None, None, None
+    rev = runtime_rev()
+    if rev == 'unknown':
+        print('warning: runtime revision unknown')
+    path = write_evidence(main, card.id, f'review-{seq}.json', json.dumps({
+        'schema': REVIEW_SCHEMA,
+        'seq': seq,
+        'kind': kind,
+        'round': round_number,
+        'covers': covers,
+        'argv': argv,
+        'exit': code,
+        'answer': str(answer),
+        'events': str(events),
+        'stderr': str(log),
+        'runtime_rev': rev,
+        'host': socket.gethostname(),
+        'lineage': implementer_lineage(REVIEW_ROUTE),
+        'state': state,
+        'state_after': state_after,
+        'covers_from': covers_from,
+    }, indent=2) + '\n')
+    print(f'review-{seq}.json {path}')
+    fenced = False
+    found = 0
+    for line in answer.read_text(encoding='utf-8', errors='replace').splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if FINDING.match(line):
+            found += 1
+            print(f'finding {seq}.{found} {line}')
     return code
+
+
+def _gate(args, root):
+    branch = issue_branch(root)
+    main = main_checkout(root)
+    find_card(root, args.id)
+    worktree = _worktree(main, args.id)
+    if not worktree.is_dir():
+        raise DispatchError(f'no worktree {worktree}')
+    read_scope(main, args.id)
+    if not (worktree / 'bin/gate.py').is_file():
+        raise DispatchError(f'no bin/gate.py in {worktree}')
+    if _status_paths(worktree):
+        print('warning: the worktree has uncommitted changes; gate.json holds their state, '
+              'so commit exactly this tree')
+    return gate_step(main, root, args.id, worktree, branch)[0]
 
 
 def _land(args, root):
@@ -643,8 +883,11 @@ def main(argv=None, root=ROOT, worker=WORKER):
     card = verbs.add_parser('card', help='make the card worktree and run the implementer')
     card.add_argument('id')
     card.add_argument('--no-worker', action='store_true')
+    gate = verbs.add_parser('gate', help='refresh the base, run the full gate, and write gate.json')
+    gate.add_argument('id')
     review = verbs.add_parser('review', help='run the second reviewer on a worktree or a change')
     review.add_argument('id')
+    review.add_argument('--kind', choices=REVIEW_KINDS, default='round')
     review.add_argument('--main', nargs='+', metavar='PATH')
     land = verbs.add_parser('land', help='fast-forward the issue branch and remove the worktree')
     land.add_argument('id')
@@ -656,6 +899,8 @@ def main(argv=None, root=ROOT, worker=WORKER):
             return _ambiguity(args, root, worker)
         if args.verb == 'card':
             return _card(args, root, worker)
+        if args.verb == 'gate':
+            return _gate(args, root)
         if args.verb == 'review':
             return _review(args, root, worker)
         return _land(args, root)
