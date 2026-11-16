@@ -7,7 +7,7 @@ A user runs `dsh --profile headless` from a directory that is a workspace in the
 - `attach-cwd` attaches when `DSH_WORKSPACE_ID=cwd` and the run's cwd equals a workspace path.
 - `attach-id` attaches when `DSH_WORKSPACE_ID=<workspace id>` names an existing workspace.
 - `attach-none` does nothing when the variable is unset (the control).
-- `attach-reject` renames the hint to `<sessionId>.rejected.json` for an unknown workspace, or for a cwd that matches no workspace.
+- `attach-reject` renames the hint to `<sessionId>.rejected.json`, with reason `unknown-workspace` for an unknown workspace id and `no-workspace-for-cwd` for a cwd that matches no workspace.
 
 ## How to get to it (user POV)
 
@@ -28,8 +28,8 @@ Preconditions:
 - **Attach run (`attach-cwd`).** Run `dshv headless "$RUN" --cd "$DIR" --env DSH_WORKSPACE_ID=cwd "Say hello"`. Note its `sessionId`.
 - **Side effect.** Within 60 s, `dshv store "$RUN" workspace` lists that `sessionId` in the `attach-project` record and not the control's id, and the hint directory has no file for it (`4-workspace-store.json`).
 - **Visible result.** Run `dshv web "$RUN" open --reload`, then `dshv web "$RUN" snapshot --role tree --name Sessions`. `attach-project` has exactly one more session row than the baseline (`5-session-grouped.png`, `5-sidebar.aria.txt`), and `result.json` has `"verdict": "pass"`.
-- **By workspace id (`attach-id`).** Not yet run. Find the id with `dshv store "$RUN" workspace` (the key of the `attach-project` record), then run `dshv headless "$RUN" --cd "$DIR" --env DSH_WORKSPACE_ID=<id> "Say hello"`. The session joins `attach-project` as above.
-- **Rejected hint (`attach-reject`).** Not yet run. Run `dshv headless "$RUN" --env DSH_WORKSPACE_ID=no-such-id "Say hello"`. Within 30 s, `<sessionId>.rejected.json` exists in the hint directory with reason `unknown-workspace`.
+- **By workspace id (`attach-id`).** Find the id with `dshv store "$RUN" workspace` (the key of the `attach-project` record), then run `dshv headless "$RUN" --cd "$DIR" --env DSH_WORKSPACE_ID=<id> "Say hello"`. The session joins `attach-project` as above.
+- **Rejected hint (`attach-reject`).** Run `dshv headless "$RUN" --env DSH_WORKSPACE_ID=no-such-id "Say hello"`. Within 30 s, `<sessionId>.rejected.json` exists in the hint directory with reason `unknown-workspace`. For the cwd case, `mkdir -p "$(dshv state "$RUN" run)/home/not-a-workspace"` and run `dshv headless "$RUN" --cd <that directory> --env DSH_WORKSPACE_ID=cwd "Say hello"`; the rejected hint has reason `no-workspace-for-cwd`. Session ids, and so hint file names, start with `session-`.
 
 ## Gotchas
 
@@ -38,4 +38,4 @@ Preconditions:
 - The cwd must equal the workspace path exactly as stored, which is the `realpath`. A cwd reached through a symlink does not match.
 - Session rows are siblings of their workspace header in the `Sessions` tree, not children. Headers carry `aria-expanded`; rows do not. Clicking a header toggles it, so read `aria-expanded` before clicking.
 - A headless session against the mock is titled `Untitled` in the sidebar. Match rows by count or session id, not by title.
-- The headless profile always warns that `local-workspace-attach` is pending on `workspaceRegistry`. That is expected.
+- Under `dshv`, the headless profile warns that `local-workspace-attach` is pending on `workspaceRegistry`. That is expected. A user profile can silence it with `disabled: true` on that row in the headless profile (see the package README); `dshv up` does not apply that override.

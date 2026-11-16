@@ -57,7 +57,7 @@ Read-only. It reports the DSH version and checkout commit, then checks that each
 
 Both handles are real user paths.
 
-**Web UI.** `dshv web <run> <action>` drives one headless Chromium per run. The browser starts on first use and stays up, so each command continues on the page the previous one left. The UI is English (`--lang=en-US`), and the "Preview Notice" dialog is dismissed automatically. Targets are ARIA roles and accessible names (substring match unless `--exact`), optionally inside `--in "<role>=<name>"`:
+**Web UI.** `dshv web <run> <action>` drives one headless Chromium per run. The browser starts on first use (a first start in a fresh run can take up to 60 s) and stays up, so each command continues on the page the previous one left. The UI is English (`--lang=en-US`), and the "Preview Notice" dialog is dismissed automatically. Targets are ARIA roles and accessible names (substring match unless `--exact`), optionally inside `--in "<role>=<name>"`:
 
 ```sh
 $D web "$RUN" snapshot                                   # ARIA tree of the page: find roles and names here

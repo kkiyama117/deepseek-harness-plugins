@@ -1,7 +1,7 @@
 // One headless Chromium per run, kept alive between commands and reached over CDP,
 // so each `dshv web` command continues on the page the previous one left.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join } from 'node:path';
 import { DshvError } from './config.mjs';
@@ -14,14 +14,20 @@ async function startBrowser(state, settings) {
   const chromium = chromiumOf(state);
   const profile = join(state.run, 'browser');
   mkdirSync(profile, { recursive: true });
+  // A port file left by an earlier browser would point at a dead port.
+  const portFile = join(profile, 'DevToolsActivePort');
+  rmSync(portFile, { force: true });
   const child = spawn(chromium.executablePath(), [
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--lang=en-US', '--accept-lang=en-US',
     '--no-first-run', '--no-default-browser-check', '--window-size=1400,900', 'about:blank',
   ], { env: isolatedEnv(state, settings), detached: true, stdio: ['ignore', 'ignore', openSync(join(state.run, 'browser.err'), 'a')] });
   child.unref();
-  const portFile = join(profile, 'DevToolsActivePort');
-  for (let i = 0; i < 100 && !existsSync(portFile); i++) await sleep(100);
-  if (!existsSync(portFile)) throw new DshvError('the browser did not start', `read ${join(state.run, 'browser.err')}`);
+  // A first start in a fresh HOME can take about 30 s.
+  for (let i = 0; i < 600 && !existsSync(portFile); i++) await sleep(100);
+  if (!existsSync(portFile)) {
+    try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+    throw new DshvError('the browser did not start within 60 s', `read ${join(state.run, 'browser.err')}`);
+  }
   state.browser = { pid: child.pid, port: Number(readFileSync(portFile, 'utf8').split('\n')[0]) };
   saveState(state);
 }

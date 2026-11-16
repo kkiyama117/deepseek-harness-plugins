@@ -22,9 +22,9 @@ Preconditions:
 - None beyond a package directory under `plugins/` or an archive under `releases/`. `dshv up` performs the install.
 
 - **Install.** Run `dshv up plugins/<pkg>` (or `releases/<pkg>.tgz`). Exit code 0; the JSON has `"run"` and `"doctor": {"ok": true}`.
-- **Composed tree.** Run `dshv exec "$RUN" -- dsh --profile web --dump-config`. The output has a `# == <package name>` section listing the bundle's row ids.
+- **Composed tree.** Run `dshv exec "$RUN" -- dsh --profile web --dump-config`. The output has a `# == <package name>` section listing the bundle's row ids. A section whose rows a later layer patched is headed `# == <package name>, patched by <layer>` instead.
 - **Active in the host.** Run `dshv doctor "$RUN"`. `checks` has an `<entryId> is active` entry with `"ok": true` for every row of the package.
-- **Headless pending.** Run `dshv headless "$RUN" "Say hello"`. `text` is `mock response recovered`, and `warnings` lists any web-only row as `pending (waiting for service: …)`.
+- **Headless pending.** Run `dshv headless "$RUN" "Say hello"`. `text` is `mock response recovered`, and `warnings` starts with `dsh: warning: N entry did not activate` (`entries` for more than one), followed by one `<row id> (<package name>): pending (waiting for service: …)` line per web-only row (`services:` when several are missing).
 
 ## Gotchas
 
