@@ -1,0 +1,3 @@
+- insert:
+    - id: sandbox-facts
+      name: '@kkiyama117/dsh-sandbox-facts'

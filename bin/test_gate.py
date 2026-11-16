@@ -332,6 +332,7 @@ class RepositoryChecksTest(unittest.TestCase):
             'plugins/dsh-codex-transport-recovery',
             'plugins/dsh-open-in-app-icons',
             'plugins/dsh-prompt-compact',
+            'plugins/dsh-sandbox-facts',
             'plugins/dsh-session-cleanup',
             'plugins/dsh-slack-intake',
             'plugins/dsh-web-search-exa-compat',

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Sandbox facts",
+    "description": "headless --json の実行で、bash の各呼び出しの sandbox の事実を tool_facts の 1 行として stdout に出力します。"
+  }
+}
