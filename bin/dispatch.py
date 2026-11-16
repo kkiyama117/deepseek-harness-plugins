@@ -5,7 +5,7 @@ Run from the issue worktree:
     python3 bin/dispatch.py ambiguity [ID ...]
     python3 bin/dispatch.py card ID [--no-worker]
     python3 bin/dispatch.py gate ID
-    python3 bin/dispatch.py review ID [--kind KIND] [--main PATH ...]
+    python3 bin/dispatch.py review ID [--kind KIND [--reason TEXT]] [--main PATH ...]
     python3 bin/dispatch.py land ID
 
 Cards are `tasks/<ID>.md`. `ambiguity` with IDs reviews those cards whatever
@@ -39,6 +39,18 @@ gate stops the review. `review --kind round|fixcheck|supplement|optional`
 writes review-<seq>.json for kstack-accept; a reviewer that exits nonzero is
 recorded as optional. `gate`, and `review` without `--main`, refuse a card
 without scope.json.
+
+`land` reads KSTACK_ACCEPT: `off` (the default) lands as before; `shadow`
+runs `kstack-accept check` first, keeps accept-<UTC>.json beside the
+evidence, appends one row to reports/agents/accept-shadow.tsv, and lands
+whatever the verdict; `enforce` does the same but exits 7 without landing
+when the check does not accept or card/<ID> moved after it.
+
+`review` derives the run kind from the earlier review records and
+findings.tsv (kstack acceptance section 5), refuses until every finding of
+an earlier run that is not optional has a findings.tsv row, and refuses a worktree whose state is
+not committed. A fix check's brief adds the change since the covered run, a
+range-diff when the base moved, and the covered findings.
 """
 import argparse
 from dataclasses import dataclass
@@ -68,6 +80,9 @@ ACCEPT = KSTACK / 'bin/kstack-accept'
 REVIEW_KINDS = ('round', 'fixcheck', 'supplement', 'optional')
 GATE_SCHEMA = 'kstack-accept/gate/1'
 REVIEW_SCHEMA = 'kstack-accept/review/1'
+ACCEPT_MODES = ('off', 'shadow', 'enforce')
+REFUSED_EXIT = 7
+SHADOW_HEADER = 'utc\tcard\ttier\tverdict\texit\treasons\tcommits\told_land\taccept_json'
 HEADING = re.compile(r'^## (T[0-9]+)\. (.+)$')
 CARD_ID = re.compile(r'^T[0-9]+$')
 FINDING = re.compile(r'^(?P<loc>[^|]+?)\s*\|\s*(?P<sev>high|medium|low)\s*\|', re.IGNORECASE)
@@ -134,7 +149,7 @@ Diff of the card worktree since it left {branch} (`git diff $(git merge-base HEA
 
 Untracked files (read each one):
 {untracked_lines}
-
+{fixcheck_block}
 Report every defect: a rule of the card, `tasks/README.md`, or `AGENTS.md` that the diff breaks; a named test that is missing or does not assert what the card says; a bug; a changed file that is not on the card's `Files:` line.
 
 Output only this, as plain text:
@@ -339,6 +354,71 @@ def work_state(path):
     return done.stdout.strip()
 
 
+def refresh_base(main, card_id, branch, scope):
+    moved = False
+    for entry in scope['repos']:
+        new = git('merge-base', f'card/{card_id}', branch, cwd=entry['path']).stdout.strip()
+        if new != entry['base']:
+            print(f'base {entry["name"]} {entry["base"]} -> {new}')
+            entry['base'] = new
+            moved = True
+    if moved:
+        try:
+            write_scope(main, card_id, scope)
+        except OSError as error:
+            raise DispatchError(f'cannot write scope.json: {error}') from None
+
+
+def current_states(scope):
+    states = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
+    for entry in scope.get('gate_repos') or []:
+        states[entry['name']] = work_state(entry['path'])
+    return states
+
+
+def repo_states(scope):
+    return {entry['name']: work_state(entry['path']) for entry in scope['repos']}
+
+
+def parse_answer(path):
+    findings = []
+    total = False
+    stopped = False
+    fenced = False
+    text = Path(path).read_text(encoding='utf-8', errors='replace')
+    for line in text.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if FINDING.match(line):
+            findings.append(line)
+        elif re.match(r'^TOTAL\s+\d+\s*$', line):
+            total = True
+        elif re.match(r'^STOPPED\b', line):
+            stopped = True
+    return findings, total and not stopped
+
+
+def read_findings(directory):
+    path = Path(directory) / 'findings.tsv'
+    if not path.exists():
+        return None
+    lines = path.read_text(encoding='utf-8').splitlines()
+    rows = {}
+    for line in lines[1:]:
+        if not line:
+            continue
+        fields = line.split('\t')
+        if len(fields) != 3:
+            rows[fields[0].strip()] = ('', '')
+            continue
+        key, disposition, detail = (field.strip() for field in fields)
+        rows[key] = (disposition, detail)
+    return rows
+
+
 def runtime_rev():
     cli = os.environ.get('DSH_CLI') or shutil.which('dsh')
     if not cli:
@@ -361,21 +441,8 @@ def worker_command(worker, workdir, route, read_only):
 
 def gate_step(main, root, card_id, worktree, branch):
     scope = read_scope(main, card_id)
-    moved = False
-    for entry in scope['repos']:
-        new = git('merge-base', f'card/{card_id}', branch, cwd=entry['path']).stdout.strip()
-        if new != entry['base']:
-            print(f'base {entry["name"]} {entry["base"]} -> {new}')
-            entry['base'] = new
-            moved = True
-    if moved:
-        try:
-            write_scope(main, card_id, scope)
-        except OSError as error:
-            raise DispatchError(f'cannot write scope.json: {error}') from None
-    states = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
-    for entry in scope.get('gate_repos') or []:
-        states[entry['name']] = work_state(entry['path'])
+    refresh_base(main, card_id, branch, scope)
+    states = current_states(scope)
     started = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     done = subprocess.run(GATE, shell=True, cwd=worktree, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, errors='replace')
@@ -498,11 +565,12 @@ def _untracked_lines(untracked):
     return '\n'.join(f'- {path}' for path in untracked) if untracked else 'none'
 
 
-def review_brief(main, wt, branch, card, diff, untracked, gate_code, gate_tail):
+def review_brief(main, wt, branch, card, diff, untracked, gate_code, gate_tail,
+                 fixcheck_block=''):
     return REVIEW_BRIEF.format(
         opening=_opening(), never=_never(main, wt), wt=wt, id=card.id, branch=branch,
         card_text=card.text, diff=diff, untracked_lines=_untracked_lines(untracked),
-        gate_block=_gate_block(gate_code, gate_tail))
+        gate_block=_gate_block(gate_code, gate_tail), fixcheck_block=fixcheck_block)
 
 
 def main_review_brief(main, root, card, diff, untracked, gate_code, gate_tail):
@@ -698,12 +766,14 @@ def _review(args, root, worker):
     if head.returncode or head.stdout.strip() != f'card/{card.id}':
         raise DispatchError(f'the worktree is not on card/{card.id}')
     scope = read_scope(main, card.id)
+    refresh_base(main, card.id, branch, scope)
     directory = evidence_dir(main, card.id)
     records = []
     for path in directory.glob('review-*.json'):
         match = re.fullmatch(r'review-([0-9]+)\.json', path.name)
         if match:
             records.append((int(match.group(1)), path))
+    all_records = []
     history = []
     for n, path in sorted(records):
         try:
@@ -717,6 +787,7 @@ def _review(args, root, worker):
                 or (kind == 'round' and not (type(record.get('round')) is int
                                              and record['round'] >= 1))):
             raise DispatchError(f'bad review record {path}')
+        all_records.append((path, record))
         if kind in ('round', 'fixcheck'):
             history.append(record)
     latest = history[-1] if history else None
@@ -725,13 +796,28 @@ def _review(args, root, worker):
     seq = max(numbers, default=0) + 1
     if args.kind in ('fixcheck', 'supplement') and latest is None:
         raise DispatchError(f'review --kind {args.kind} needs an earlier round or fixcheck')
+    rows = read_findings(directory)
+    for path, record in all_records:
+        if record['kind'] == 'optional':
+            continue
+        try:
+            findings, _ = parse_answer(record['answer'])
+        except OSError:
+            raise DispatchError(f'bad review record {path}: cannot read {record["answer"]}') from None
+        for index in range(1, len(findings) + 1):
+            finding_id = f'{record["seq"]}.{index}'
+            if rows is None or finding_id not in rows:
+                raise DispatchError(f'dispose the findings of run {record["seq"]} first: '
+                                    f'findings.tsv has no row {finding_id}')
+            disposition, detail = rows[finding_id]
+            if disposition not in ('fixed', 'wrong', 'open') or not detail:
+                raise DispatchError(f'dispose the findings of run {record["seq"]} first: '
+                                    f'row {finding_id} needs fixed, wrong or open and a detail')
     if not (worktree / 'bin/gate.py').is_file():
         print('gate skipped: no bin/gate.py')
         gate_code, gate_tail = None, ''
     else:
-        states = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
-        for entry in scope.get('gate_repos') or []:
-            states[entry['name']] = work_state(entry['path'])
+        states = current_states(scope)
         gate_path = directory / 'gate.json'
         log_path = directory / 'gate.log'
         gate_code, gate_tail = None, ''
@@ -751,21 +837,119 @@ def _review(args, root, worker):
             gate_code, gate_tail = gate_step(main, root, card.id, worktree, branch)
         if gate_code != 0:
             raise DispatchError(f'the gate exited {gate_code}; the review does not start')
-    base = git('merge-base', 'HEAD', branch, cwd=worktree).stdout.strip()
-    diff = git('diff', base, cwd=worktree).stdout
-    untracked = [str(worktree / path) for path in _untracked(worktree)]
-    brief = review_brief(main, worktree, branch, card, diff, untracked, gate_code, gate_tail)
-    state = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
+    state = repo_states(scope)
+    for entry in scope['repos']:
+        tree = git('rev-parse', 'HEAD^{tree}', cwd=entry['path']).stdout.strip()
+        if state[entry['name']] != tree:
+            raise DispatchError(f'commit the worktree first: {entry["name"]} has changes '
+                                'that HEAD does not hold')
+    heads = {entry['name']: git('rev-parse', 'HEAD', cwd=entry['path']).stdout.strip()
+             for entry in scope['repos']}
+    bases = {entry['name']: entry['base'] for entry in scope['repos']}
+    lineage = implementer_lineage(REVIEW_ROUTE)
     rounds = [record for record in history if record['kind'] == 'round']
+    latest_round = rounds[-1] if rounds else None
+    derived = 'fixcheck'
+    if latest_round is None:
+        derived = 'round'
+    elif latest_round['state'] == state and not any(
+            record['lineage'] == lineage and record['round'] == latest_round['round']
+            for record in rounds):
+        derived = 'round'
+    else:
+        first_round = next((record for record in rounds if record['round'] == 1), None)
+        if first_round is not None and not any(record['round'] == 2 for record in rounds):
+            candidates = [record for record in history
+                          if (record['kind'] == 'round' and record['round'] == 1)
+                          or (record['kind'] == 'fixcheck'
+                              and record['seq'] > first_round['seq'])]
+            for record in candidates:
+                if record['state'] == state or rows is None:
+                    continue
+                findings, _ = parse_answer(record['answer'])
+                fixed_high = False
+                for index, line in enumerate(findings, 1):
+                    match = FINDING.match(line)
+                    disposition = rows.get(f'{record["seq"]}.{index}', ('', ''))[0]
+                    if (match and match.group('sev').lower() == 'high'
+                            and disposition == 'fixed'):
+                        fixed_high = True
+                        break
+                if fixed_high:
+                    derived = 'round'
+                    break
+    if args.kind is None:
+        kind = derived
+        print(f'kind {derived} (derived)')
+    elif args.kind in ('supplement', 'optional') or args.kind == derived:
+        kind = args.kind
+        if args.kind == derived:
+            print(f'kind {derived} (derived)')
+    else:
+        if not args.reason:
+            raise DispatchError(f'--kind {args.kind} differs from the derived kind {derived}; '
+                                'pass --reason to override')
+        print(f'kind {args.kind} instead of derived {derived}: {args.reason}')
+        kind = args.kind
     round_number = None
-    if args.kind == 'round':
-        latest_round = rounds[-1] if rounds else None
+    if kind == 'round':
         if latest_round is not None and latest_round['state'] == state:
             round_number = latest_round['round']
         else:
             round_number = 1 + max((record['round'] for record in rounds), default=0)
-    covers = latest['seq'] if args.kind == 'supplement' else None
-    covers_from = latest['state'] if args.kind == 'fixcheck' else None
+    covers = latest['seq'] if kind == 'supplement' else None
+    covers_from = latest['state'] if kind == 'fixcheck' else None
+    base = git('merge-base', 'HEAD', branch, cwd=worktree).stdout.strip()
+    diff = git('diff', base, cwd=worktree).stdout
+    untracked = [str(worktree / path) for path in _untracked(worktree)]
+    fixcheck_block = ''
+    if kind == 'fixcheck':
+        covered = latest
+        covered_heads = covered.get('heads')
+        covered_bases = covered.get('bases')
+        if not isinstance(covered_heads, dict) or LAND_REPO not in covered_heads:
+            print(f'warning: run {covered["seq"]} has no heads; '
+                  'the fix check shows the full diff')
+        else:
+            old_base = (covered_bases.get(LAND_REPO)
+                        if isinstance(covered_bases, dict) else None)
+            covered_head = covered_heads[LAND_REPO]
+            if old_base is None or old_base == bases[LAND_REPO]:
+                delta = git('diff', covered_head, 'HEAD', cwd=worktree).stdout
+                body = (f'This run is a fix check of run {covered["seq"]}. '
+                        f'Change since that run (`git diff {covered_head} HEAD`):\n\n'
+                        f'```diff\n{delta}```')
+            else:
+                delta = git('range-diff', f'{old_base}..{covered_head}',
+                            f'{bases[LAND_REPO]}..HEAD', cwd=worktree).stdout
+                body = (f'This run is a fix check of run {covered["seq"]}. The base moved since '
+                        'that run, so here is how the card\'s own diff changed '
+                        f'(`git range-diff {old_base}..{covered_head} '
+                        f'{bases[LAND_REPO]}..HEAD`):\n\n'
+                        f'```text\n{delta}```')
+            sources = [covered]
+            if covered['kind'] == 'round':
+                for record in reversed(history[:-1]):
+                    if (record['kind'] == 'fixcheck'
+                            or record['round'] != covered['round']
+                            or record['state'] != covered['state']):
+                        break
+                    sources.append(record)
+                sources.reverse()
+            lines = []
+            for record in sources:
+                findings, _ = parse_answer(record['answer'])
+                for index, line in enumerate(findings, 1):
+                    finding_id = f'{record["seq"]}.{index}'
+                    disposition, detail = (rows or {}).get(finding_id, ('', ''))
+                    lines.append(f'- {finding_id} | {disposition} | {detail} | {line}')
+            listed = '\n'.join(lines) if lines else '- none'
+            fixcheck_block = ('\n' + body + '\n\nFindings of the covered run, as the lead disposed '
+                              'them (id | disposition | detail | finding):\n' + listed +
+                              '\n\nCheck that each finding disposed `fixed` is fixed by the '
+                              'change, and report any defect the change adds.\n')
+    brief = review_brief(main, worktree, branch, card, diff, untracked, gate_code, gate_tail,
+                         fixcheck_block=fixcheck_block)
     events = directory / f'review-{seq}.events.jsonl'
     directory.mkdir(parents=True, exist_ok=True)
     argv = worker_command(worker, worktree, REVIEW_ROUTE, True)
@@ -778,11 +962,20 @@ def _review(args, root, worker):
            for line in log.read_text(encoding='utf-8', errors='replace').splitlines()):
         print('no review record: the wrapper refused the events file')
         return code
-    state_after = {entry['name']: work_state(entry['path']) for entry in scope['repos']}
-    kind = args.kind
+    state_after = repo_states(scope)
     if code != 0 and kind != 'optional':
         print(f'review-{seq}.json written as optional: the reviewer exited {code}')
         kind = 'optional'
+    if code == 0 and kind in ('round', 'fixcheck'):
+        findings, complete = parse_answer(answer)
+        if not complete:
+            if findings:
+                print(f'review-{seq}.json keeps kind {kind}: the answer is incomplete but has '
+                      f'{len(findings)} finding lines')
+            else:
+                print(f'review-{seq}.json written as optional: the answer is incomplete and '
+                      'has no finding')
+                kind = 'optional'
     if kind == 'optional':
         round_number, covers, covers_from = None, None, None
     rev = runtime_rev()
@@ -805,19 +998,13 @@ def _review(args, root, worker):
         'state': state,
         'state_after': state_after,
         'covers_from': covers_from,
+        'heads': heads,
+        'bases': bases,
     }, indent=2) + '\n')
     print(f'review-{seq}.json {path}')
-    fenced = False
-    found = 0
-    for line in answer.read_text(encoding='utf-8', errors='replace').splitlines():
-        if FENCE.match(line):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
-        if FINDING.match(line):
-            found += 1
-            print(f'finding {seq}.{found} {line}')
+    findings, _ = parse_answer(answer)
+    for index, line in enumerate(findings, 1):
+        print(f'finding {seq}.{index} {line}')
     return code
 
 
@@ -837,29 +1024,208 @@ def _gate(args, root):
     return gate_step(main, root, args.id, worktree, branch)[0]
 
 
+def utc_stamp():
+    return datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+
+
+def _shadow_path(agents):
+    return Path(agents) / 'accept-shadow.tsv'
+
+
+def _scope_tier(evidence):
+    try:
+        record = json.loads((Path(evidence) / 'scope.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return ''
+    tier = record.get('tier') if isinstance(record, dict) else None
+    return tier if isinstance(tier, str) else ''
+
+
+def _copy_accept(evidence, utc):
+    evidence = Path(evidence)
+    target = evidence / f'accept-{utc}.json'
+    index = 2
+    while target.exists():
+        target = evidence / f'accept-{utc}-{index}.json'
+        index += 1
+    shutil.copyfile(evidence / 'accept.json', target)
+    return target
+
+
+def _accept_record(agents, evidence, card_id):
+    record = {
+        'utc': utc_stamp(),
+        'card': card_id,
+        'tier': _scope_tier(evidence),
+        'verdict': 'error',
+        'exit': '',
+        'reasons': '',
+        'commits': '',
+        'copy': None,
+        'step_error': None,
+    }
+    try:
+        done = subprocess.run([str(ACCEPT), 'check', str(agents), card_id],
+                              capture_output=True, text=True)
+        sys.stdout.write(done.stdout)
+        sys.stderr.write(done.stderr)
+        if done.returncode < 0:
+            raise ChildProcessError(f'kstack-accept check killed by signal {-done.returncode}')
+        record['exit'] = done.returncode
+        record['verdict'] = {0: 'accept', 1: 'refuse'}.get(done.returncode, 'error')
+        if done.returncode in (0, 1):
+            copy = _copy_accept(evidence, record['utc'])
+            copied = json.loads(copy.read_text(encoding='utf-8'))
+            record['commits'] = ';'.join(f'{name}={commit}' for name, commit
+                                         in copied['commits'].items())
+            record['copy'] = copy
+            lines = [line for line in done.stdout.splitlines() if line.strip()]
+            record['reasons'] = ';'.join(line.split()[0] for line in lines[:-1])
+    except Exception as error:
+        record.update(verdict='error', exit='', reasons=f'exception:{type(error).__name__}',
+                      commits='', copy=None, step_error=error)
+        print(f'warning: kstack-accept step failed: {type(error).__name__}: {error}',
+              file=sys.stderr)
+    return record
+
+
+def _shadow_line(record, old_land):
+    copy = record['copy']
+    return '\t'.join([record['utc'], record['card'], record['tier'], record['verdict'],
+                      str(record['exit']), record['reasons'], record['commits'], old_land,
+                      str(copy) if copy is not None else '']) + '\n'
+
+
+def _error_record(record, error):
+    return {**record, 'verdict': 'error', 'exit': '',
+            'reasons': f'exception:{type(error).__name__}', 'commits': '', 'copy': None}
+
+
+def _append_row(agents, line):
+    path = _shadow_path(agents)
+    with path.open('a', encoding='utf-8') as handle:
+        if path.stat().st_size == 0:
+            handle.write(SHADOW_HEADER + '\n')
+        handle.write(line)
+
+
+def _shadow_warning(agents, error, record, old_land):
+    print(f'warning: kstack-accept shadow row not written: {error}', file=sys.stderr)
+    try:
+        _append_row(agents, _shadow_line(_error_record(record, error), old_land))
+    except OSError as second:
+        print(f'warning: kstack-accept shadow row not written: {second}', file=sys.stderr)
+
+
+def _append_shadow(agents, record, old_land):
+    try:
+        _append_row(agents, _shadow_line(record, old_land))
+    except OSError as error:
+        _shadow_warning(agents, error, record, old_land)
+
+
+def _finish_shadow(handle, agents, record, old_land):
+    if handle is None:
+        _append_shadow(agents, record, old_land)
+        return
+    try:
+        with handle:
+            handle.write(_shadow_line(record, old_land))
+    except OSError as error:
+        _shadow_warning(agents, error, record, old_land)
+
+
+def _shadow_stop(error):
+    print(f'warning: kstack-accept shadow row not written: {error}', file=sys.stderr)
+    raise DispatchError(f'kstack-accept shadow row not written: {error}') from None
+
+
+def _open_shadow(agents):
+    path = _shadow_path(agents)
+    try:
+        handle = path.open('a', encoding='utf-8')
+    except OSError as error:
+        _shadow_stop(error)
+    try:
+        if path.stat().st_size == 0:
+            handle.write(SHADOW_HEADER + '\n')
+    except OSError as error:
+        try:
+            handle.close()
+        except OSError:
+            pass
+        _shadow_stop(error)
+    return handle
+
+
+def _recorded_commit(copy):
+    try:
+        record = json.loads(Path(copy).read_text(encoding='utf-8'))
+        return record['commits'][LAND_REPO]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _land(args, root):
-    branch = issue_branch(root)
+    mode = os.environ.get('KSTACK_ACCEPT') or 'off'
+    if mode not in ACCEPT_MODES:
+        raise DispatchError(f'KSTACK_ACCEPT must be off, shadow or enforce, not {mode}')
     main = main_checkout(root)
+    agents = main / 'reports/agents'
+    evidence = evidence_dir(main, args.id)
+    shadow = None if mode == 'off' else _accept_record(agents, evidence, args.id)
     card_branch = f'card/{args.id}'
     worktree = _worktree(main, args.id)
-    if not worktree.is_dir():
-        raise DispatchError(f'no worktree {worktree}')
-    head = git('symbolic-ref', '--quiet', '--short', 'HEAD', cwd=worktree, allow_failure=True)
-    if head.returncode or head.stdout.strip() != card_branch:
-        raise DispatchError(f'the worktree is not on {card_branch}')
-    if _status_paths(worktree):
-        raise DispatchError('the worktree has uncommitted changes')
-    commits = git('rev-list', '--count', f'{branch}..{card_branch}', cwd=root).stdout.strip()
-    if commits == '0':
-        raise DispatchError(f'{card_branch} has no commits to land')
-    ancestor = git('merge-base', '--is-ancestor', branch, card_branch, cwd=root, allow_failure=True)
-    if ancestor.returncode:
-        raise DispatchError(f'{branch} has moved since the dispatch. Rebase {card_branch} onto '
-                            f'{branch} in {worktree}, run the full gate again, then land again.')
+    try:
+        branch = issue_branch(root)
+        if not worktree.is_dir():
+            raise DispatchError(f'no worktree {worktree}')
+        head = git('symbolic-ref', '--quiet', '--short', 'HEAD', cwd=worktree, allow_failure=True)
+        if head.returncode or head.stdout.strip() != card_branch:
+            raise DispatchError(f'the worktree is not on {card_branch}')
+        if _status_paths(worktree):
+            raise DispatchError('the worktree has uncommitted changes')
+        commits = git('rev-list', '--count', f'{branch}..{card_branch}', cwd=root).stdout.strip()
+        if commits == '0':
+            raise DispatchError(f'{card_branch} has no commits to land')
+        ancestor = git('merge-base', '--is-ancestor', branch, card_branch, cwd=root,
+                       allow_failure=True)
+        if ancestor.returncode:
+            raise DispatchError(f'{branch} has moved since the dispatch. Rebase {card_branch} onto '
+                                f'{branch} in {worktree}, run the full gate again, then land again.')
+    except DispatchError:
+        if shadow is not None:
+            _append_shadow(agents, shadow, 'refused')
+        raise
+    shadow_handle = None
+    if mode == 'enforce':
+        step_error = shadow['step_error']
+        if step_error is not None:
+            _append_shadow(agents, shadow, 'refused')
+            raise DispatchError(f'kstack-accept step failed: {type(step_error).__name__}: '
+                                f'{step_error}')
+        if shadow['verdict'] != 'accept':
+            _append_shadow(agents, shadow, 'refused')
+            print('land refused by kstack-accept (KSTACK_ACCEPT=enforce)', file=sys.stderr)
+            return REFUSED_EXIT
+        try:
+            current = git('rev-parse', card_branch, cwd=root).stdout.strip()
+        except DispatchError:
+            _append_shadow(agents, shadow, 'refused')
+            raise
+        if _recorded_commit(shadow['copy']) != current:
+            _append_shadow(agents, shadow, 'refused')
+            print(f'{card_branch} moved after kstack-accept check; land refused', file=sys.stderr)
+            return REFUSED_EXIT
+        shadow_handle = _open_shadow(agents)
     merged = git('merge', '--ff-only', '--no-overwrite-ignore', card_branch, cwd=root,
                  allow_failure=True)
     if merged.returncode:
+        if shadow is not None:
+            _finish_shadow(shadow_handle, agents, shadow, 'failed')
         raise DispatchError(f'the fast-forward failed: {merged.stderr.strip()}')
+    if shadow is not None:
+        _finish_shadow(shadow_handle, agents, shadow, 'landed')
     for command in (('worktree', 'remove', '--force', worktree), ('branch', '-d', card_branch)):
         done = git(*command, cwd=root, allow_failure=True)
         if done.returncode:
@@ -887,7 +1253,8 @@ def main(argv=None, root=ROOT, worker=WORKER):
     gate.add_argument('id')
     review = verbs.add_parser('review', help='run the second reviewer on a worktree or a change')
     review.add_argument('id')
-    review.add_argument('--kind', choices=REVIEW_KINDS, default='round')
+    review.add_argument('--kind', choices=REVIEW_KINDS, default=None)
+    review.add_argument('--reason', default=None)
     review.add_argument('--main', nargs='+', metavar='PATH')
     land = verbs.add_parser('land', help='fast-forward the issue branch and remove the worktree')
     land.add_argument('id')

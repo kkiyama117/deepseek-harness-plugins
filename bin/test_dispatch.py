@@ -73,13 +73,16 @@ def make_repo(base):
     return repo
 
 
-def fake_worker(directory, record, stdout_lines=('answer',), stderr_lines=('reasoning',),
-                code=0, touch=(), name='worker.sh'):
+def fake_worker(directory, record, stdout_lines=('answer', 'TOTAL 0'),
+                stderr_lines=('reasoning',), code=0, touch=(), name='worker.sh'):
     path = directory / name
     lines = ['#!/bin/sh',
              f'printf "%s\\n" "$@" >> {shlex.quote(str(record / "argv.txt"))}',
-             f'cat >> {shlex.quote(str(record / "stdin.txt"))}',
-             f'printf "run\\n" >> {shlex.quote(str(record / "runs.txt"))}']
+             f'printf "run\\n" >> {shlex.quote(str(record / "runs.txt"))}',
+             f'n=$(wc -l < {shlex.quote(str(record / "runs.txt"))} | tr -d " ")',
+             f'cat > {shlex.quote(str(record))}/stdin-$n.txt',
+             f'cat {shlex.quote(str(record))}/stdin-$n.txt '
+             f'>> {shlex.quote(str(record / "stdin.txt"))}']
     for line in stderr_lines:
         lines.append(f'printf "%s\\n" {shlex.quote(line)} >&2')
     for line in stdout_lines:
@@ -96,7 +99,12 @@ def fake_worker(directory, record, stdout_lines=('answer',), stderr_lines=('reas
 def fake_accept(directory):
     path = directory / 'kstack-accept'
     path.write_text("#!/bin/sh\n"
-                    "printf 'state-%s\\n' \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"\n")
+                    "if [ -n \"$(git -C \"$2\" status --porcelain)\" ]; then\n"
+                    "  prefix=dirty-\n"
+                    "else\n"
+                    "  prefix=\n"
+                    "fi\n"
+                    "printf '%s%s\\n' \"$prefix\" \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"\n")
     path.chmod(0o755)
     return path
 
@@ -106,6 +114,7 @@ class DispatchTest(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, clean_git_env(), clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        os.environ.pop('KSTACK_ACCEPT', None)
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name).resolve()
         self.root = make_repo(self.base)
@@ -150,10 +159,65 @@ class DispatchTest(unittest.TestCase):
         commit(self.worktree, 'add the gate')
 
     def state(self):
-        return 'state-' + git('rev-parse', 'HEAD^{tree}', cwd=self.worktree).strip()
+        return git('rev-parse', 'HEAD^{tree}', cwd=self.worktree).strip()
+
+    def dispose(self, *rows):
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        lines = ['id\tdisposition\tdetail', *(f'{row[0]}\t{row[1]}\t{row[2]}' for row in rows)]
+        (self.evidence / 'findings.tsv').write_text('\n'.join(lines) + '\n')
+
+    def commit_change(self, name, text='x\n'):
+        (self.worktree / name).write_text(text)
+        commit(self.worktree, f'change {name}')
 
     def load(self, name):
         return json.loads((self.evidence / name).read_text())
+
+    def fake_check(self, exit, lines, commit=None, stderr='', killed=False):
+        path = self.base / 'kstack-accept-check'
+        script = ['#!/bin/sh',
+                  'if [ "$1" = "state" ]; then',
+                  "  if [ -n \"$(git -C \"$2\" status --porcelain)\" ]; then",
+                  '    prefix=dirty-',
+                  '  else',
+                  '    prefix=',
+                  '  fi',
+                  "  printf '%s%s\\n' \"$prefix\" \"$(git -C \"$2\" rev-parse 'HEAD^{tree}')\"",
+                  '  exit 0',
+                  'fi',
+                  f'printf "check\\n" >> {shlex.quote(str(self.record / "checks.txt"))}']
+        for line in lines:
+            script.append(f'printf "%s\\n" {shlex.quote(line)}')
+        if stderr:
+            script.append(f'printf "%s\\n" {shlex.quote(stderr)} >&2')
+        if commit is not None:
+            payload = json.dumps({'schema': 'kstack-accept/result/1',
+                                  'commits': {'deepseek-harness-plugins': commit}})
+            script.append('mkdir -p "$2/evidence/$3"')
+            script.append(f'printf "%s\\n" {shlex.quote(payload)} > "$2/evidence/$3/accept.json"')
+        script.append('kill -9 $$' if killed else f'exit {exit}')
+        path.write_text('\n'.join(script) + '\n')
+        path.chmod(0o755)
+        patcher = mock.patch.object(dispatch, 'ACCEPT', path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def rows(self):
+        path = self.root / 'reports/agents/accept-shadow.tsv'
+        if not path.exists():
+            return []
+        return [line.split('\t') for line in path.read_text().splitlines()]
+
+    def ready_card(self):
+        code, out, err = self.invoke('card', 'T1', '--no-worker')
+        self.assertEqual(code, 0)
+        (self.worktree / 'bin').mkdir(exist_ok=True)
+        (self.worktree / 'bin/a.py').write_text('x\n')
+        commit(self.worktree, 'implement T1')
+        return git('rev-parse', 'card/T1', cwd=self.root).strip()
+
+    def copies(self):
+        return sorted(path.name for path in self.evidence.glob('accept-*.json'))
 
     def commit_card(self, text):
         (self.root / 'tasks/T1.md').write_text(text)
@@ -557,6 +621,7 @@ class DispatchTest(unittest.TestCase):
         self.invoke('card', 'T1', '--no-worker')
         self.add_gate("print('gate-' + 'said')\n")
         (self.worktree / 'tasks/T1.md').write_text(CARD_T1 + '\nUncommitted body change.\n')
+        commit(self.worktree, 'body change')
         code, out, err = self.invoke('review', 'T1')
         self.assertEqual(code, 0)
         brief = self.record_text('stdin.txt')
@@ -590,15 +655,15 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('gate skipped: no bin/gate.py', out)
         self.assertIn('bin/gate.py does not exist yet', self.record_text('stdin.txt'))
 
-    def test_review_lists_untracked_files_as_absolute_paths(self):
+    def test_review_refuses_a_dirty_worktree(self):
         self.invoke('card', 'T1', '--no-worker')
-        (self.worktree / 'bin').mkdir()
-        (self.worktree / 'bin/gate.py').write_text('pass\n')
-        commit(self.worktree, 'add the gate')
+        self.add_gate('pass\n')
         (self.worktree / 'notes.txt').write_text('note\n')
         code, out, err = self.invoke('review', 'T1')
-        self.assertEqual(code, 0)
-        self.assertIn(f'- {self.worktree}/notes.txt', self.record_text('stdin.txt'))
+        self.assertEqual(code, 2)
+        self.assertIn('commit the worktree first: deepseek-harness-plugins has changes that '
+                      'HEAD does not hold', err)
+        self.assertEqual(self.runs(), 0)
 
     def test_review_ignores_commits_the_issue_branch_gained(self):
         self.invoke('card', 'T1', '--no-worker')
@@ -726,6 +791,9 @@ class DispatchTest(unittest.TestCase):
             'state': {'deepseek-harness-plugins': self.state()},
             'state_after': {'deepseek-harness-plugins': self.state()},
             'covers_from': None,
+            'heads': {'deepseek-harness-plugins':
+                      git('rev-parse', 'HEAD', cwd=self.worktree).strip()},
+            'bases': {'deepseek-harness-plugins': self.load('scope.json')['repos'][0]['base']},
         }
         self.assertEqual(record, expected)
         self.assertEqual(list(record), list(expected))
@@ -743,7 +811,7 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('gate reused gate.json (exit 0)', out)
         (self.worktree / 'x.txt').write_text('x\n')
         commit(self.worktree, 'x')
-        code, out, err = self.invoke('review', 'T1')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round', '--reason', 'test')
         self.assertEqual(code, 0)
         self.assertEqual(len(path.read_text().splitlines()), 2)
         self.assertEqual(self.load('review-2.json')['round'], 2)
@@ -752,7 +820,7 @@ class DispatchTest(unittest.TestCase):
         self.invoke('card', 'T1', '--no-worker')
         self.add_gate('pass\n')
         self.invoke('review', 'T1')
-        code, out, err = self.invoke('review', 'T1')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round', '--reason', 'test')
         self.assertEqual(code, 0)
         record = self.load('review-2.json')
         self.assertEqual(record['round'], 1)
@@ -855,6 +923,206 @@ class DispatchTest(unittest.TestCase):
         for line in out.splitlines():
             self.assertNotIn('fenced', line)
 
+    def test_review_records_heads_and_bases(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        record = self.load('review-1.json')
+        self.assertEqual(record['heads'], {
+            'deepseek-harness-plugins': git('rev-parse', 'HEAD', cwd=self.worktree).strip()})
+        self.assertEqual(record['bases'], {
+            'deepseek-harness-plugins': self.load('scope.json')['repos'][0]['base']})
+        self.assertEqual(list(record)[-2:], ['heads', 'bases'])
+
+    def test_review_derives_round_first(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('kind round (derived)', out)
+        record = self.load('review-1.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 1)
+
+    def test_review_derives_fixcheck_after_a_round(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('kind fixcheck (derived)', out)
+        record = self.load('review-2.json')
+        self.assertEqual(record['kind'], 'fixcheck')
+        self.assertEqual(record['covers_from'], self.load('review-1.json')['state'])
+
+    def test_review_derives_round_for_a_new_lineage(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        record = self.load('review-1.json')
+        record['lineage'] = 'other'
+        (self.evidence / 'review-1.json').write_text(json.dumps(record, indent=2) + '\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-2.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 1)
+
+    def test_review_derives_round_2_after_a_real_high(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e', 'TOTAL 1')))
+        self.dispose(('2.1', 'fixed', 'abc'))
+        self.commit_change('y.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-3.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 2)
+
+    def test_review_derives_fixcheck_after_a_wrong_high(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e', 'TOTAL 1')))
+        self.dispose(('2.1', 'wrong', 'not a bug'))
+        self.commit_change('y.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load('review-3.json')['kind'], 'fixcheck')
+
+    def test_review_refuses_undisposed_findings(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y', 'TOTAL 1')))
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('dispose the findings of run 1 first: findings.tsv has no row 1.1', err)
+        self.assertEqual(self.runs(), 1)
+
+    def test_review_refuses_a_row_without_a_detail(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y', 'TOTAL 1')))
+        self.dispose(('1.1', 'fixed', ''))
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('dispose the findings of run 1 first: row 1.1 needs fixed, wrong or open '
+                      'and a detail', err)
+
+    def test_review_refuses_a_kind_that_differs_without_a_reason(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round')
+        self.assertEqual(code, 2)
+        self.assertIn('--kind round differs from the derived kind fixcheck; pass --reason to '
+                      'override', err)
+
+    def test_review_prints_the_reason_for_a_kind_override(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1', '--kind', 'round', '--reason', 'rerun')
+        self.assertEqual(code, 0)
+        self.assertIn('kind round instead of derived fixcheck: rerun', out)
+        self.assertEqual(self.load('review-2.json')['kind'], 'round')
+
+    def test_fixcheck_brief_shows_the_delta_and_the_findings(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | medium | x | y', 'TOTAL 1')))
+        self.dispose(('1.1', 'fixed', 'c0ffee'))
+        self.commit_change('fix.txt', 'fixed-text\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin-2.txt')
+        head = self.load('review-1.json')['heads']['deepseek-harness-plugins']
+        self.assertIn(f'This run is a fix check of run 1. Change since that run '
+                      f'(`git diff {head} HEAD`):', brief)
+        self.assertIn('- 1.1 | fixed | c0ffee | a.py:1 | medium | x | y', brief)
+        delta = brief[brief.index('Change since that run'):brief.index('Findings of the covered run')]
+        self.assertIn('+fixed-text', delta)
+        self.assertNotIn('bin/gate.py', delta)
+        self.assertNotIn('The base moved since that run', brief)
+
+    def test_fixcheck_brief_shows_a_range_diff_after_a_rebase(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        (self.root / 'later.txt').write_text('later\n')
+        commit(self.root, 'later')
+        git(*COMMIT_CONFIG, 'rebase', 'issue/1-x', cwd=self.worktree)
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin-2.txt')
+        self.assertIn("The base moved since that run, so here is how the card's own diff changed",
+                      brief)
+        self.assertIn('- none', brief)
+        self.assertNotIn('Change since that run', brief)
+
+    def test_fixcheck_brief_without_heads_warns(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        record = self.load('review-1.json')
+        del record['heads']
+        (self.evidence / 'review-1.json').write_text(json.dumps(record, indent=2) + '\n')
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('warning: run 1 has no heads; the fix check shows the full diff', out)
+        self.assertNotIn('This run is a fix check', self.record_text('stdin-2.txt'))
+
+    def test_review_records_an_incomplete_answer_without_findings_as_optional(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('STOPPED no access',)))
+        self.assertEqual(code, 0)
+        self.assertIn('review-1.json written as optional: the answer is incomplete and has no '
+                      'finding', out)
+        record = self.load('review-1.json')
+        self.assertEqual(record['kind'], 'optional')
+        self.assertIsNone(record['round'])
+
+    def test_review_keeps_the_kind_of_an_incomplete_answer_with_findings(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y',)))
+        self.assertEqual(code, 0)
+        self.assertIn('review-1.json keeps kind round: the answer is incomplete but has 1 finding '
+                      'lines', out)
+        self.assertEqual(self.load('review-1.json')['kind'], 'round')
+
+    def test_review_refreshes_the_base_when_gate_json_is_reused(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('gate', 'T1')
+        scope = self.load('scope.json')
+        scope['repos'][0]['base'] = '0' * 40
+        self.scope.write_text(json.dumps(scope, indent=2) + '\n')
+        real = git('merge-base', 'card/T1', 'issue/1-x', cwd=self.root).strip()
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('gate reused gate.json (exit 0)', out)
+        self.assertIn(f'base deepseek-harness-plugins {"0" * 40} -> {real}\n', out)
+        self.assertEqual(self.load('scope.json')['repos'][0]['base'], real)
+
     def test_review_brief_asks_for_one_bash_call(self):
         self.invoke('card', 'T1', '--no-worker')
         self.add_gate('pass\n')
@@ -942,6 +1210,245 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual((self.root / 'ignored.txt').read_text(), 'keep\n')
 
+    def test_land_off_runs_no_check(self):
+        head = self.ready_card()
+        self.fake_check(0, ['ACCEPT'], head)
+        code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertFalse((self.record / 'checks.txt').exists())
+        self.assertEqual(self.rows(), [])
+
+    def test_land_refuses_an_unknown_mode(self):
+        self.ready_card()
+        tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+        self.fake_check(0, ['ACCEPT'])
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'on'}):
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('KSTACK_ACCEPT must be off, shadow or enforce, not on', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        self.assertFalse((self.record / 'checks.txt').exists())
+
+    def test_land_shadow_accept_writes_a_row(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, [f'ACCEPT T1 deepseek-harness-plugins={head}'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertIn(f'ACCEPT T1 deepseek-harness-plugins={head}\n', out)
+        rows = self.rows()
+        self.assertEqual(rows[0], dispatch.SHADOW_HEADER.split('\t'))
+        utc = rows[1][0]
+        self.assertRegex(utc, r'^[0-9]{8}T[0-9]{6}Z$')
+        copy = self.evidence / f'accept-{utc}.json'
+        self.assertEqual(rows[1], [utc, 'T1', 'R0', 'accept', '0', '',
+                                   f'deepseek-harness-plugins={head}', 'landed', str(copy)])
+        self.assertEqual(copy.read_text(), (self.evidence / 'accept.json').read_text())
+
+    def test_land_shadow_refuse_still_lands(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(1, ['GATE_MISSING', 'REVIEW_MISSING', 'REFUSE T1 2 reasons'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'refuse')
+        self.assertEqual(row[4], '1')
+        self.assertEqual(row[5], 'GATE_MISSING;REVIEW_MISSING')
+        self.assertEqual(row[7], 'landed')
+
+    def test_land_shadow_check_error_keeps_no_copy(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(2, [], stderr='boom')
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertIn('boom', err)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[4], '2')
+        self.assertEqual(row[5], '')
+        self.assertEqual(row[6], '')
+        self.assertEqual(row[8], '')
+        self.assertEqual(self.copies(), [])
+
+    def test_land_shadow_step_failure_writes_an_error_row(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            with mock.patch.object(dispatch, 'ACCEPT', self.base / 'missing'):
+                code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertIn('warning: kstack-accept step failed: FileNotFoundError', err)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[4], '')
+        self.assertEqual(row[5], 'exception:FileNotFoundError')
+
+    def test_land_shadow_precondition_failure_writes_a_refused_row(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.worktree / 'untracked.txt').write_text('x\n')
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('the worktree has uncommitted changes', err)
+        self.assertEqual(self.recorded('checks.txt'), ['check'])
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'accept')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_shadow_failed_fast_forward_writes_a_failed_row(self):
+        (self.root / 'ignored.txt').write_text('keep\n')
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            self.ready_card()
+            (self.worktree / 'ignored.txt').write_text('tracked now\n')
+            git('add', '-f', 'ignored.txt', cwd=self.worktree)
+            commit(self.worktree, 'track the ignored path')
+            head = git('rev-parse', 'card/T1', cwd=self.root).strip()
+            self.fake_check(0, ['ACCEPT'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertEqual(self.rows()[1][7], 'failed')
+
+    def test_land_shadow_writes_the_header_once(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.worktree / 'untracked.txt').write_text('x\n')
+            code, out, err = self.invoke('land', 'T1')
+            self.assertEqual(code, 2)
+            (self.worktree / 'untracked.txt').unlink()
+            code, out, err = self.invoke('land', 'T1')
+            self.assertEqual(code, 0)
+        rows = self.rows()
+        header = dispatch.SHADOW_HEADER.split('\t')
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0], header)
+        self.assertNotIn(header, rows[1:])
+        self.assertEqual([row[7] for row in rows[1:]], ['refused', 'landed'])
+
+    def test_land_keeps_numbered_copies(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            self.evidence.mkdir(parents=True, exist_ok=True)
+            (self.evidence / 'accept-20261116T000000Z.json').write_text('kept\n')
+            with mock.patch.object(dispatch, 'utc_stamp', lambda: '20261116T000000Z'):
+                code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.copies(), ['accept-20261116T000000Z-2.json',
+                                         'accept-20261116T000000Z.json'])
+        self.assertTrue(self.rows()[1][8].endswith('accept-20261116T000000Z-2.json'))
+
+    def test_land_tier_is_empty_without_scope_json(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            (self.evidence / 'scope.json').unlink()
+            self.fake_check(1, ['REFUSE T1 1 reasons'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rows()[1][2], '')
+
+    def test_land_enforce_accept_lands(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'accept')
+        self.assertEqual(row[7], 'landed')
+
+    def test_land_enforce_refuse_exits_7(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            head = self.ready_card()
+            tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+            self.fake_check(1, ['GATE_MISSING', 'REFUSE T1 1 reasons'], head)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 7)
+        self.assertIn('land refused by kstack-accept (KSTACK_ACCEPT=enforce)', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        self.assertTrue(self.worktree.is_dir())
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'refuse')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_enforce_check_error_exits_7(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            self.ready_card()
+            self.fake_check(2, [])
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 7)
+        self.assertNotEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(),
+                            git('rev-parse', 'card/T1', cwd=self.root).strip())
+
+    def test_land_enforce_step_failure_stops_the_land(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            self.ready_card()
+            with mock.patch.object(dispatch, 'ACCEPT', self.base / 'missing'):
+                code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack-accept step failed: FileNotFoundError', err)
+        self.assertNotEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(),
+                            git('rev-parse', 'card/T1', cwd=self.root).strip())
+        self.assertTrue(self.worktree.is_dir())
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_shadow_signal_is_a_step_failure(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], killed=True)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'error')
+        self.assertEqual(row[4], '')
+        self.assertEqual(row[5], 'exception:ChildProcessError')
+
+    def test_land_enforce_refuses_a_moved_card_branch(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            self.ready_card()
+            tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+            self.fake_check(0, ['ACCEPT'], '0' * 40)
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 7)
+        self.assertIn('card/T1 moved after kstack-accept check; land refused', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        row = self.rows()[1]
+        self.assertEqual(row[3], 'accept')
+        self.assertEqual(row[7], 'refused')
+
+    def test_land_enforce_unwritable_log_stops_the_land(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'enforce'}):
+            head = self.ready_card()
+            tip = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.root / 'reports/agents/accept-shadow.tsv').mkdir()
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack-accept shadow row not written:', err)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), tip)
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_land_survives_a_failed_row_write(self):
+        with mock.patch.dict(os.environ, {'KSTACK_ACCEPT': 'shadow'}):
+            head = self.ready_card()
+            self.fake_check(0, ['ACCEPT'], head)
+            (self.root / 'reports/agents/accept-shadow.tsv').mkdir()
+            code, out, err = self.invoke('land', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(git('rev-parse', 'issue/1-x', cwd=self.root).strip(), head)
+        self.assertEqual(err.count('warning: kstack-accept shadow row not written:'), 2)
+
     def test_run_worker_never_overwrites_output(self):
         agents = self.base / 'agents'
         worker = self.worker()
@@ -960,7 +1467,7 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in agents.iterdir()),
                          ['20260102T030405Z-x-2.log', '20260102T030405Z-x-2.md',
                           '20260102T030405Z-x.log', '20260102T030405Z-x.md'])
-        self.assertEqual((agents / '20260102T030405Z-x.md').read_text(), 'answer\n')
+        self.assertEqual((agents / '20260102T030405Z-x.md').read_text(), 'answer\nTOTAL 0\n')
 
     def test_harness_failure_is_reported_once(self):
         worker = self.worker(stderr_lines=('dsh: UNKNOWN_MODEL',), code=1)
@@ -988,6 +1495,21 @@ class DispatchTest(unittest.TestCase):
             dispatch.run_worker(agents, 'x', self.root, ['dsh'], 'brief',
                                 read_only=False, worker=worker)
         self.assertIn(dispatch.HARNESS_LINE, out.getvalue())
+
+    def test_parse_answer(self):
+        path = self.base / 'answer.md'
+        path.write_text('a.py:1 | high | x | y\n```\nb.py:2 | low | fenced | z\n'
+                        'STOPPED inside\n```\nTOTAL 1\n')
+        self.assertEqual(dispatch.parse_answer(path), (['a.py:1 | high | x | y'], True))
+
+    def test_read_findings(self):
+        directory = self.base / 'findings'
+        directory.mkdir()
+        (directory / 'findings.tsv').write_text('id\tdisposition\tdetail\n'
+                                                '1.1\tfixed\tabc\n\n1.2\topen\n')
+        self.assertEqual(dispatch.read_findings(directory),
+                         {'1.1': ('fixed', 'abc'), '1.2': ('', '')})
+        self.assertIsNone(dispatch.read_findings(self.base / 'no-findings'))
 
     def test_runtime_rev(self):
         repo = self.base / 'dsh'
