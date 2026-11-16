@@ -16,6 +16,8 @@ A card is one reviewable diff that belongs to one issue. Leads write cards for t
 
 Issue: #<N>.
 
+Tier: <R0, R1, R1s, or R2>.
+
 Needs: <earlier card IDs that must be committed first, or nothing>.
 
 Spec: <doc paths and sections that define the behavior, and the ADR it implements, if any>.
@@ -35,6 +37,7 @@ Status: done
 ```
 
 - `Issue:` names the one issue the card belongs to.
+- `Tier:` declares the card's tier from kstack's acceptance contract (`/data/softwares/kstack/docs/contracts/acceptance.md` section 1): `R0` none of the others, `R1` a contract, migration, or data shape that another repository uses, `R1s` security, privacy routing, credentials, or the sandbox, `R2` production, irreversible, or sends data outside. The lead declares it; `dispatch.py card` copies it into `scope.json` and never derives it. A card without it, or with any other value, is refused by `dispatch.py card` before the worktree is made.
 - `Files:` never lists a dependency or build file (see the implementer rules). A card that needs one is not a card; the lead reports it to the manager.
 - The test table gives exact test names and asserts that a user of the code can observe.
 - Add one `Must fail without:` line per privacy, contract, or safety guard that the card adds as code: a check that the lead can delete to watch the named tests fail (card-flow section 4, step 5). A rule that only forbids an action, such as "never open Session files" or "print no dump", with no guard code to delete, gets no line. Leave the line out when the card adds no such guard code.

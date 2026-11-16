@@ -22,21 +22,35 @@ of its output in the brief. The worker's answer (stdout) goes to
 `reports/agents/<UTC>-<name>.md` of the main checkout and its reasoning and
 errors (stderr) to the matching `.log`; a name already taken gains a `-2`,
 `-3`, ... suffix. Prints the paths and exits with the worker's code.
+
+`card` also writes `reports/agents/evidence/<ID>/scope.json` of the main
+checkout for kstack-accept, before the worker starts: the tier from the card's
+`Tier:` line (a card without a valid one is refused before the worktree is
+made), the implementer lineage of the worker's model, the card worktree, and
+its base, the merge base of `card/<ID>` and the issue branch. Workers never
+read or write that directory.
 """
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fnmatch
+import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 KSTACK = Path('/data/softwares/kstack')
 WORKER = KSTACK / 'skills/kiyama-mode/scripts/run-worker.sh'
 WORKER_ROUTE = ['dsh', 'ollama-cloud', 'deepseek-v4.1-flash', 'high']
+TIERS = ('R0', 'R1', 'R1s', 'R2')
+LINEAGE = {'deepseek-v4.1-flash': 'deepseek', 'gpt-6.1-sol': 'openai'}
+SCOPE_SCHEMA = 'kstack-accept/scope/1'
+LAND_REPO = 'deepseek-harness-plugins'
 REVIEW_ROUTE = ['dsh', 'openai-codex', 'gpt-6.1-sol', 'high']
 GATE = 'python3 bin/gate.py'
 HEADING = re.compile(r'^## (T[0-9]+)\. (.+)$')
@@ -223,6 +237,57 @@ def find_card(root, card_id):
     if not path.is_file():
         raise DispatchError(f'no card {card_id} in tasks/')
     return parse_card(path)
+
+
+def card_tier(card):
+    declared = ', '.join(TIERS)
+    for line in card.text.splitlines():
+        if line.startswith('Tier:'):
+            words = line[len('Tier:'):].split()
+            tier = words[0] if words else ''
+            if tier in TIERS:
+                return tier
+            raise DispatchError(f'card {card.id}: unknown tier "{tier}"; '
+                                f'declare one of {declared}')
+    raise DispatchError(f'card {card.id}: no Tier: line; declare one of {declared}')
+
+
+def implementer_lineage(route):
+    try:
+        return LINEAGE[route[2]]
+    except KeyError:
+        raise DispatchError(f'no implementer lineage for {route[2]}') from None
+
+
+def scope_record(root, card, worktree, branch, tier, lineage):
+    base = git('merge-base', f'card/{card.id}', branch, cwd=root).stdout.strip()
+    return {
+        'schema': SCOPE_SCHEMA,
+        'card': card.id,
+        'card_file': str(Path(root) / 'tasks' / f'{card.id}.md'),
+        'tier': tier,
+        'implementer_lineage': lineage,
+        'repos': [{'name': LAND_REPO, 'path': str(worktree), 'base': base}],
+        'gate_repos': [],
+        'degraded': False,
+        'degraded_reason': '',
+    }
+
+
+def write_scope(main, card_id, record):
+    directory = Path(main) / 'reports/agents/evidence' / card_id
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / 'scope.json'
+    descriptor, name = tempfile.mkstemp(prefix='scope.json.', suffix='.tmp', dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps(record, indent=2) + '\n')
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+    return path
 
 
 def main_checkout(root):
@@ -467,6 +532,8 @@ def _card(args, root, worker):
     card_branch = f'card/{card.id}'
     if _branch_exists(root, card_branch):
         raise DispatchError(f'branch {card_branch} already exists')
+    tier = card_tier(card)
+    lineage = implementer_lineage(WORKER_ROUTE)
     if git('status', '--porcelain', cwd=root).stdout.strip():
         print(f'warning: the checkout has uncommitted changes; the worktree starts from {branch}')
     (main / 'reports/worktrees').mkdir(parents=True, exist_ok=True)
@@ -476,8 +543,15 @@ def _card(args, root, worker):
         _discard_worktree(root, worktree, card_branch)
         raise DispatchError(f'git worktree add failed: {added.stderr.strip()}')
     has_gate = (worktree / 'bin/gate.py').is_file()
+    try:
+        record = scope_record(root, card, worktree, branch, tier, lineage)
+        scope = write_scope(main, card.id, record)
+    except (OSError, DispatchError) as error:
+        _discard_worktree(root, worktree, card_branch)
+        raise DispatchError(f'cannot write scope.json: {error}') from None
     print(f'worktree {worktree}')
     print(f'land {branch}')
+    print(f'scope {scope}')
     print(f'gate: {GATE}' if has_gate else f'gate: the Done line of tasks/{card.id}.md')
     if args.no_worker:
         return 0
