@@ -16,7 +16,7 @@ Where a pasted image ends up differs per harness, and modlens takes a different 
 
 Pasted images become real temp files, and the message carries a tag like `<image name=[Image #1] path="/tmp/xxxx.png">`. The skill reads the path out of the tag. `recover-paste` detects Codex and refuses, pointing back at the tag.
 
-One catch with text-only models: once `models.json` declares `input_modalities: ["text"]`, the Codex TUI blocks Ctrl+V paste outright. Drag the file into the terminal, type its path, or use `codex exec -i image.png "..."`.
+One catch with text-only models: once `models.json` declares `input_modalities: ["text"]`, the Codex TUI blocks Ctrl+V paste outright. Drag the file into the terminal or type its path.
 
 ## Claude Code, Pi, OpenCode
 
