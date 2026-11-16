@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import io
+import json
 import os
 from pathlib import Path
 import shlex
@@ -16,6 +17,8 @@ import dispatch  # noqa: E402
 CARD_T1 = '''## T1. Card dispatcher
 
 Issue: #1.
+
+Tier: R0
 
 Needs: nothing.
 
@@ -46,8 +49,9 @@ def commit(directory, message):
     git(*COMMIT_CONFIG, 'commit', '-m', message, cwd=directory)
 
 
-def card_text(card_id, title, files='`bin/a.py`', done=False):
-    text = f'## {card_id}. {title}\n\nIssue: #1.\n\nFiles: {files}.\n\nBody.\n'
+def card_text(card_id, title, files='`bin/a.py`', done=False, tier='R0'):
+    tier_line = '' if tier is None else f'Tier: {tier}\n\n'
+    text = f'## {card_id}. {title}\n\nIssue: #1.\n\n{tier_line}Files: {files}.\n\nBody.\n'
     return text + ('\nStatus: done\n' if done else '')
 
 
@@ -97,6 +101,7 @@ class DispatchTest(unittest.TestCase):
         self.record = self.base / 'record'
         self.record.mkdir()
         self.worktree = self.root / 'reports/worktrees/T1'
+        self.scope = self.root / 'reports/agents/evidence/T1/scope.json'
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -293,6 +298,132 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue((repo / 'reports/worktrees/T1').is_dir())
         self.assertEqual(len(list((repo / 'reports/agents').glob('*.md'))), 1)
         self.assertFalse((issue / 'reports').exists())
+        scope = repo / 'reports/agents/evidence/T1/scope.json'
+        self.assertTrue(scope.is_file())
+        record = json.loads(scope.read_text())
+        self.assertEqual(record['card_file'], str(issue / 'tasks/T1.md'))
+        self.assertEqual(record['repos'][0]['path'], str(repo / 'reports/worktrees/T1'))
+
+    def test_card_writes_scope_json(self):
+        self.commit_card(card_text('T1', 'Card dispatcher', tier='R1'))
+        base = git('rev-parse', 'issue/1-x', cwd=self.root).strip()
+        code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.runs(), 1)
+        record = json.loads(self.scope.read_text())
+        self.assertEqual(record, {
+            'schema': 'kstack-accept/scope/1',
+            'card': 'T1',
+            'card_file': str(self.root / 'tasks/T1.md'),
+            'tier': 'R1',
+            'implementer_lineage': 'deepseek',
+            'repos': [{'name': 'deepseek-harness-plugins', 'path': str(self.worktree),
+                       'base': base}],
+            'gate_repos': [],
+            'degraded': False,
+            'degraded_reason': '',
+        })
+        self.assertEqual(list(record), ['schema', 'card', 'card_file', 'tier',
+                                        'implementer_lineage', 'repos', 'gate_repos',
+                                        'degraded', 'degraded_reason'])
+        self.assertTrue(self.scope.read_text().endswith('\n'))
+        self.assertIn(f'scope {self.scope}\n', out)
+
+    def test_card_scope_base_is_the_merge_base(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'a.txt').write_text('a\n')
+        commit(self.worktree, 'card change')
+        (self.root / 'b.txt').write_text('b\n')
+        commit(self.root, 'issue change')
+        card = dispatch.find_card(self.root, 'T1')
+        record = dispatch.scope_record(self.root, card, self.worktree, 'issue/1-x',
+                                       'R0', 'deepseek')
+        base = record['repos'][0]['base']
+        self.assertEqual(base,
+                         git('merge-base', 'card/T1', 'issue/1-x', cwd=self.root).strip())
+        self.assertNotEqual(base, git('rev-parse', 'card/T1', cwd=self.root).strip())
+        self.assertNotEqual(base, git('rev-parse', 'issue/1-x', cwd=self.root).strip())
+
+    def test_card_accepts_each_declared_tier(self):
+        for tier in ('R0', 'R1', 'R1s', 'R2'):
+            with self.subTest(tier):
+                self.commit_card(card_text('T1', 'Card dispatcher', tier=tier))
+                code, out, err = self.invoke('card', 'T1', '--no-worker')
+                self.assertEqual(code, 0)
+                self.assertEqual(err, '')
+                self.assertEqual(json.loads(self.scope.read_text())['tier'], tier)
+                dispatch._discard_worktree(self.root, self.worktree, 'card/T1')
+
+    def test_card_refuses_a_card_without_a_tier(self):
+        self.commit_card(card_text('T1', 'Card dispatcher', tier=None))
+        code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('card T1: no Tier: line; declare one of R0, R1, R1s, R2', err)
+        self.assertEqual(self.runs(), 0)
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(git('branch', '--list', 'card/T1', cwd=self.root).strip(), '')
+        self.assertFalse((self.root / 'reports/agents/evidence').exists())
+
+    def test_card_refuses_an_unknown_tier(self):
+        for tier in ('R3', 'r1', ''):
+            with self.subTest(tier):
+                self.commit_card(card_text('T1', 'Card dispatcher', tier=tier))
+                code, out, err = self.invoke('card', 'T1')
+                self.assertEqual(code, 2)
+                self.assertIn(f'card T1: unknown tier "{tier}"; '
+                              'declare one of R0, R1, R1s, R2', err)
+                self.assertEqual(self.runs(), 0)
+                self.assertFalse(self.worktree.exists())
+                self.assertEqual(git('branch', '--list', 'card/T1', cwd=self.root).strip(), '')
+                self.assertFalse((self.root / 'reports/agents/evidence').exists())
+
+    def test_card_refuses_a_model_without_lineage(self):
+        with mock.patch.object(dispatch, 'WORKER_ROUTE',
+                               ['dsh', 'x', 'unknown-model', 'high']):
+            code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('no implementer lineage for unknown-model', err)
+        self.assertEqual(self.runs(), 0)
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(git('branch', '--list', 'card/T1', cwd=self.root).strip(), '')
+
+    def test_card_replaces_an_existing_scope_json(self):
+        self.scope.parent.mkdir(parents=True, exist_ok=True)
+        self.scope.write_text('{}')
+        (self.scope.parent / 'review-1.json').write_text('keep\n')
+        (self.scope.parent / 'scope.json.tmp').write_text('keep\n')
+        code, out, err = self.invoke('card', 'T1', '--no-worker')
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(self.scope.read_text())['schema'],
+                         'kstack-accept/scope/1')
+        self.assertEqual((self.scope.parent / 'review-1.json').read_text(), 'keep\n')
+        self.assertEqual((self.scope.parent / 'scope.json.tmp').read_text(), 'keep\n')
+        self.assertEqual(sorted(path.name for path in self.scope.parent.iterdir()),
+                         ['review-1.json', 'scope.json', 'scope.json.tmp'])
+
+    def test_card_keeps_the_old_scope_when_the_replace_fails(self):
+        self.scope.parent.mkdir(parents=True, exist_ok=True)
+        self.scope.write_text('{}')
+        with mock.patch.object(dispatch.os, 'replace', side_effect=OSError('boom')):
+            code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('cannot write scope.json: boom', err)
+        self.assertEqual(self.scope.read_text(), '{}')
+        self.assertEqual([path.name for path in self.scope.parent.iterdir()], ['scope.json'])
+        self.assertEqual(self.runs(), 0)
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(git('branch', '--list', 'card/T1', cwd=self.root).strip(), '')
+
+    def test_card_removes_the_worktree_when_scope_cannot_be_written(self):
+        evidence = self.root / 'reports/agents/evidence'
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        evidence.write_text('x\n')
+        code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('cannot write scope.json:', err)
+        self.assertEqual(self.runs(), 0)
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(git('branch', '--list', 'card/T1', cwd=self.root).strip(), '')
 
     def test_card_brief_names_the_gate(self):
         card = dispatch.Card(id='T1', title='t', issue=1, text='## T1. t', done=False,
