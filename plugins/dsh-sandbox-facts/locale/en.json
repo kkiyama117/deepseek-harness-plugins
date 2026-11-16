@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Sandbox facts",
+    "description": "Write each bash call's sandbox facts as one tool_facts line on stdout for headless --json runs."
+  }
+}
