@@ -40,7 +40,7 @@ export type ProviderStringField = 'apiKey' | 'baseUrl' | 'model' | 'proxy';
 const STRING_FIELDS: ProviderStringField[] = ['apiKey', 'baseUrl', 'model', 'proxy'];
 
 /** Harnesses whose local logins modlens can be granted to borrow. */
-export const REUSE_HARNESSES = ['claude', 'codex', 'opencode', 'pi', 'grok'] as const;
+export const REUSE_HARNESSES = ['claude', 'opencode', 'pi', 'grok'] as const;
 export type ReuseHarness = (typeof REUSE_HARNESSES)[number];
 
 export interface ModlensConfig {
@@ -237,23 +237,36 @@ export function setConfigValue(dottedKey: string, value: string, configPath = CO
         }
     } else if (dottedKey.startsWith('reuse.')) {
         const harness = dottedKey.slice('reuse.'.length);
-        if (!(REUSE_HARNESSES as readonly string[]).includes(harness)) {
-            throw new Error(
-                `Unknown reuse harness: ${harness}. Use ${REUSE_HARNESSES.join(', ')}.`,
-            );
-        }
-        const key = harness as ReuseHarness;
-        const normalized = value.trim().toLowerCase();
-        if (normalized === '') {
-            delete config.reuse?.[key];
-            if (config.reuse && Object.keys(config.reuse).length === 0) {
-                delete config.reuse;
+        if (harness === 'codex') {
+            if (value.trim() === '') {
+                delete (config.reuse as Record<string, boolean> | undefined)?.codex;
+                if (config.reuse && Object.keys(config.reuse).length === 0) {
+                    delete config.reuse;
+                }
+            } else {
+                throw new Error(
+                    'reuse.codex is refused: modlens never runs the Codex CLI. Call OpenAI models through the openai provider with its own API key, or through a DSH route.',
+                );
             }
-        } else if (normalized !== 'true' && normalized !== 'false') {
-            throw new Error(`reuse.${harness} must be true or false (empty clears).`);
         } else {
-            config.reuse ??= {};
-            config.reuse[key] = normalized === 'true';
+            if (!(REUSE_HARNESSES as readonly string[]).includes(harness)) {
+                throw new Error(
+                    `Unknown reuse harness: ${harness}. Use ${REUSE_HARNESSES.join(', ')}.`,
+                );
+            }
+            const key = harness as ReuseHarness;
+            const normalized = value.trim().toLowerCase();
+            if (normalized === '') {
+                delete config.reuse?.[key];
+                if (config.reuse && Object.keys(config.reuse).length === 0) {
+                    delete config.reuse;
+                }
+            } else if (normalized !== 'true' && normalized !== 'false') {
+                throw new Error(`reuse.${harness} must be true or false (empty clears).`);
+            } else {
+                config.reuse ??= {};
+                config.reuse[key] = normalized === 'true';
+            }
         }
     } else if (dottedKey.startsWith('guards.')) {
         setGuardsValue(config, dottedKey.slice('guards.'.length), value);
@@ -261,7 +274,7 @@ export function setConfigValue(dottedKey: string, value: string, configPath = CO
         const dot = dottedKey.indexOf('.');
         if (dot <= 0 || dot === dottedKey.length - 1) {
             throw new Error(
-                `Invalid config key: ${dottedKey}. Use "provider", "proxy", "reuse.<claude|codex|opencode|pi|grok>", "guards.<denyModels|allowModels|denyWhenUnknown>", or "<provider>.<apiKey|baseUrl|model|proxy|extraBody|structuredOutput>".`,
+                `Invalid config key: ${dottedKey}. Use "provider", "proxy", "reuse.<claude|opencode|pi|grok>", "guards.<denyModels|allowModels|denyWhenUnknown>", or "<provider>.<apiKey|baseUrl|model|proxy|extraBody|structuredOutput>".`,
             );
         }
         const providerName = dottedKey.slice(0, dot);

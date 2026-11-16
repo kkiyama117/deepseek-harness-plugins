@@ -420,7 +420,7 @@ describe('settings card (#39)', () => {
         const summary = {
             provider: 'openai',
             engines: { openai: { baseUrl: 'https://a', model: 'a', hasKey: true } },
-            reuse: { claude: true, codex: false, opencode: false, pi: false, grok: false },
+            reuse: { claude: true, opencode: false, pi: false, grok: false },
         };
         const untouched = card.nextDraft(summary, 'openai') as Record<string, unknown> & {
             reuse: Record<string, boolean>;
@@ -458,9 +458,9 @@ describe('settings card (#39)', () => {
                 openai: { baseUrl: 'https://a', model: 'a', hasKey: true },
                 'gemini-api': { baseUrl: '', model: 'g', hasKey: false },
             },
-            reuse: { claude: true, codex: false },
+            reuse: { claude: true, opencode: false },
         };
-        const pending = { claude: true, codex: true };
+        const pending = { claude: true, opencode: true };
         const next = card.nextDraft(summary, 'gemini-api', pending) as {
             provider: string;
             model: string;

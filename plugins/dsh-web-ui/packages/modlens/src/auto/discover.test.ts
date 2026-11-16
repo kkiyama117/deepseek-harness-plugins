@@ -51,66 +51,28 @@ describe('discoverAuto probes', () => {
     it('reports absent CLIs without throwing and finds present ones', () => {
         const home = fakeHome();
         const result = discoverAuto({
-            env: { PATH: pathWith(['codex']) },
+            env: { PATH: pathWith(['grok']) },
             home,
             fresh: true,
         });
-        expect(probeOf(result, 'codex').cliFound).toBe(true);
+        expect(probeOf(result, 'grok').cliFound).toBe(true);
         expect(probeOf(result, 'opencode').cliFound).toBe(false);
         expect(probeOf(result, 'pi').cliFound).toBe(false);
         expect(probeOf(result, 'claude-code').cliFound).toBe(false);
         fs.rmSync(home, { recursive: true, force: true });
     });
 
-    it('reads the codex model catalog and keeps only image-input models', () => {
-        const home = fakeHome();
-        fs.mkdirSync(path.join(home, '.codex'));
-        const catalog = path.join(home, '.codex', 'models.json');
-        fs.writeFileSync(
-            catalog,
-            JSON.stringify({
-                models: [
-                    { slug: 'gpt-5.6-sol', input_modalities: ['text', 'image'] },
-                    { slug: 'deepseek-v4-flash', input_modalities: ['text'] },
-                ],
-            }),
-        );
-        fs.writeFileSync(
-            path.join(home, '.codex', 'config.toml'),
-            `model = "deepseek-v4-flash"\nmodel_catalog_json = "${catalog}"\n`,
-        );
-        fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}');
-        const result = discoverAuto({ env: { PATH: pathWith(['codex']) }, home, fresh: true });
-        const codex = probeOf(result, 'codex');
-        expect(codex.loggedIn).toBe(true);
-        expect(codex.visionModels).toEqual(['gpt-5.6-sol']);
-        expect(codex.source).toBe('metadata');
-        fs.rmSync(home, { recursive: true, force: true });
-    });
-
-    it('treats an official codex (no third-party provider) as vision-capable by default', () => {
-        const home = fakeHome();
-        fs.mkdirSync(path.join(home, '.codex'));
-        // No model_provider and no model_catalog_json: the stock install, whose
-        // default model reads images.
-        fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'approval_policy = "never"\n');
-        fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}');
-        const result = discoverAuto({ env: { PATH: pathWith(['codex']) }, home, fresh: true });
-        const codex = probeOf(result, 'codex');
-        expect(codex.loggedIn).toBe(true);
-        expect(codex.visionModels).toEqual(['default']);
-        expect(codex.source).toBe('builtin-table');
-        fs.rmSync(home, { recursive: true, force: true });
-    });
-
-    it('treats a stock codex with auth but no config.toml as vision-capable', () => {
+    it('has no codex probe', () => {
         const home = fakeHome();
         fs.mkdirSync(path.join(home, '.codex'));
         fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}');
         const result = discoverAuto({ env: { PATH: pathWith(['codex']) }, home, fresh: true });
-        const codex = probeOf(result, 'codex');
-        expect(codex.loggedIn).toBe(true);
-        expect(codex.visionModels).toEqual(['default']);
+        expect(result.probes.map((p) => p.harness).sort()).toEqual([
+            'claude-code',
+            'grok',
+            'opencode',
+            'pi',
+        ]);
         fs.rmSync(home, { recursive: true, force: true });
     });
 
@@ -198,13 +160,13 @@ describe('discoverAuto probes', () => {
 describe('discoverAuto cache', () => {
     it('writes the cache on a fresh probe and serves from it within the TTL', () => {
         const home = fakeHome();
-        const env = { PATH: pathWith(['codex']) };
+        const env = { PATH: pathWith(['grok']) };
         const first = discoverAuto({ env, home, fresh: true });
         expect(first.fromCache).toBe(false);
         const second = discoverAuto({ env: { PATH: '' }, home });
         // Served from cache: the emptied PATH did not change the answer.
         expect(second.fromCache).toBe(true);
-        expect(probeOf(second, 'codex').cliFound).toBe(true);
+        expect(probeOf(second, 'grok').cliFound).toBe(true);
         fs.rmSync(home, { recursive: true, force: true });
     });
 
@@ -218,13 +180,43 @@ describe('discoverAuto cache', () => {
         fs.rmSync(home, { recursive: true, force: true });
     });
 
+    it('re-probes when the cache holds a codex probe', () => {
+        const home = fakeHome();
+        const cachePath = path.join(home, '.modlens', 'auto-cache.json');
+        fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+        const emptyProbe = (harness: string) => ({
+            harness,
+            cliFound: false,
+            visionModels: [],
+            source: 'none',
+            elapsedMs: 0,
+        });
+        fs.writeFileSync(
+            cachePath,
+            JSON.stringify({
+                cachedAt: new Date().toISOString(),
+                probes: [
+                    { ...emptyProbe('codex'), cliFound: true },
+                    emptyProbe('claude-code'),
+                    emptyProbe('opencode'),
+                    emptyProbe('pi'),
+                    emptyProbe('grok'),
+                ],
+            }),
+        );
+        const result = discoverAuto({ env: { PATH: '' }, home });
+        expect(result.fromCache).toBe(false);
+        expect(result.probes.some((p) => (p.harness as string) === 'codex')).toBe(false);
+        fs.rmSync(home, { recursive: true, force: true });
+    });
+
     it('re-probes past the TTL and on fresh:true', () => {
         const home = fakeHome();
-        const env = { PATH: pathWith(['codex']) };
+        const env = { PATH: pathWith(['grok']) };
         discoverAuto({ env, home, fresh: true });
         const expired = discoverAuto({ env: { PATH: '' }, home, ttlMs: -1 });
         expect(expired.fromCache).toBe(false);
-        expect(probeOf(expired, 'codex').cliFound).toBe(false);
+        expect(probeOf(expired, 'grok').cliFound).toBe(false);
         const forced = discoverAuto({ env, home, fresh: true });
         expect(forced.fromCache).toBe(false);
         fs.rmSync(home, { recursive: true, force: true });

@@ -273,8 +273,7 @@ export function composeChain(
     return chain;
 }
 
-const REUSE_KEY_BY_HARNESS: Record<string, 'codex' | 'opencode' | 'pi' | 'grok'> = {
-    codex: 'codex',
+const REUSE_KEY_BY_HARNESS: Record<string, 'opencode' | 'pi' | 'grok'> = {
     opencode: 'opencode',
     pi: 'pi',
     grok: 'grok',

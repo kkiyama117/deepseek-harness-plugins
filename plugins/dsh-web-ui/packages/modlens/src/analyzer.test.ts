@@ -4,6 +4,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { analyzeImage, composeChain, resolveInput, runCommand } from './analyzer.ts';
+import type { ModlensConfig } from './config.ts';
 
 const onWindows = process.platform === 'win32';
 
@@ -47,10 +48,10 @@ describe('composeChain preferences', () => {
         fromCache: false,
         probes: [
             {
-                harness: 'codex' as const,
+                harness: 'opencode' as const,
                 cliFound: true,
                 loggedIn: true,
-                visionModels: ['default'],
+                visionModels: ['opencode/gemini-3-flash'],
                 source: 'builtin-table' as const,
                 elapsedMs: 0,
             },
@@ -66,14 +67,14 @@ describe('composeChain preferences', () => {
     }
 
     it('keeps a preferred claude-cli ahead of reused agents', () => {
-        const dir = binDir(['claude', 'codex']);
+        const dir = binDir(['claude', 'opencode']);
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-chain-home-'));
         const chain = composeChain(
             'local',
-            { provider: 'claude-cli', reuse: { codex: true } },
+            { provider: 'claude-cli', reuse: { opencode: true } },
             { env: { PATH: dir }, home, discovery },
         );
-        expect(chain.map((p) => p.name)).toEqual(['claude-cli', 'codex-cli']);
+        expect(chain.map((p) => p.name)).toEqual(['claude-cli', 'opencode-cli']);
         fs.rmSync(dir, { recursive: true, force: true });
         fs.rmSync(home, { recursive: true, force: true });
     });
@@ -533,10 +534,17 @@ describe.skipIf(onWindows)('provider failover', () => {
     it('a lone failing provider still hints at never-asked reusable vision', async () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-auto-e2e-'));
         cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
-        fs.mkdirSync(path.join(home, '.codex'));
-        fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}');
+        fs.mkdirSync(path.join(home, '.grok'));
+        fs.writeFileSync(
+            path.join(home, '.grok', 'auth.json'),
+            JSON.stringify({ 'https://auth.x.ai::id': {} }),
+        );
+        fs.writeFileSync(
+            path.join(home, '.grok', 'models_cache.json'),
+            JSON.stringify({ models: { 'grok-4.5': {}, 'grok-code-mini': {} } }),
+        );
         const { dir, image } = fakeAgyDir('#!/bin/sh\necho "agy exploded" >&2\nexit 1\n');
-        fs.writeFileSync(path.join(dir, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+        fs.writeFileSync(path.join(dir, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
         vi.stubEnv('PATH', dir);
 
         await expect(
@@ -549,45 +557,33 @@ describe.skipIf(onWindows)('provider failover', () => {
         ).rejects.toThrow(/not yet allowed to reuse/);
     }, 30_000);
 
-    it('auto mode prepends borrowed routes: a discovered codex answers first and is accounted for', async () => {
+    it('a legacy reuse.codex grant never runs a codex binary', async () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-auto-e2e-'));
         cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
         fs.mkdirSync(path.join(home, '.codex'));
-        fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'approval_policy = "never"\n');
         fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}');
-        const events = [
-            JSON.stringify({ type: 'thread.started', thread_id: 't-auto' }),
-            JSON.stringify({
-                type: 'item.completed',
-                item: { type: 'agent_message', text: JSON.stringify(CONTRACT_RESULT) },
-            }),
-            JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1 } }),
-        ].join('\n');
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-fo-'));
-        cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
-        // PATH holds only the fake bin dir, so the script sticks to shell
-        // builtins (no cat) and the events carry no single quotes (JSON).
-        fs.writeFileSync(
-            path.join(dir, 'codex'),
-            `#!/bin/sh\n${events
-                .split('\n')
-                .map((line) => `echo '${line}'`)
-                .join('\n')}\n`,
-            { mode: 0o755 },
-        );
-        const image = path.join(dir, 'shot.png');
-        fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+        fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'approval_policy = "never"\n');
+        const { dir, image } = fakeAgyDir('#!/bin/sh\necho "agy exploded" >&2\nexit 1\n');
+        const marker = path.join(dir, 'codex-ran');
+        fs.writeFileSync(path.join(dir, 'codex'), `#!/bin/sh\n: > '${marker}'\nexit 0\n`, {
+            mode: 0o755,
+        });
         vi.stubEnv('PATH', dir);
 
-        const result = await analyzeImage({
-            input: image,
-            config: { reuse: { codex: true } },
-            autoOptions: { home, env: { PATH: dir } },
-            timeoutMs: 20_000,
-        });
-        expect(result.provider).toBe('codex-cli');
-        expect(result.meta.attempts[0]).toMatchObject({ provider: 'codex-cli', ok: true });
-        expect(result.meta.warnings.join(' ')).toContain('reused');
+        let thrown: Error | null = null;
+        try {
+            await analyzeImage({
+                input: image,
+                config: { reuse: { codex: true } } as unknown as ModlensConfig,
+                autoOptions: { home, env: { PATH: dir } },
+                timeoutMs: 20_000,
+            });
+        } catch (error) {
+            thrown = error as Error;
+        }
+        expect(thrown).not.toBeNull();
+        expect(fs.existsSync(marker)).toBe(false);
+        expect(thrown?.message).not.toContain('codex-cli');
     }, 30_000);
 
     it('without the auto switch the same machine has no chain at all', async () => {
@@ -613,11 +609,17 @@ describe.skipIf(onWindows)('provider failover', () => {
     it('an explicit -p pin ignores auto routes entirely', async () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-auto-e2e-'));
         cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
-        fs.mkdirSync(path.join(home, '.codex'));
-        fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'approval_policy = "never"\n');
-        fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}');
+        fs.mkdirSync(path.join(home, '.grok'));
+        fs.writeFileSync(
+            path.join(home, '.grok', 'auth.json'),
+            JSON.stringify({ 'https://auth.x.ai::id': {} }),
+        );
+        fs.writeFileSync(
+            path.join(home, '.grok', 'models_cache.json'),
+            JSON.stringify({ models: { 'grok-4.5': {}, 'grok-code-mini': {} } }),
+        );
         const { dir, image } = fakeAgyDir('#!/bin/sh\necho "agy exploded" >&2\nexit 1\n');
-        fs.writeFileSync(path.join(dir, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+        fs.writeFileSync(path.join(dir, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
         vi.stubEnv('PATH', dir);
 
         let thrown: Error | null = null;
@@ -625,7 +627,7 @@ describe.skipIf(onWindows)('provider failover', () => {
             await analyzeImage({
                 input: image,
                 provider: 'antigravity-cli',
-                config: { reuse: { codex: true } },
+                config: { reuse: { grok: true } },
                 autoOptions: { home, env: { PATH: dir } },
                 timeoutMs: 20_000,
             });
@@ -633,7 +635,7 @@ describe.skipIf(onWindows)('provider failover', () => {
             thrown = error as Error;
         }
         expect(thrown?.message).toMatch(/agy|antigravity-cli/);
-        expect(thrown?.message).not.toContain('codex');
+        expect(thrown?.message).not.toContain('grok');
     }, 30_000);
 
     it('sends extraBody from config, and --extra-body replaces it for the run', async () => {

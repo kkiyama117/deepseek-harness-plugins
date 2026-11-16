@@ -956,7 +956,7 @@ function settingsKeysFor(engine) {
 }
 // Auto mode: the local harnesses whose logins a read may borrow. `claude`
 // absent counts as granted, since claude-cli predates the grant model.
-const REUSE_HARNESSES = ['claude', 'codex', 'opencode', 'pi', 'grok']
+const REUSE_HARNESSES = ['claude', 'opencode', 'pi', 'grok']
 
 // The variables that supply an engine while the file names no entry for it,
 // mirroring ENV_BINDINGS in src/config.ts. An engine takes its settings from

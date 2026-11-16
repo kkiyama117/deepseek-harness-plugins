@@ -25,7 +25,7 @@ modlens config set <provider>.<field> <value>   # 字段：apiKey、baseUrl、mo
 {
   "provider": "gemini-api",
   "proxy": "http://127.0.0.1:7890",
-  "reuse": { "claude": true, "codex": true, "opencode": false, "pi": true, "grok": true },
+  "reuse": { "claude": true, "opencode": false, "pi": true, "grok": true },
   "guards": {
     "allowModels": ["deepseek-v4-*", "glm-5.*", "minimax-m2.5*", "qwen3-coder*"],
     "denyModels": ["glm-*v*", "deepseek-vl*"],
@@ -68,7 +68,7 @@ modlens config set <provider>.<field> <value>   # 字段：apiKey、baseUrl、mo
   - 按真正抵达模型的内容来列名单，而不是按它本来能看到什么：多模态模型如果躲在一个剥离图片的网关后面，照样需要 modlens，而你的会话记录里存的是网关上报的模型名。`modlens doctor` 的 Guard 一节会显示规则和一条实时判定，方便核对结果。
   - `denyWhenUnknown`（默认 `false`）决定在两种模式下，当没有任何信号能识别当前模型时怎么办：`false` 放行，`true` 拒绝。当前模型的检测来源从强到弱依次是：`MODLENS_MODEL` 环境变量（`none` 表示「按未知处理」）、harness 的会话存储、`--model` 自报。
 - `GEMINI_API_KEY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL` 用来配置本文件只字未提的 provider；本文件提到过的，它们完全不生效。过去它们逐字段覆盖，拼出的组合在哪儿都不存在：地址和密钥本是一副凭据。modlens 仍然读取 `MODLENS_HARNESS`（粘贴恢复和 guard 的作用范围）、`MODLENS_MODEL`（guard 覆盖，见 `guards`），以及各 harness 自己注入的指纹，它们把 guard 的存储查询钉在当前 session 上：`CLAUDE_CODE_SESSION_ID`、`CODEX_THREAD_ID`，加上 harness 检测依赖的存在性标记（`CLAUDECODE`、`PI_CODING_AGENT`、`CODEX_SANDBOX`）。
-- `reuse.<claude|codex|opencode|pi|grok>`：按 harness 记录的授权，决定能否花费本机其他登录态，由引导对话（`references/onboard.md`）写入。`true` 允许读图时复用该 harness（pi 的凭据加入 inline 区且所有 guard 照常生效，已登录的 Codex、OpenCode 的视觉模型或直接驱动的 pi 加入 agent 区，排在 `claude-cli` 之前），`false` 记下一次拒绝，用户不会被再次询问，缺失表示从未问过，什么都不会运行。`claude` 缺失视为已授权：`claude-cli` 作为内置 provider 早于这套模型存在，`reuse.claude false` 会把它移出链条（`-p claude-cli` 仍可钉死）。复用来的引擎不比用户自己的优先：分区只按速度档次排序。每个复用得来的答案都会在 `meta.warnings` 里加一行，说明花的是谁的额度，`modlens doctor` 的 Reuse 一节会显示每个 harness 的决定和探测发现的结果（探测结果在 `~/.modlens/auto-cache.json` 里缓存 6 小时，doctor 每次都重新探测）。用 `modlens config set reuse.codex true` 设置（传空恢复为从未问过）。
+- `reuse.<claude|opencode|pi|grok>`：按 harness 记录的授权，决定能否花费本机其他登录态，由引导对话（`references/onboard.md`）写入。`true` 允许读图时复用该 harness（pi 的凭据加入 inline 区且所有 guard 照常生效，OpenCode 的视觉模型或直接驱动的 pi 加入 agent 区，排在 `claude-cli` 之前），`false` 记下一次拒绝，用户不会被再次询问，缺失表示从未问过，什么都不会运行。`claude` 缺失视为已授权：`claude-cli` 作为内置 provider 早于这套模型存在，`reuse.claude false` 会把它移出链条（`-p claude-cli` 仍可钉死）。复用来的引擎不比用户自己的优先：分区只按速度档次排序。每个复用得来的答案都会在 `meta.warnings` 里加一行，说明花的是谁的额度，`modlens doctor` 的 Reuse 一节会显示每个 harness 的决定和探测发现的结果（探测结果在 `~/.modlens/auto-cache.json` 里缓存 6 小时，doctor 每次都重新探测）。用 `modlens config set reuse.opencode true` 设置（传空恢复为从未问过）。`reuse.codex` 会被拒绝：modlens 从不运行 Codex CLI；OpenAI 模型请通过 `openai` provider 或 DSH 路由调用。`modlens config set reuse.codex ''` 可删除此规则之前写入的授权。
 - 未知的顶层键和未知的 provider 名会被忽略而不是报错，所以敲错字会无声失败：手工编辑后跑一下 `modlens doctor`，它会显示哪些文件值和环境变量真正生效。
 
 手工编辑没问题（保持文件是合法 JSON，权限 0600）。`modlens config set` 做的是同一件事，只是多了护栏。

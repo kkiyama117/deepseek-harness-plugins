@@ -2188,16 +2188,33 @@ describe('settings card route (#39)', () => {
                     method: 'POST',
                     url: '/x',
                     [Symbol.asyncIterator]: async function* () {
-                        yield Buffer.from(JSON.stringify({ reuse: { codex: true } }));
+                        yield Buffer.from(JSON.stringify({ reuse: { opencode: true } }));
                     },
                 });
                 expect(status).toBe(200);
                 const saved = JSON.parse(fs.readFileSync(file, 'utf-8'));
                 expect(saved.provider).toBe('');
-                expect(saved.reuse).toEqual({ codex: true });
+                expect(saved.reuse).toEqual({ opencode: true });
                 expect(saved.providers['gemini-api']).toEqual({ apiKey: 'sk-a' });
             },
         );
+    });
+
+    it('ignores a codex grant from the settings card', async () => {
+        await withConfig({ provider: '' }, async (handler, file) => {
+            const { status } = await call(handler, {
+                method: 'POST',
+                url: '/x',
+                [Symbol.asyncIterator]: async function* () {
+                    yield Buffer.from(JSON.stringify({ reuse: { codex: true, pi: true } }));
+                },
+            });
+            expect(status).toBe(200);
+            const saved = JSON.parse(fs.readFileSync(file, 'utf-8'));
+            expect(saved.reuse).toEqual({ pi: true });
+            const read = await call(handler, { method: 'GET', url: '/x' });
+            expect(read.body.reuse).not.toHaveProperty('codex');
+        });
     });
 
     it('reports an alias as its engine, settings included, and does not move them', async () => {

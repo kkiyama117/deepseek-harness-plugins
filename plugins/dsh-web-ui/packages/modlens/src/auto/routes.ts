@@ -5,9 +5,9 @@
 // - borrowed-inline: pi's stored credentials plus its models-store recipe
 //   (baseUrl, api shape, modality) feed the existing inline API providers, so
 //   the SSRF guards, image checks, and schema enforcement all stay in force.
-// - borrowed-agent: codex and opencode both take a local image attachment in
-//   their non-interactive modes (codex exec -i, opencode run -f), the same
-//   pattern claude-cli established.
+// - borrowed-agent: opencode takes a local image attachment in its
+//   non-interactive mode (opencode run -f), and grok -p reads the local path
+//   the prompt names, the same patterns claude-cli established.
 //
 // Every route carries a reuseNote so the analyzer can say whose quota a
 // read spent; credentials are fetched at call time and live only in memory.
@@ -32,99 +32,6 @@ import { resolveSpawnPlan } from '../util/winExec.ts';
 import { type AutoDiscovery, discoverAuto } from './discover.ts';
 
 const KEY_FETCH_TIMEOUT_MS = 10_000;
-
-/** `codex exec` with the image attached and the schema enforced via file. */
-export function codexCliRoute(visionModel: string): VisionProvider {
-    return {
-        name: 'codex-cli',
-        defaultModel: visionModel,
-        isolateWorkdir: true,
-        reuseNote: "this read reused the local Codex CLI login and spent that account's quota.",
-        buildInvocation: (options: BuildProviderInvocationOptions) => {
-            if (options.imageKind === 'remote') {
-                throw new Error(
-                    'codex-cli route reads local files only. Remote URLs stay on the inline providers.',
-                );
-            }
-            // No --output-schema: codex routes it into OpenAI strict
-            // structured output, which rejects this schema (it requires
-            // additionalProperties: false on every object). The filled-in
-            // template asks for the shape instead, and the analyzer's schema
-            // check verifies what came back.
-            const prompt = `${buildVisionPrompt({
-                imageSource: options.imageSource,
-                imageKind: 'inline',
-                extraPrompt: options.extraPrompt,
-            })}\n\n${JSON_TEMPLATE_INSTRUCTION}`;
-            const model = options.model || visionModel;
-            const args = [
-                'exec',
-                '--skip-git-repo-check',
-                '--ephemeral',
-                '-s',
-                'read-only',
-                '--json',
-                '-i',
-                options.imageSource,
-            ];
-            // 'default' is the probe's marker for a stock install: no -m lets
-            // codex run its own (vision-capable) default model.
-            if (model && model !== 'default') {
-                args.push('-m', model);
-            }
-            // -- fences the positional prompt off from the variadic -i, which
-            // otherwise swallows it as a second image file.
-            args.push('--', prompt);
-            return {
-                command: options.providerBin || 'codex',
-                args,
-                cwd: path.resolve(options.workdir || path.dirname(options.imageSource)),
-            };
-        },
-        parseOutput: (stdout: string): ProviderParsedOutput => {
-            let threadId: string | null = null;
-            let usage: unknown = null;
-            let lastMessage: string | null = null;
-            for (const line of stdout.split('\n')) {
-                const event = tryParseJson(line.trim()) as {
-                    type?: string;
-                    thread_id?: string;
-                    usage?: unknown;
-                    item?: { type?: string; text?: string };
-                } | null;
-                if (!event) {
-                    continue;
-                }
-                if (event.type === 'thread.started' && event.thread_id) {
-                    threadId = event.thread_id;
-                }
-                if (event.type === 'turn.completed' && event.usage !== undefined) {
-                    usage = event.usage;
-                }
-                if (
-                    event.type === 'item.completed' &&
-                    event.item?.type === 'agent_message' &&
-                    typeof event.item.text === 'string'
-                ) {
-                    lastMessage = event.item.text;
-                }
-            }
-            if (!lastMessage) {
-                throw new Error(
-                    'codex exec produced no agent message. Check the Codex login (run: codex).',
-                );
-            }
-            const result = extractJson(lastMessage);
-            if (result === null) {
-                throw new Error(`codex returned a non-JSON answer: ${truncate(lastMessage)}`);
-            }
-            return {
-                result,
-                meta: { conversationId: threadId, durationSeconds: null, usage },
-            };
-        },
-    };
-}
 
 /** `opencode run` with the image attached; JSON asked for in the prompt. */
 export function opencodeCliRoute(modelId: string): VisionProvider {
@@ -544,21 +451,9 @@ export function reuseProviders(
             // A broken pi store must not take the whole chain down.
         }
     }
-    if (
-        kind === 'local' &&
-        (grants.codex === true || grants.opencode === true || grants.grok === true)
-    ) {
+    if (kind === 'local' && (grants.opencode === true || grants.grok === true)) {
         try {
             const discovery = options.discovery ?? discoverAuto({ env, home });
-            const codex = discovery.probes.find((probe) => probe.harness === 'codex');
-            if (
-                grants.codex === true &&
-                codex?.cliFound &&
-                codex.loggedIn !== false &&
-                codex.visionModels[0]
-            ) {
-                agents.push(codexCliRoute(codex.visionModels[0]));
-            }
             const opencode = discovery.probes.find((probe) => probe.harness === 'opencode');
             if (grants.opencode === true && opencode?.cliFound && opencode.visionModels[0]) {
                 agents.push(opencodeCliRoute(opencode.visionModels[0]));
@@ -576,7 +471,7 @@ export function reuseProviders(
             // Discovery trouble degrades to the base chain, never to a crash.
         }
     }
-    // Region order: codex, opencode, then pi-cli (the unmappable-credential
+    // Region order: opencode, grok, then pi-cli (the unmappable-credential
     // fallback); claude-cli stays in the base chain behind all of these.
     if (kind === 'local') {
         agents.push(...piAgents);

@@ -335,6 +335,7 @@ class RepositoryChecksTest(unittest.TestCase):
             'plugins/dsh-session-cleanup',
             'plugins/dsh-slack-intake',
             'plugins/dsh-web-search-exa-compat',
+            'plugins/dsh-web-ui/packages/modlens',
             'plugins/dsh-workspace-attach',
             'plugins/llm-fallback',
             'skills/orchestrate-agents',

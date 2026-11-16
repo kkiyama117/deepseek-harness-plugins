@@ -24,8 +24,8 @@ Do not dump the raw doctor output on the user, summarize it. Do not describe opt
 
 Consent rules:
 
-- One question per decision, never a bundled yes. Reusing Codex and reusing pi credentials are two questions (or one question with independent options), not one.
-- Each question names the harness, whose quota it spends, and the accounting promise. Example wording: "Allow modlens to reuse your signed-in Codex CLI for image reads? Every reused read is labeled in the result so you always see whose quota was spent."
+- One question per decision, never a bundled yes. Reusing OpenCode and reusing pi credentials are two questions (or one question with independent options), not one.
+- Each question names the harness, whose quota it spends, and the accounting promise. Example wording: "Allow modlens to reuse your OpenCode vision model for image reads? Every reused read is labeled in the result so you always see whose quota was spent."
 - The do-nothing outcome must be safe and stated: "If you skip this, modlens just uses the engines you configure yourself."
 - When a key is needed, offer the clean path first, in one line: "Run `modlens config set gemini-api.apiKey` in your terminal and paste the key at the hidden prompt. It stays out of this chat and out of your shell history, and I never see it." Most users will paste the key into the chat anyway, because that is the convenient path, and that is fine: take exactly the key they hand over, use it, and never go looking for keys they did not. The offer is for the users who care, not a gate.
 
@@ -33,7 +33,7 @@ Consent rules:
 
 | The user agreed to | Run |
 | :-- | :-- |
-| Reusing a harness CLI | `modlens config set reuse.<claude\|codex\|opencode\|pi\|grok> true` (one per consent) |
+| Reusing a harness CLI | `modlens config set reuse.<claude\|opencode\|pi\|grok> true` (one per consent) |
 | A Gemini key they handed over | `modlens config set gemini-api.apiKey <key>` |
 | An OpenAI-compatible endpoint | `config set openai.baseUrl / openai.apiKey / openai.model` |
 | Guard rules for their text-only model | `modlens config set guards.allowModels '["<pattern>"]'` (patterns: `references/configure.md`) |
