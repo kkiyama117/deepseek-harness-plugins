@@ -173,6 +173,14 @@ class DispatchTest(unittest.TestCase):
     def load(self, name):
         return json.loads((self.evidence / name).read_text())
 
+    def set_lineage(self, n, value):
+        record = self.load(f'review-{n}.json')
+        record['lineage'] = value
+        (self.evidence / f'review-{n}.json').write_text(json.dumps(record, indent=2) + '\n')
+
+    def revert(self):
+        git(*COMMIT_CONFIG, 'revert', '--no-edit', 'HEAD', cwd=self.worktree)
+
     def fake_check(self, exit, lines, commit=None, stderr='', killed=False):
         path = self.base / 'kstack-accept-check'
         script = ['#!/bin/sh',
@@ -983,6 +991,56 @@ class DispatchTest(unittest.TestCase):
         record = self.load('review-3.json')
         self.assertEqual(record['kind'], 'round')
         self.assertEqual(record['round'], 2)
+
+    def test_review_round_2_case_wins_over_a_further_reviewer(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.set_lineage(1, 'other')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e', 'TOTAL 1')))
+        self.dispose(('2.1', 'fixed', 'abc'))
+        self.revert()
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load('review-2.json')['kind'], 'fixcheck')
+        self.assertIn('kind round (derived)', out)
+        record = self.load('review-3.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 2)
+
+    def test_review_further_reviewer_after_round_2_keeps_round_2(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.set_lineage(1, 'other')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e', 'TOTAL 1')))
+        self.dispose(('2.1', 'fixed', 'abc'))
+        self.revert()
+        self.invoke('review', 'T1')
+        self.set_lineage(3, 'other')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-4.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 2)
+
+    def test_review_derives_fixcheck_after_a_fixed_round_1_high(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e', 'TOTAL 1')))
+        self.dispose(('1.1', 'fixed', 'abc'))
+        self.commit_change('x.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('kind fixcheck (derived)', out)
+        record = self.load('review-2.json')
+        self.assertEqual(record['kind'], 'fixcheck')
+        self.assertIsNone(record['round'])
 
     def test_review_derives_fixcheck_after_a_wrong_high(self):
         self.invoke('card', 'T1', '--no-worker')

@@ -849,35 +849,36 @@ def _review(args, root, worker):
     lineage = implementer_lineage(REVIEW_ROUTE)
     rounds = [record for record in history if record['kind'] == 'round']
     latest_round = rounds[-1] if rounds else None
-    derived = 'fixcheck'
-    if latest_round is None:
+    first_round = next((record for record in rounds if record['round'] == 1), None)
+    round2_case = False
+    if first_round is not None and not any(record['round'] == 2 for record in rounds):
+        for record in history:
+            if record['kind'] != 'fixcheck' or record['seq'] <= first_round['seq']:
+                continue
+            if record['state'] == state:
+                continue
+            findings, _ = parse_answer(record['answer'])
+            for index, line in enumerate(findings, 1):
+                match = FINDING.match(line)
+                disposition = (rows or {}).get(f'{record["seq"]}.{index}', ('', ''))[0]
+                if (match and match.group('sev').lower() == 'high'
+                        and disposition == 'fixed'):
+                    round2_case = True
+                    break
+            if round2_case:
+                break
+    round2_number = None
+    if round2_case:
         derived = 'round'
-    elif latest_round['state'] == state and not any(
+        round2_number = 1 + max((record['round'] for record in rounds), default=0)
+    elif latest_round is not None and latest_round['state'] == state and not any(
             record['lineage'] == lineage and record['round'] == latest_round['round']
             for record in rounds):
         derived = 'round'
+    elif not rounds:
+        derived = 'round'
     else:
-        first_round = next((record for record in rounds if record['round'] == 1), None)
-        if first_round is not None and not any(record['round'] == 2 for record in rounds):
-            candidates = [record for record in history
-                          if (record['kind'] == 'round' and record['round'] == 1)
-                          or (record['kind'] == 'fixcheck'
-                              and record['seq'] > first_round['seq'])]
-            for record in candidates:
-                if record['state'] == state or rows is None:
-                    continue
-                findings, _ = parse_answer(record['answer'])
-                fixed_high = False
-                for index, line in enumerate(findings, 1):
-                    match = FINDING.match(line)
-                    disposition = rows.get(f'{record["seq"]}.{index}', ('', ''))[0]
-                    if (match and match.group('sev').lower() == 'high'
-                            and disposition == 'fixed'):
-                        fixed_high = True
-                        break
-                if fixed_high:
-                    derived = 'round'
-                    break
+        derived = 'fixcheck'
     if args.kind is None:
         kind = derived
         print(f'kind {derived} (derived)')
@@ -893,7 +894,9 @@ def _review(args, root, worker):
         kind = args.kind
     round_number = None
     if kind == 'round':
-        if latest_round is not None and latest_round['state'] == state:
+        if round2_number is not None:
+            round_number = round2_number
+        elif latest_round is not None and latest_round['state'] == state:
             round_number = latest_round['round']
         else:
             round_number = 1 + max((record['round'] for record in rounds), default=0)
