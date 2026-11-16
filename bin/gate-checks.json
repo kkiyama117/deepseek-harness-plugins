@@ -81,6 +81,15 @@
       }
     }
   ],
+  "plugins/dsh-web-ui/packages/modlens": [
+    {
+      "cwd": ".",
+      "env": {
+        "MODLENS_NODE_MODULES": "/data/softwares/deepseek-harness-plugins/plugins/dsh-web-ui/packages/modlens/node_modules"
+      },
+      "run": "d=$(mktemp -d) && cp -r plugins/dsh-web-ui/packages/modlens \"$d/m\" && rm -rf \"$d/m/node_modules\" && mkdir -p \"$d/m/node_modules/@types\" && for e in commander undici vite vitest typescript @types/node; do ln -s \"$(readlink -f \"$MODLENS_NODE_MODULES/$e\")\" \"$d/m/node_modules/$e\" || exit 1; done && printf \"import base from './vite.config.ts';\\nexport default { ...base, test: { ...base.test, globalSetup: [] } };\\n\" > \"$d/m/gate.vitest.mjs\" && (cd \"$d/m\" && env -u GEMINI_API_KEY -u OPENAI_API_KEY -u OPENAI_BASE_URL -u ANTHROPIC_API_KEY -u ANTHROPIC_BASE_URL sh -c 'node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build && node node_modules/vitest/vitest.mjs run --config gate.vitest.mjs') && cmp \"$d/m/dist/main.js\" plugins/dsh-web-ui/packages/modlens/dist/main.js; c=$?; rm -rf \"$d\"; exit $c"
+    }
+  ],
   "plugins/dsh-workspace-attach": [
     {
       "cwd": "plugins/dsh-workspace-attach",

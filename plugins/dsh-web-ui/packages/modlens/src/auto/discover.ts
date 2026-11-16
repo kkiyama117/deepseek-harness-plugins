@@ -17,8 +17,7 @@ import { resolveSpawnPlan } from '../util/winExec.ts';
  * Mainstream vision-capable model names, as glob patterns against the bare
  * model id (a provider/ prefix is stripped before matching). Deliberately
  * hardcoded: the field moves fast but a release cadence keeps up, and harness
- * metadata (codex input_modalities, pi input) outranks this table wherever it
- * exists. Snapshot: 2026-08.
+ * metadata (pi input) outranks this table wherever it exists. Snapshot: 2026-08.
  */
 const VISION_MODEL_PATTERNS = [
     'claude-*',
@@ -55,7 +54,8 @@ export function isVisionModel(modelId: string): boolean {
     return VISION_MODEL_PATTERNS.some((pattern) => globMatch(pattern, bare));
 }
 
-export type AutoHarness = 'claude-code' | 'codex' | 'opencode' | 'pi' | 'grok';
+export const AUTO_HARNESSES = ['claude-code', 'opencode', 'pi', 'grok'] as const;
+export type AutoHarness = (typeof AUTO_HARNESSES)[number];
 
 export interface HarnessProbe {
     harness: AutoHarness;
@@ -136,75 +136,6 @@ function probeClaude(env: NodeJS.ProcessEnv): HarnessProbe {
             visionModels: ['anthropic/* (all current models)'],
             source: 'builtin-table' as const,
         };
-    });
-}
-
-function probeCodex(env: NodeJS.ProcessEnv, home: string): HarnessProbe {
-    return timed(() => {
-        const cliPath = findOnPath('codex', env);
-        const base = { harness: 'codex' as const, cliFound: cliPath !== null };
-        if (!cliPath) {
-            return { ...base, visionModels: [], source: 'none' as const };
-        }
-        const codexHome = path.join(home, '.codex');
-        const loggedIn = fs.existsSync(path.join(codexHome, 'auth.json'));
-        // config.toml is optional; a stock install without one routes to the
-        // official lineup, whose default model reads images.
-        if (!fs.existsSync(path.join(codexHome, 'config.toml'))) {
-            return {
-                ...base,
-                cliPath,
-                loggedIn,
-                visionModels: ['default'],
-                source: 'builtin-table' as const,
-            };
-        }
-        try {
-            // Two known keys out of a TOML file: strict line-anchored reads, no
-            // TOML dependency for this.
-            const toml = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf-8');
-            const catalogPath = toml.match(/^model_catalog_json\s*=\s*"([^"]+)"/m)?.[1];
-            const thirdParty = /^model_provider\s*=/m.test(toml);
-            if (!catalogPath) {
-                // A stock install routes to OpenAI's own lineup, whose default
-                // model reads images; only a third-party model_provider with no
-                // catalog leaves capability unknowable.
-                return thirdParty
-                    ? { ...base, cliPath, loggedIn, visionModels: [], source: 'none' as const }
-                    : {
-                          ...base,
-                          cliPath,
-                          loggedIn,
-                          visionModels: ['default'],
-                          source: 'builtin-table' as const,
-                      };
-            }
-            const catalog = readJson(catalogPath) as {
-                models?: Array<{ slug?: string; input_modalities?: string[] }>;
-            };
-            const vision = (catalog.models ?? [])
-                .filter((m) => m.slug && (m.input_modalities ?? []).includes('image'))
-                .map((m) => m.slug as string);
-            return {
-                ...base,
-                cliPath,
-                loggedIn,
-                visionModels: vision,
-                source: 'metadata' as const,
-            };
-        } catch (error) {
-            return {
-                ...base,
-                cliPath,
-                loggedIn,
-                visionModels: [],
-                source: 'none' as const,
-                error: redactSecrets(error instanceof Error ? error.message : String(error)).slice(
-                    0,
-                    200,
-                ),
-            };
-        }
     });
 }
 
@@ -352,6 +283,18 @@ function readCache(cachePath: string, ttlMs: number): CacheFile | null {
         if (!Number.isFinite(cachedAtMs) || Date.now() - cachedAtMs > ttlMs) {
             return null;
         }
+        // A probe this build no longer probes (a withdrawn harness) must not
+        // be served from a cache written by an older build.
+        if (
+            !cached.probes.every(
+                (probe) =>
+                    probe !== null &&
+                    typeof probe === 'object' &&
+                    (AUTO_HARNESSES as readonly string[]).includes(probe.harness),
+            )
+        ) {
+            return null;
+        }
         return cached;
     } catch {
         return null;
@@ -374,7 +317,6 @@ export function discoverAuto(options: DiscoverOptions = {}): AutoDiscovery {
     const runCli = options.runCli ?? defaultRunCli;
     const probes = [
         probeClaude(env),
-        probeCodex(env, home),
         probeOpencode(env, runCli),
         probePi(env, home),
         probeGrok(env, home),

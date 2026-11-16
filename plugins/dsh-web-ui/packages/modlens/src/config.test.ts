@@ -163,15 +163,42 @@ describe('guards config', () => {
     it('records per-harness reuse decisions as strict booleans, empty clears', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-cfg-'));
         const file = path.join(dir, 'config.json');
-        setConfigValue('reuse.codex', 'true', file);
+        setConfigValue('reuse.opencode', 'true', file);
         setConfigValue('reuse.pi', 'false', file);
-        expect(loadConfigFile(file).reuse).toEqual({ codex: true, pi: false });
-        setConfigValue('reuse.codex', '', file);
+        expect(loadConfigFile(file).reuse).toEqual({ opencode: true, pi: false });
+        setConfigValue('reuse.opencode', '', file);
         expect(loadConfigFile(file).reuse).toEqual({ pi: false });
-        expect(() => setConfigValue('reuse.codex', 'maybe', file)).toThrow('true or false');
+        expect(() => setConfigValue('reuse.opencode', 'maybe', file)).toThrow('true or false');
         expect(() => setConfigValue('reuse.gemini', 'true', file)).toThrow('Unknown reuse');
         // auto never shipped; it is just an unknown key like any other.
         expect(() => setConfigValue('auto', 'true', file)).toThrow('Invalid config key');
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('refuses reuse.codex and names the rule', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-cfg-'));
+        const file = path.join(dir, 'config.json');
+        const message =
+            'reuse.codex is refused: modlens never runs the Codex CLI. Call OpenAI models through the openai provider with its own API key, or through a DSH route.';
+        for (const value of ['true', 'false', 'TRUE']) {
+            let thrown: Error | null = null;
+            try {
+                setConfigValue('reuse.codex', value, file);
+            } catch (error) {
+                thrown = error as Error;
+            }
+            expect(thrown?.message).toBe(message);
+            expect(loadConfigFile(file).reuse).toBeUndefined();
+        }
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('clears a reuse.codex grant written before the rule', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-cfg-'));
+        const file = path.join(dir, 'config.json');
+        fs.writeFileSync(file, JSON.stringify({ reuse: { codex: true, pi: false } }));
+        setConfigValue('reuse.codex', '', file);
+        expect(loadConfigFile(file).reuse).toEqual({ pi: false });
         fs.rmSync(dir, { recursive: true, force: true });
     });
 
@@ -190,10 +217,10 @@ describe('guards config', () => {
     it('renders reuse decisions and allowModels in the effective config', async () => {
         const { renderEffectiveConfig } = await import('./config.ts');
         const rendered = renderEffectiveConfig(
-            { reuse: { codex: false, pi: true }, guards: { allowModels: ['deepseek-v4-*'] } },
+            { reuse: { opencode: false, pi: true }, guards: { allowModels: ['deepseek-v4-*'] } },
             {},
         );
-        expect(rendered).toContain('"codex": "false (file)"');
+        expect(rendered).toContain('"opencode": "false (file)"');
         expect(rendered).toContain('"pi": "true (file)"');
         expect(rendered).toContain('allowModels');
     });

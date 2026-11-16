@@ -1555,7 +1555,7 @@ function listProviders() {
   return [...new Set(Object.values(PROVIDERS).map((provider) => provider.name))];
 }
 const STRING_FIELDS = ["apiKey", "baseUrl", "model", "proxy"];
-const REUSE_HARNESSES = ["claude", "codex", "opencode", "pi", "grok"];
+const REUSE_HARNESSES = ["claude", "opencode", "pi", "grok"];
 const CONFIG_DIR = path.join(os.homedir(), ".modlens");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const ENV_BINDINGS = {
@@ -1658,23 +1658,36 @@ function setConfigValue(dottedKey, value, configPath = CONFIG_PATH) {
     }
   } else if (dottedKey.startsWith("reuse.")) {
     const harness = dottedKey.slice("reuse.".length);
-    if (!REUSE_HARNESSES.includes(harness)) {
-      throw new Error(
-        `Unknown reuse harness: ${harness}. Use ${REUSE_HARNESSES.join(", ")}.`
-      );
-    }
-    const key = harness;
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "") {
-      delete config2.reuse?.[key];
-      if (config2.reuse && Object.keys(config2.reuse).length === 0) {
-        delete config2.reuse;
+    if (harness === "codex") {
+      if (value.trim() === "") {
+        delete config2.reuse?.codex;
+        if (config2.reuse && Object.keys(config2.reuse).length === 0) {
+          delete config2.reuse;
+        }
+      } else {
+        throw new Error(
+          "reuse.codex is refused: modlens never runs the Codex CLI. Call OpenAI models through the openai provider with its own API key, or through a DSH route."
+        );
       }
-    } else if (normalized !== "true" && normalized !== "false") {
-      throw new Error(`reuse.${harness} must be true or false (empty clears).`);
     } else {
-      config2.reuse ??= {};
-      config2.reuse[key] = normalized === "true";
+      if (!REUSE_HARNESSES.includes(harness)) {
+        throw new Error(
+          `Unknown reuse harness: ${harness}. Use ${REUSE_HARNESSES.join(", ")}.`
+        );
+      }
+      const key = harness;
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "") {
+        delete config2.reuse?.[key];
+        if (config2.reuse && Object.keys(config2.reuse).length === 0) {
+          delete config2.reuse;
+        }
+      } else if (normalized !== "true" && normalized !== "false") {
+        throw new Error(`reuse.${harness} must be true or false (empty clears).`);
+      } else {
+        config2.reuse ??= {};
+        config2.reuse[key] = normalized === "true";
+      }
     }
   } else if (dottedKey.startsWith("guards.")) {
     setGuardsValue(config2, dottedKey.slice("guards.".length), value);
@@ -1682,7 +1695,7 @@ function setConfigValue(dottedKey, value, configPath = CONFIG_PATH) {
     const dot = dottedKey.indexOf(".");
     if (dot <= 0 || dot === dottedKey.length - 1) {
       throw new Error(
-        `Invalid config key: ${dottedKey}. Use "provider", "proxy", "reuse.<claude|codex|opencode|pi|grok>", "guards.<denyModels|allowModels|denyWhenUnknown>", or "<provider>.<apiKey|baseUrl|model|proxy|extraBody|structuredOutput>".`
+        `Invalid config key: ${dottedKey}. Use "provider", "proxy", "reuse.<claude|opencode|pi|grok>", "guards.<denyModels|allowModels|denyWhenUnknown>", or "<provider>.<apiKey|baseUrl|model|proxy|extraBody|structuredOutput>".`
       );
     }
     const providerName = dottedKey.slice(0, dot);
@@ -2207,6 +2220,7 @@ function isVisionModel(modelId) {
   const bare = modelId.includes("/") ? modelId.slice(modelId.lastIndexOf("/") + 1) : modelId;
   return VISION_MODEL_PATTERNS.some((pattern) => globMatch(pattern, bare));
 }
+const AUTO_HARNESSES = ["claude-code", "opencode", "pi", "grok"];
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1e3;
 const CLI_TIMEOUT_MS = 1e4;
 function defaultRunCli(bin, args, timeoutMs) {
@@ -2243,61 +2257,6 @@ function probeClaude(env) {
       visionModels: ["anthropic/* (all current models)"],
       source: "builtin-table"
     };
-  });
-}
-function probeCodex(env, home) {
-  return timed(() => {
-    const cliPath = findOnPath("codex", env);
-    const base = { harness: "codex", cliFound: cliPath !== null };
-    if (!cliPath) {
-      return { ...base, visionModels: [], source: "none" };
-    }
-    const codexHome = path.join(home, ".codex");
-    const loggedIn = fs.existsSync(path.join(codexHome, "auth.json"));
-    if (!fs.existsSync(path.join(codexHome, "config.toml"))) {
-      return {
-        ...base,
-        cliPath,
-        loggedIn,
-        visionModels: ["default"],
-        source: "builtin-table"
-      };
-    }
-    try {
-      const toml = fs.readFileSync(path.join(codexHome, "config.toml"), "utf-8");
-      const catalogPath = toml.match(/^model_catalog_json\s*=\s*"([^"]+)"/m)?.[1];
-      const thirdParty = /^model_provider\s*=/m.test(toml);
-      if (!catalogPath) {
-        return thirdParty ? { ...base, cliPath, loggedIn, visionModels: [], source: "none" } : {
-          ...base,
-          cliPath,
-          loggedIn,
-          visionModels: ["default"],
-          source: "builtin-table"
-        };
-      }
-      const catalog = readJson(catalogPath);
-      const vision = (catalog.models ?? []).filter((m) => m.slug && (m.input_modalities ?? []).includes("image")).map((m) => m.slug);
-      return {
-        ...base,
-        cliPath,
-        loggedIn,
-        visionModels: vision,
-        source: "metadata"
-      };
-    } catch (error) {
-      return {
-        ...base,
-        cliPath,
-        loggedIn,
-        visionModels: [],
-        source: "none",
-        error: redactSecrets(error instanceof Error ? error.message : String(error)).slice(
-          0,
-          200
-        )
-      };
-    }
   });
 }
 function probeGrok(env, home) {
@@ -2411,6 +2370,11 @@ function readCache(cachePath, ttlMs) {
     if (!Number.isFinite(cachedAtMs) || Date.now() - cachedAtMs > ttlMs) {
       return null;
     }
+    if (!cached.probes.every(
+      (probe) => probe !== null && typeof probe === "object" && AUTO_HARNESSES.includes(probe.harness)
+    )) {
+      return null;
+    }
     return cached;
   } catch {
     return null;
@@ -2430,7 +2394,6 @@ function discoverAuto(options = {}) {
   const runCli = options.runCli ?? defaultRunCli;
   const probes = [
     probeClaude(env),
-    probeCodex(env, home),
     probeOpencode(env, runCli),
     probePi(env, home),
     probeGrok(env, home)
@@ -2446,81 +2409,6 @@ function discoverAuto(options = {}) {
   return { probes, cachedAt, fromCache: false };
 }
 const KEY_FETCH_TIMEOUT_MS = 1e4;
-function codexCliRoute(visionModel) {
-  return {
-    name: "codex-cli",
-    defaultModel: visionModel,
-    isolateWorkdir: true,
-    reuseNote: "this read reused the local Codex CLI login and spent that account's quota.",
-    buildInvocation: (options) => {
-      if (options.imageKind === "remote") {
-        throw new Error(
-          "codex-cli route reads local files only. Remote URLs stay on the inline providers."
-        );
-      }
-      const prompt = `${buildVisionPrompt({
-        imageSource: options.imageSource,
-        imageKind: "inline",
-        extraPrompt: options.extraPrompt
-      })}
-
-${JSON_TEMPLATE_INSTRUCTION}`;
-      const model = options.model || visionModel;
-      const args = [
-        "exec",
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "-s",
-        "read-only",
-        "--json",
-        "-i",
-        options.imageSource
-      ];
-      if (model && model !== "default") {
-        args.push("-m", model);
-      }
-      args.push("--", prompt);
-      return {
-        command: options.providerBin || "codex",
-        args,
-        cwd: path.resolve(options.workdir || path.dirname(options.imageSource))
-      };
-    },
-    parseOutput: (stdout) => {
-      let threadId = null;
-      let usage = null;
-      let lastMessage = null;
-      for (const line of stdout.split("\n")) {
-        const event = tryParseJson(line.trim());
-        if (!event) {
-          continue;
-        }
-        if (event.type === "thread.started" && event.thread_id) {
-          threadId = event.thread_id;
-        }
-        if (event.type === "turn.completed" && event.usage !== void 0) {
-          usage = event.usage;
-        }
-        if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
-          lastMessage = event.item.text;
-        }
-      }
-      if (!lastMessage) {
-        throw new Error(
-          "codex exec produced no agent message. Check the Codex login (run: codex)."
-        );
-      }
-      const result = extractJson(lastMessage);
-      if (result === null) {
-        throw new Error(`codex returned a non-JSON answer: ${truncate(lastMessage)}`);
-      }
-      return {
-        result,
-        meta: { conversationId: threadId, durationSeconds: null, usage }
-      };
-    }
-  };
-}
 function opencodeCliRoute(modelId) {
   return {
     name: "opencode-cli",
@@ -2825,13 +2713,9 @@ function reuseProviders(kind, config2, options = {}) {
     } catch {
     }
   }
-  if (kind === "local" && (grants.codex === true || grants.opencode === true || grants.grok === true)) {
+  if (kind === "local" && (grants.opencode === true || grants.grok === true)) {
     try {
       const discovery = options.discovery ?? discoverAuto({ env, home });
-      const codex = discovery.probes.find((probe) => probe.harness === "codex");
-      if (grants.codex === true && codex?.cliFound && codex.loggedIn !== false && codex.visionModels[0]) {
-        agents.push(codexCliRoute(codex.visionModels[0]));
-      }
       const opencode = discovery.probes.find((probe) => probe.harness === "opencode");
       if (grants.opencode === true && opencode?.cliFound && opencode.visionModels[0]) {
         agents.push(opencodeCliRoute(opencode.visionModels[0]));
@@ -2979,7 +2863,6 @@ function composeChain(kind, config2, autoOptions) {
   return chain;
 }
 const REUSE_KEY_BY_HARNESS = {
-  codex: "codex",
   opencode: "opencode",
   pi: "pi",
   grok: "grok"

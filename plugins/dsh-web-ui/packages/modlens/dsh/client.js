@@ -179,7 +179,7 @@ window.__ModuleLoader__.load({
     // ~/.modlens/config.json: the browser never sees an API key, and never
     // sends a blank one back over a stored key.
     var ENGINES = ['antigravity-cli', 'gemini-api', 'openai', 'anthropic', 'claude-cli']
-    var REUSE = ['claude', 'codex', 'opencode', 'pi', 'grok']
+    var REUSE = ['claude', 'opencode', 'pi', 'grok']
 
     // Two short label sets rather than a locale bundle: the card has a dozen
     // strings, and a bundle would be more machinery than the thing it labels.
@@ -247,7 +247,7 @@ window.__ModuleLoader__.load({
     // The next draft when the engine changes or a summary arrives. The three
     // engine fields belong to the newly selected engine; the reuse grants are
     // the user's pending answers and survive an engine switch, since granting
-    // codex has nothing to do with which engine reads the images.
+    // opencode has nothing to do with which engine reads the images.
     function nextDraft(summary, provider, keepReuse) {
       // provider '' is its own answer: not pinned, the failover chain
       // decides. There is then no single engine whose key belongs in these

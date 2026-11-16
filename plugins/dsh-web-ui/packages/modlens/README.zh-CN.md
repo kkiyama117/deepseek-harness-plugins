@@ -45,7 +45,7 @@ DeepSeek Harness 粘贴识图有两种玩法。
 **直接粘贴图片识别** 无需先保存成文件再提供路径。
 
 - **全网最轻量。** 不用 hook，不套壳，不跑本地代理进程，不改任何 harness 配置的一行字：在 skill 类 harness 里它就是一个 skill 文件夹，在 dsh 里就是一个插件。卸载等于删个文件夹，你的 agent 立刻回到原样。
-- **零配置起手。** 复用 Claude Code、Codex、OpenCode、Pi 已配置，直接复用你本机的其他多模态模型。什么都没有？Antigravity CLI 是免 key 的免费通道，配一个免费 Gemini key 可将识别耗时降至 5 到 10 秒。
+- **零配置起手。** 复用 Claude Code、OpenCode、Pi 已配置，直接复用你本机的其他多模态模型。什么都没有？Antigravity CLI 是免 key 的免费通道，配一个免费 Gemini key 可将识别耗时降至 5 到 10 秒。
 - **基于证据而非想象。** 全文转录、按阅读顺序划分的版面区块、实体与关系列表，模型引用的是具体内容。
 - **一次安装，多端可用。** Claude Code、Codex、Pi、OpenCode 均经真机验证。
 
@@ -55,7 +55,7 @@ DeepSeek Harness 粘贴识图有两种玩法。
 
 > 按 https://github.com/liustack/modlens 的 INSTALL.md 安装并配置 modlens skill，完成后运行体检并把结果告诉我。
 
-安装会先盘点你机器上已有的东西。Claude Code、Codex、OpenCode 或 Pi 里任何一个已有的登录态都可能就够了：modlens 复用前一定先征得你同意，体检报告会说清现状。
+安装会先盘点你机器上已有的东西。Claude Code、OpenCode 或 Pi 里任何一个已有的登录态都可能就够了：modlens 复用前一定先征得你同意，体检报告会说清现状。
 
 **第二步，只在体检两手空空时，才需要你配一个免费引擎。** 推荐免费的 Gemini api key（到 [Google AI Studio](https://aistudio.google.com) 领取，约三分钟，无需信用卡），配上后每次识别 5 到 10 秒。其他平台的免费 openai 兼容 key 也行。想完全免注册就装 Antigravity CLI，然后完成登录：
 
@@ -64,7 +64,7 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy                                                           # 浏览器完成登录后退出
 ```
 
-安装还会盘点本机其他 harness CLI（Codex、OpenCode、Pi）里可触达的视觉能力，并逐个询问是否允许 modlens 复用。获准的登录态与你自己配的引擎平级入池，每次复用都会在结果里标明花的是谁的额度。
+安装还会盘点本机其他 harness CLI（OpenCode、Pi）里可触达的视觉能力，并逐个询问是否允许 modlens 复用。获准的登录态与你自己配的引擎平级入池，每次复用都会在结果里标明花的是谁的额度。
 
 **DeepSeek Harness（dsh）用户不走 skill 流程**，本包就是原生 dsh 插件：
 
@@ -114,7 +114,6 @@ modlens config set openai.model   qwen3-vl-plus
 
 | 复用来源 | 需要什么                       | 授权命令                         | 走哪条道                                               |
 | :------- | :----------------------------- | :------------------------------- | :----------------------------------------------------- |
-| Codex    | 已登录且有视觉模型的 Codex CLI | `config set reuse.codex true`    | agent 通道，15-45 秒                                   |
 | OpenCode | OpenCode 里配好的视觉模型      | `config set reuse.opencode true` | agent 通道，15-45 秒                                   |
 | Pi       | Pi 持有的模型凭据              | `config set reuse.pi true`       | API key 直接升级到 5-10 秒的快车道，OAuth 驱动 Pi 本体 |
 | Grok     | 已登录的 Grok CLI（SuperGrok） | `config set reuse.grok true`     | agent 通道，15-45 秒                                   |

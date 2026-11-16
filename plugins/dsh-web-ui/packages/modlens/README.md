@@ -41,7 +41,7 @@ Pasting an image works two ways. **① Just paste.** On a text-only model the pa
 **Paste an image and it reads it.** No saving to a file and passing a path first.
 
 - **The lightest touch on the market.** No hooks, no wrappers, no local proxy daemon, not a single line changed in any harness config: on the skill harnesses it is exactly one skill folder, on dsh exactly one plugin. Uninstalling is deleting a folder, and your agents are back to stock.
-- **Zero-config start.** Reuses what Claude Code, Codex, OpenCode, or Pi already have set up: the multimodal models on your machine go straight to work. Nothing at all? Antigravity CLI is a free no-key channel, and a free Gemini key brings a read down to 5-10 seconds.
+- **Zero-config start.** Reuses what Claude Code, OpenCode, or Pi already have set up: the multimodal models on your machine go straight to work. Nothing at all? Antigravity CLI is a free no-key channel, and a free Gemini key brings a read down to 5-10 seconds.
 - **Evidence, not imagination.** Full transcription, reading-order layout regions, entity and relation lists. The model quotes specifics.
 - **Install once, use everywhere.** Verified on real machines in Claude Code, Codex, Pi, and OpenCode.
 
@@ -51,7 +51,7 @@ Pasting an image works two ways. **① Just paste.** On a text-only model the pa
 
 > Install and configure the modlens skill following https://github.com/liustack/modlens/blob/main/INSTALL.md, then run the health check and tell me the result.
 
-The install starts by checking what your machine already has. An existing login in Claude Code, Codex, OpenCode, or Pi can be enough: modlens asks before reusing any of them, and the health check tells you where things stand.
+The install starts by checking what your machine already has. An existing login in Claude Code, OpenCode, or Pi can be enough: modlens asks before reusing any of them, and the health check tells you where things stand.
 
 **Step 2, only if the health check comes back empty, set up a free engine.** The recommended choice is a free Gemini API key (about three minutes at [Google AI Studio](https://aistudio.google.com), no credit card), which also makes every read 5-10 seconds. A free OpenAI-compatible key from another platform works too. To avoid any sign-up, install Antigravity CLI instead, then sign in:
 
@@ -60,7 +60,7 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy                                                           # sign in, then exit
 ```
 
-The install also inventories vision reachable through your other local harness CLIs (Codex, OpenCode, Pi) and asks, per harness, whether modlens may reuse it. Granted logins join the engine pool as equals, and every reused read is labeled with whose quota it spent.
+The install also inventories vision reachable through your other local harness CLIs (OpenCode, Pi) and asks, per harness, whether modlens may reuse it. Granted logins join the engine pool as equals, and every reused read is labeled with whose quota it spent.
 
 ## Usage
 
@@ -102,7 +102,6 @@ Two more sources of vision need zero new keys, each behind one explicit consent 
 
 | Reused CLI | What it needs | Grant with | Rides as |
 | :-- | :-- | :-- | :-- |
-| Codex | a signed-in Codex CLI with a vision model | `config set reuse.codex true` | agent lane, 15-45s |
 | OpenCode | a vision model configured in OpenCode | `config set reuse.opencode true` | agent lane, 15-45s |
 | Pi | model credentials held by Pi | `config set reuse.pi true` | an API key upgrades to the 5-10s inline lane, OAuth drives Pi itself |
 | Grok | a signed-in Grok CLI (SuperGrok) | `config set reuse.grok true` | agent lane, 15-45s |

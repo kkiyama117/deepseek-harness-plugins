@@ -2,16 +2,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
+import type { ModlensConfig } from '../config.ts';
 import type { BuildProviderInvocationOptions, VisionProvider } from '../providers/index.ts';
 import type { AutoDiscovery } from './discover.ts';
 import {
-    codexCliRoute,
     grokCliRoute,
     opencodeCliRoute,
     piCliRoute,
     piRoutes,
     reuseProviders,
 } from './routes.ts';
+import * as routesModule from './routes.ts';
 
 function pathWith(bins: Record<string, string>): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-routes-bin-'));
@@ -27,70 +28,6 @@ const BUILD_BASE: BuildProviderInvocationOptions = {
     timeoutMs: 60_000,
     workdir: '/tmp/work',
 };
-
-describe('codexCliRoute', () => {
-    it('builds a codex exec invocation with image, json events, and the template prompt', () => {
-        const route = codexCliRoute('gpt-5.6-sol');
-        const invocation = route.buildInvocation?.(BUILD_BASE);
-        expect(invocation?.command).toBe('codex');
-        const args = invocation?.args ?? [];
-        expect(args[0]).toBe('exec');
-        expect(args).toContain('--json');
-        // No --output-schema: codex routes it into OpenAI strict structured
-        // output, which rejects our schema (additionalProperties must be
-        // false everywhere). The prompt template carries the shape instead,
-        // and the analyzer's schema check verifies the result (seen live).
-        expect(args).not.toContain('--output-schema');
-        expect(args).toContain('-i');
-        expect(args[args.indexOf('-i') + 1]).toBe('/tmp/shot.png');
-        expect(args).toContain('-m');
-        expect(args[args.indexOf('-m') + 1]).toBe('gpt-5.6-sol');
-        // The prompt is the positional tail, fenced off by -- so the variadic
-        // -i <FILE>... cannot swallow it as a second image (seen live), and it
-        // carries the JSON template.
-        expect(args[args.indexOf('--') + 1]).toBe(args[args.length - 1]);
-        expect(args[args.length - 1]).toContain('attached');
-        expect(args[args.length - 1]).toContain('"ocr"');
-        // The route resolves workdir, so on Windows '/tmp/work' gains a drive.
-        expect(invocation?.cwd).toBe(path.resolve('/tmp/work'));
-    });
-
-    it('omits -m for the official default model and refuses remote URLs', () => {
-        const route = codexCliRoute('default');
-        const args = route.buildInvocation?.(BUILD_BASE).args ?? [];
-        expect(args).not.toContain('-m');
-        expect(() =>
-            route.buildInvocation?.({
-                ...BUILD_BASE,
-                imageKind: 'remote',
-                imageSource: 'https://x/y.png',
-            }),
-        ).toThrow(/local files only/);
-    });
-
-    it('parses the codex event stream: last agent_message wins, usage and thread id kept', () => {
-        const route = codexCliRoute('default');
-        const payload = { summary: 'ok' };
-        const stdout = [
-            JSON.stringify({ type: 'thread.started', thread_id: 't-1' }),
-            JSON.stringify({ type: 'turn.started' }),
-            JSON.stringify({
-                type: 'item.completed',
-                item: { id: 'item_0', type: 'agent_message', text: JSON.stringify(payload) },
-            }),
-            JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5 } }),
-        ].join('\n');
-        const parsed = route.parseOutput?.(stdout);
-        expect(parsed?.result).toEqual(payload);
-        expect(parsed?.meta.conversationId).toBe('t-1');
-        expect(parsed?.meta.usage).toEqual({ input_tokens: 5 });
-    });
-
-    it('throws a clear error when no agent message arrived', () => {
-        const route = codexCliRoute('default');
-        expect(() => route.parseOutput?.('{"type":"turn.started"}')).toThrow(/no agent message/i);
-    });
-});
 
 describe('opencodeCliRoute', () => {
     it('builds an opencode run invocation: prompt first, then model, format, file', () => {
@@ -403,7 +340,7 @@ describe('pi credential safety and shape mapping', () => {
 });
 
 describe('reuseProviders', () => {
-    const discovery: AutoDiscovery = {
+    const discovery = {
         cachedAt: new Date().toISOString(),
         fromCache: false,
         probes: [
@@ -439,23 +376,23 @@ describe('reuseProviders', () => {
                 elapsedMs: 0,
             },
         ],
-    };
+    } as unknown as AutoDiscovery;
 
     it('builds routes only for granted harnesses, region-ordered', () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-routes-home-'));
         const routes = reuseProviders(
             'local',
-            { reuse: { codex: true, opencode: true, grok: true } },
+            { reuse: { opencode: true, grok: true } },
             { env: { PATH: '' }, home, discovery },
         );
         expect(routes.inline).toEqual([]);
-        expect(routes.agents.map((r) => r.name)).toEqual(['codex-cli', 'opencode-cli', 'grok-cli']);
+        expect(routes.agents.map((r) => r.name)).toEqual(['opencode-cli', 'grok-cli']);
         fs.rmSync(home, { recursive: true, force: true });
     });
 
     it('builds nothing without grants, even when discovery is full', () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-routes-home-'));
-        for (const config of [{}, { reuse: { codex: false, opencode: false } }]) {
+        for (const config of [{}, { reuse: { opencode: false, grok: false } }]) {
             const routes = reuseProviders('local', config, { env: { PATH: '' }, home, discovery });
             expect(routes).toEqual({ inline: [], agents: [] });
         }
@@ -466,10 +403,23 @@ describe('reuseProviders', () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-routes-home-'));
         const routes = reuseProviders(
             'remote',
-            { reuse: { codex: true, opencode: true, pi: true } },
+            { reuse: { opencode: true, grok: true, pi: true } },
             { env: { PATH: '' }, home, discovery },
         );
         expect(routes.agents).toEqual([]);
+        fs.rmSync(home, { recursive: true, force: true });
+    });
+
+    it('never builds a codex route from a legacy grant', () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-routes-home-'));
+        const routes = reuseProviders(
+            'local',
+            { reuse: { codex: true, opencode: true } } as unknown as ModlensConfig,
+            { env: { PATH: '' }, home, discovery },
+        );
+        expect(routes.agents.map((r) => r.name)).toEqual(['opencode-cli']);
+        // Assembled so the grep that proves the removed route is gone stays clean.
+        expect('codex' + 'CliRoute' in routesModule).toBe(false);
         fs.rmSync(home, { recursive: true, force: true });
     });
 });

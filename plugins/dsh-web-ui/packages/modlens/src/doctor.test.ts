@@ -252,20 +252,18 @@ describe('buildDoctorReport: reuse', () => {
     it('probes the four harnesses fresh and maps grant decisions with defaults', () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'modlens-doctor-home-'));
         const report = buildDoctorReport({
-            config: { reuse: { codex: true, pi: false } },
+            config: { reuse: { opencode: true, pi: false } },
             env: { PATH: '', MODLENS_HARNESS: 'none' },
             auto: { home },
         });
         expect(report.reuse.decisions).toEqual({
             claude: 'granted',
-            codex: 'granted',
-            opencode: 'not asked',
+            opencode: 'granted',
             pi: 'refused',
             grok: 'not asked',
         });
         expect(report.reuse.probes.map((p) => p.harness).sort()).toEqual([
             'claude-code',
-            'codex',
             'grok',
             'opencode',
             'pi',
@@ -283,9 +281,9 @@ describe('buildDoctorReport: reuse', () => {
         });
         const rendered = renderDoctorReport(report);
         expect(rendered).toContain('Reuse');
-        expect(rendered).toContain('codex not asked');
+        expect(rendered).toContain('opencode not asked');
         expect(rendered).toContain('claude granted');
-        expect(rendered).toContain('codex: cli not found');
+        expect(rendered).toContain('opencode: cli not found');
         fs.rmSync(home, { recursive: true, force: true });
     });
 });
