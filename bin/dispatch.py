@@ -666,6 +666,7 @@ def _worktree(main, card_id):
 
 
 def _ambiguity(args, root, worker):
+    issue_branch(root)
     if args.ids:
         ids = sorted(set(args.ids), key=_card_number)
         cards = [find_card(root, card_id) for card_id in ids]
@@ -744,6 +745,7 @@ def _card(args, root, worker):
 
 
 def _review(args, root, worker):
+    branch = issue_branch(root)
     main = main_checkout(root)
     if args.main:
         card = find_card(root, args.id)
@@ -757,7 +759,6 @@ def _review(args, root, worker):
             main_review_brief(main, root, card, diff, untracked, gate_code, gate_tail),
             read_only=True, worker=worker)
         return code
-    branch = issue_branch(root)
     card = find_card(root, args.id)
     worktree = _worktree(main, card.id)
     if not worktree.is_dir():

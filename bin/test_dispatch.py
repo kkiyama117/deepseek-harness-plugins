@@ -625,6 +625,23 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn('no cards to review', err)
 
+    def test_ambiguity_refuses_main(self):
+        git('switch', 'main', cwd=self.root)
+        (self.root / 'tasks/T1.md').write_text(CARD_T1)
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('the checkout is on main; run the dispatcher from the issue worktree', err)
+        self.assertEqual(self.runs(), 0)
+        self.assertEqual(list((self.root / 'reports/agents').glob('*.md')), [])
+
+    def test_ambiguity_refuses_a_card_worktree(self):
+        self.invoke('card', 'T1', '--no-worker')
+        code, out, err = self.invoke('ambiguity', 'T1', root=self.worktree)
+        self.assertEqual(code, 2)
+        self.assertIn('the checkout is a card worktree; run the dispatcher from the issue worktree',
+                      err)
+        self.assertEqual(self.runs(), 0)
+
     def test_review_runs_the_gate_and_shows_the_diff(self):
         self.invoke('card', 'T1', '--no-worker')
         self.add_gate("print('gate-' + 'said')\n")
@@ -701,6 +718,23 @@ class DispatchTest(unittest.TestCase):
         code, out, err = self.invoke('review', 'T1', '--main', 'tasks/T1.md')
         self.assertEqual(code, 2)
         self.assertIn('no changes in the given paths', err)
+
+    def test_review_main_refuses_main(self):
+        git('switch', 'main', cwd=self.root)
+        (self.root / 'tasks/T1.md').write_text(CARD_T1)
+        code, out, err = self.invoke('review', 'T1', '--main', 'tasks/T1.md')
+        self.assertEqual(code, 2)
+        self.assertIn('the checkout is on main; run the dispatcher from the issue worktree', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_review_main_refuses_a_card_worktree(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'tasks/T1.md').write_text(CARD_T1 + '\nLead change.\n')
+        code, out, err = self.invoke('review', 'T1', '--main', 'tasks/T1.md', root=self.worktree)
+        self.assertEqual(code, 2)
+        self.assertIn('the checkout is a card worktree; run the dispatcher from the issue worktree',
+                      err)
+        self.assertEqual(self.runs(), 0)
 
     def test_gate_writes_gate_json(self):
         self.invoke('card', 'T1', '--no-worker')
