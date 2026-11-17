@@ -1167,6 +1167,95 @@ class DispatchTest(unittest.TestCase):
                       'lines', out)
         self.assertEqual(self.load('review-1.json')['kind'], 'round')
 
+    def test_review_cut_off_round_does_not_count(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y',)))
+        self.assertEqual(self.load('review-1.json')['kind'], 'round')
+        self.dispose(('1.1', 'wrong', 'not a bug'))
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertIn('kind round (derived)', out)
+        record = self.load('review-2.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 1)
+
+    def test_review_cut_off_fixcheck_is_not_covers_from(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y',)))
+        self.assertEqual(self.load('review-2.json')['kind'], 'fixcheck')
+        self.dispose(('2.1', 'wrong', 'not a bug'))
+        self.commit_change('y.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-3.json')
+        self.assertEqual(record['kind'], 'fixcheck')
+        self.assertEqual(record['covers_from'], self.load('review-1.json')['state'])
+        self.assertIn('This run is a fix check of run 1.', self.record_text('stdin-3.txt'))
+
+    def test_review_round_2_case_counts_a_cut_off_fixcheck(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e',)))
+        self.assertEqual(self.load('review-2.json')['kind'], 'fixcheck')
+        self.dispose(('2.1', 'fixed', 'abc'))
+        self.commit_change('y.txt')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-3.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 2)
+
+    def test_review_cut_off_round_2_is_rerun_as_round_2(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1')
+        self.commit_change('x.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | high | bug | e',)))
+        self.dispose(('2.1', 'fixed', 'abc'))
+        self.commit_change('y.txt')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('b.py:1 | low | x | y',)))
+        self.assertEqual(self.load('review-3.json')['kind'], 'round')
+        self.assertEqual(self.load('review-3.json')['round'], 2)
+        self.dispose(('2.1', 'fixed', 'abc'), ('3.1', 'wrong', 'not a bug'))
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        record = self.load('review-4.json')
+        self.assertEqual(record['kind'], 'round')
+        self.assertEqual(record['round'], 2)
+
+    def test_review_supplement_refuses_a_cut_off_run(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('a.py:1 | low | x | y',)))
+        self.dispose(('1.1', 'wrong', 'not a bug'))
+        code, out, err = self.invoke('review', 'T1', '--kind', 'supplement')
+        self.assertEqual(code, 2)
+        self.assertIn('run 1 was cut off; rerun it', err)
+        self.assertEqual(self.runs(), 1)
+        self.assertFalse((self.evidence / 'review-2.json').exists())
+
+    def test_review_records_a_count_mismatch_without_findings_as_optional(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1', worker=self.worker(
+            stdout_lines=('TOTAL 1',)))
+        self.assertEqual(code, 0)
+        self.assertIn('review-1.json written as optional: the answer is incomplete and has no '
+                      'finding', out)
+        self.assertEqual(self.load('review-1.json')['kind'], 'optional')
+
     def test_review_refreshes_the_base_when_gate_json_is_reused(self):
         self.invoke('card', 'T1', '--no-worker')
         self.add_gate('pass\n')
@@ -1558,6 +1647,15 @@ class DispatchTest(unittest.TestCase):
         path = self.base / 'answer.md'
         path.write_text('a.py:1 | high | x | y\n```\nb.py:2 | low | fenced | z\n'
                         'STOPPED inside\n```\nTOTAL 1\n')
+        self.assertEqual(dispatch.parse_answer(path), (['a.py:1 | high | x | y'], True))
+
+    def test_parse_answer_needs_total_to_match_the_findings(self):
+        path = self.base / 'answer.md'
+        path.write_text('a.py:1 | high | x | y\nTOTAL 2\n')
+        self.assertEqual(dispatch.parse_answer(path), (['a.py:1 | high | x | y'], False))
+        path.write_text('TOTAL 1\n')
+        self.assertEqual(dispatch.parse_answer(path), ([], False))
+        path.write_text('a.py:1 | high | x | y\nTOTAL 3\nTOTAL 1\n')
         self.assertEqual(dispatch.parse_answer(path), (['a.py:1 | high | x | y'], True))
 
     def test_read_findings(self):
