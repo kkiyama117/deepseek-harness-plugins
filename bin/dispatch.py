@@ -382,7 +382,7 @@ def repo_states(scope):
 
 def parse_answer(path):
     findings = []
-    total = False
+    total = None
     stopped = False
     fenced = False
     text = Path(path).read_text(encoding='utf-8', errors='replace')
@@ -395,10 +395,10 @@ def parse_answer(path):
         if FINDING.match(line):
             findings.append(line)
         elif re.match(r'^TOTAL\s+\d+\s*$', line):
-            total = True
+            total = int(line.split()[1])
         elif re.match(r'^STOPPED\b', line):
             stopped = True
-    return findings, total and not stopped
+    return findings, total == len(findings) and not stopped
 
 
 def read_findings(directory):
@@ -775,6 +775,8 @@ def _review(args, root, worker):
             records.append((int(match.group(1)), path))
     all_records = []
     history = []
+    required = []
+    whole = set()
     for n, path in sorted(records):
         try:
             record = json.loads(path.read_text(encoding='utf-8'))
@@ -789,13 +791,30 @@ def _review(args, root, worker):
             raise DispatchError(f'bad review record {path}')
         all_records.append((path, record))
         if kind in ('round', 'fixcheck'):
-            history.append(record)
+            required.append(record)
+            try:
+                _, complete = parse_answer(record['answer'])
+            except OSError:
+                raise DispatchError(f'bad review record {path}: cannot read '
+                                    f'{record["answer"]}') from None
+            if type(record.get('exit')) is int and record['exit'] == 0 and complete:
+                whole.add(record['seq'])
+                history.append(record)
     latest = history[-1] if history else None
+    last_required = required[-1] if required else None
     numbers = [int(match.group(1)) for path in directory.iterdir()
                if (match := re.match(r'^review-([0-9]+)\.', path.name))]
     seq = max(numbers, default=0) + 1
-    if args.kind in ('fixcheck', 'supplement') and latest is None:
-        raise DispatchError(f'review --kind {args.kind} needs an earlier round or fixcheck')
+    if args.kind == 'fixcheck' and latest is None:
+        raise DispatchError('review --kind fixcheck needs an earlier round or fixcheck')
+    if args.kind == 'supplement' and last_required is None:
+        raise DispatchError('review --kind supplement needs an earlier round or fixcheck')
+    if args.kind == 'supplement' and last_required['seq'] not in whole:
+        raise DispatchError(
+            f'run {last_required["seq"]} was cut off; rerun it (the derived kind gives the same '
+            'kind, and the same covers_from for a fix check); its UNREAD/DENIED lines are passed '
+            'over once a whole run stands in, and a supplement then covers the whole rerun if that '
+            'one has such lines')
     rows = read_findings(directory)
     for path, record in all_records:
         if record['kind'] == 'optional':
@@ -852,7 +871,7 @@ def _review(args, root, worker):
     first_round = next((record for record in rounds if record['round'] == 1), None)
     round2_case = False
     if first_round is not None and not any(record['round'] == 2 for record in rounds):
-        for record in history:
+        for record in required:
             if record['kind'] != 'fixcheck' or record['seq'] <= first_round['seq']:
                 continue
             if record['state'] == state:
@@ -900,7 +919,7 @@ def _review(args, root, worker):
             round_number = latest_round['round']
         else:
             round_number = 1 + max((record['round'] for record in rounds), default=0)
-    covers = latest['seq'] if kind == 'supplement' else None
+    covers = last_required['seq'] if kind == 'supplement' else None
     covers_from = latest['state'] if kind == 'fixcheck' else None
     base = git('merge-base', 'HEAD', branch, cwd=worktree).stdout.strip()
     diff = git('diff', base, cwd=worktree).stdout
