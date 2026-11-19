@@ -82,7 +82,11 @@ def fake_worker(directory, record, stdout_lines=('answer', 'TOTAL 0'),
              f'n=$(wc -l < {shlex.quote(str(record / "runs.txt"))} | tr -d " ")',
              f'cat > {shlex.quote(str(record))}/stdin-$n.txt',
              f'cat {shlex.quote(str(record))}/stdin-$n.txt '
-             f'>> {shlex.quote(str(record / "stdin.txt"))}']
+             f'>> {shlex.quote(str(record / "stdin.txt"))}',
+             'printf "entry=%s wrap=%s provider=%s wrapped=%s secret=%s\\n" '
+             '"$BOUNDARY_ENTRY" "${WRAP_ENTRY-none}" "$BOUNDARY_PROVIDER" '
+             '"${BOUNDARY_WRAPPED-no}" "${SECRET_TOKEN-unset}" '
+             f'>> {shlex.quote(str(record / "env.txt"))}']
     for line in stderr_lines:
         lines.append(f'printf "%s\\n" {shlex.quote(line)} >&2')
     for line in stdout_lines:
@@ -94,6 +98,37 @@ def fake_worker(directory, record, stdout_lines=('answer', 'TOTAL 0'),
     path.write_text('\n'.join(lines) + '\n')
     path.chmod(0o755)
     return path
+
+
+def fake_boundary(directory, entries=('dsh-ro', 'dsh-ws'),
+                  wrap_prefix=('env', 'BOUNDARY_WRAPPED=1'), launch_text=None,
+                  without_wrap_argv=False, without_child_env=False,
+                  policy_raises=False):
+    root = Path(directory) / 'boundary'
+    (root / 'bin').mkdir(parents=True)
+    policy = root / 'bin/kstack-policy'
+    launch = root / 'launch.json'
+    lines = ["raise RuntimeError('boom')"] if policy_raises else []
+    if not without_child_env:
+        lines.extend([
+            'def child_env(entry, provider, environ):',
+            "    environment = {key: value for key, value in environ.items() "
+            "if key != 'SECRET_TOKEN'}",
+            "    environment['BOUNDARY_ENTRY'] = entry['name']",
+            "    environment['BOUNDARY_PROVIDER'] = provider",
+            '    return environment',
+        ])
+    if not without_wrap_argv:
+        prefix = list(wrap_prefix)
+        lines.append('def wrap_argv(entry, argv):')
+        if prefix[0] == 'env':
+            lines.append('    return %r + ["WRAP_ENTRY=" + entry["name"]] + list(argv)' % prefix)
+        else:
+            lines.append('    return %r + list(argv)' % prefix)
+    policy.write_text('\n'.join(lines) + '\n')
+    launch.write_text(launch_text if launch_text is not None else
+                      json.dumps({name: {'name': name} for name in entries}))
+    return policy, launch
 
 
 def fake_accept(directory):
@@ -126,12 +161,25 @@ class DispatchTest(unittest.TestCase):
         accept = mock.patch.object(dispatch, 'ACCEPT', fake_accept(self.base))
         accept.start()
         self.addCleanup(accept.stop)
+        policy, launch = fake_boundary(self.base)
+        for name, value in (('POLICY', policy), ('LAUNCH', launch)):
+            patcher = mock.patch.object(dispatch, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         revision = mock.patch.object(dispatch, 'runtime_rev', lambda: 'unknown')
         revision.start()
         self.addCleanup(revision.stop)
 
     def tearDown(self):
         self._tmp.cleanup()
+
+    def use_boundary(self, directory, **kwargs):
+        policy, launch = fake_boundary(directory, **kwargs)
+        for name, value in (('POLICY', policy), ('LAUNCH', launch)):
+            patcher = mock.patch.object(dispatch, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return policy, launch
 
     def worker(self, **kwargs):
         return fake_worker(self.base, self.record, **kwargs)
@@ -552,6 +600,131 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(argv[0], str(self.worktree))
         self.assertEqual(argv[1:], dispatch.WORKER_ROUTE)
         self.assertNotIn('--read-only', argv)
+
+    def test_card_worker_uses_the_write_entry(self):
+        code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.recorded('env.txt'),
+                         ['entry=dsh-ws wrap=dsh-ws provider=ollama-cloud '
+                          'wrapped=1 secret=unset'])
+
+    def test_read_only_workers_use_the_read_only_entry(self):
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 0)
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate('pass\n')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.recorded('env.txt'), [
+            'entry=dsh-ro wrap=dsh-ro provider=ollama-cloud wrapped=1 secret=unset',
+            'entry=dsh-ro wrap=dsh-ro provider=openai-codex wrapped=1 secret=unset'])
+
+    def test_worker_env_is_the_boundary_child_env(self):
+        os.environ['SECRET_TOKEN'] = 'x'
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 0)
+        lines = self.recorded('env.txt')
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].endswith('secret=unset'))
+
+    def test_worker_refuses_without_the_boundary(self):
+        with mock.patch.object(dispatch, 'POLICY', self.base / 'missing/kstack-policy'):
+            code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary is not installed:', err)
+        self.assertIn('refusing to start a worker without it', err)
+        self.assertEqual(self.runs(), 0)
+        self.assertEqual(list((self.root / 'reports/agents').glob('*.md')), [])
+
+    def test_worker_refuses_without_the_entry(self):
+        self.use_boundary(self.base / 'no-entry', entries=('dsh-ws',))
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary has no entry dsh-ro in', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_card_refuses_without_the_boundary_before_the_worktree(self):
+        with mock.patch.object(dispatch, 'LAUNCH', self.base / 'missing/launch.json'):
+            code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary is not installed:', err)
+        self.assertEqual(self.runs(), 0)
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(git('branch', '--list', 'card/T1', cwd=self.root).strip(), '')
+        self.assertFalse(self.scope.exists())
+
+    def test_worker_refuses_an_unreadable_launch_file(self):
+        self.use_boundary(self.base / 'bad-launch', launch_text='not json')
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary cannot be read:', err)
+        self.assertIn('JSONDecodeError', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_worker_refuses_a_policy_without_wrap_argv(self):
+        self.use_boundary(self.base / 'no-wrap', without_wrap_argv=True)
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary cannot be loaded from', err)
+        self.assertIn('no wrap_argv', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_worker_refuses_a_policy_without_child_env(self):
+        self.use_boundary(self.base / 'no-child-env', without_child_env=True,
+                          without_wrap_argv=True)
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('no child_env', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_worker_refuses_a_policy_that_raises(self):
+        self.use_boundary(self.base / 'raising', policy_raises=True)
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary cannot be loaded from', err)
+        self.assertIn('RuntimeError', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_worker_refuses_a_launch_file_that_is_not_an_object(self):
+        self.use_boundary(self.base / 'list-launch', launch_text='[]')
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary has no entry dsh-ro in', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_worker_refuses_a_symlinked_policy(self):
+        policy, launch = self.use_boundary(self.base / 'symlinked')
+        copy = policy.with_name('kstack-policy.copy')
+        copy.write_text(policy.read_text())
+        policy.unlink()
+        policy.symlink_to(copy)
+        code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('kstack launch boundary is not installed:', err)
+        self.assertEqual(self.runs(), 0)
+
+    def test_card_refuses_without_bwrap_before_the_worktree(self):
+        self.use_boundary(self.base / 'bwrap-card', wrap_prefix=('bwrap', '--'))
+        with mock.patch.object(dispatch.shutil, 'which', return_value=None):
+            code, out, err = self.invoke('card', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('bwrap is not installed', err)
+        self.assertFalse(self.worktree.exists())
+        self.assertFalse(self.scope.exists())
+
+    def test_card_without_worker_skips_the_boundary(self):
+        with mock.patch.object(dispatch, 'POLICY', self.base / 'missing/kstack-policy'):
+            code, out, err = self.invoke('card', 'T1', '--no-worker')
+        self.assertEqual(code, 0)
+        self.assertTrue(self.worktree.exists())
+
+    def test_worker_refuses_when_bwrap_is_missing(self):
+        self.use_boundary(self.base / 'bwrap-worker', wrap_prefix=('bwrap', '--'))
+        with mock.patch.object(dispatch.shutil, 'which', return_value=None):
+            code, out, err = self.invoke('ambiguity', 'T1')
+        self.assertEqual(code, 2)
+        self.assertIn('bwrap is not installed; the kstack launch boundary needs it', err)
+        self.assertEqual(self.runs(), 0)
 
     def test_card_reports_changes_outside_files(self):
         worker = self.worker(touch=[self.worktree / 'bin/else.py'])

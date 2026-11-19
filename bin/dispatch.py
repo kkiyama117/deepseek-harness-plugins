@@ -51,17 +51,26 @@ findings.tsv (kstack acceptance section 5), refuses until every finding of
 an earlier run that is not optional has a findings.tsv row, and refuses a worktree whose state is
 not committed. A fix check's brief adds the change since the covered run, a
 range-diff when the base moved, and the covered findings.
+
+Every worker starts through kstack's launch boundary: the installed
+~/.config/kstack/boundary/bin/kstack-policy supplies child_env and
+wrap_argv for the launch.json entry dsh-ro (read-only verbs) or dsh-ws
+(card). Without the boundary or the entry the dispatcher refuses to start a
+worker; it never falls back to a bare launch.
 """
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fnmatch
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -77,6 +86,11 @@ LAND_REPO = 'deepseek-harness-plugins'
 REVIEW_ROUTE = ['dsh', 'openai-codex', 'gpt-6.1-sol', 'high']
 GATE = 'python3 bin/gate.py'
 ACCEPT = KSTACK / 'bin/kstack-accept'
+BOUNDARY = Path.home() / '.config/kstack/boundary'
+POLICY = BOUNDARY / 'bin/kstack-policy'
+LAUNCH = BOUNDARY / 'launch.json'
+READ_ONLY_ENTRY = 'dsh-ro'
+WRITE_ENTRY = 'dsh-ws'
 REVIEW_KINDS = ('round', 'fixcheck', 'supplement', 'optional')
 GATE_SCHEMA = 'kstack-accept/gate/1'
 REVIEW_SCHEMA = 'kstack-accept/review/1'
@@ -439,6 +453,56 @@ def worker_command(worker, workdir, route, read_only):
     return [str(worker), *(['--read-only'] if read_only else []), str(workdir), *route]
 
 
+def _regular_file(path):
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def load_boundary(entry_name):
+    for path in (POLICY, LAUNCH):
+        if not _regular_file(path):
+            raise DispatchError(
+                f'kstack launch boundary is not installed: {path} is missing or not a regular '
+                'file; refusing to start a worker without it')
+    loader = importlib.machinery.SourceFileLoader('kstack_policy_module', str(POLICY))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        loader.exec_module(module)
+    except Exception as error:
+        raise DispatchError(
+            f'kstack launch boundary cannot be loaded from {POLICY}: '
+            f'{type(error).__name__}; refusing to start a worker without it') from None
+    finally:
+        sys.dont_write_bytecode = previous
+    for name, kind in (('child_env', 'no child_env'), ('wrap_argv', 'no wrap_argv')):
+        if not callable(getattr(module, name, None)):
+            raise DispatchError(
+                f'kstack launch boundary cannot be loaded from {POLICY}: {kind}; '
+                'refusing to start a worker without it')
+    try:
+        launch = json.loads(LAUNCH.read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        raise DispatchError(
+            f'kstack launch boundary cannot be read: {LAUNCH}: {type(error).__name__}; '
+            'refusing to start a worker without it') from None
+    entry = launch.get(entry_name) if isinstance(launch, dict) else None
+    if not isinstance(entry, dict):
+        raise DispatchError(
+            f'kstack launch boundary has no entry {entry_name} in {LAUNCH}; '
+            'refusing to start a worker without it')
+    return module, entry
+
+
+def _check_bwrap(command):
+    if command[0] == 'bwrap' and shutil.which('bwrap') is None:
+        raise DispatchError('bwrap is not installed; the kstack launch boundary needs it')
+
+
 def gate_step(main, root, card_id, worktree, branch):
     scope = read_scope(main, card_id)
     refresh_base(main, card_id, branch, scope)
@@ -641,12 +705,18 @@ def _harness_failure(log, answer, changed):
 
 
 def run_worker(agents, name, workdir, route, brief, read_only, worker=WORKER, changed=None, env=None):
+    entry_name = WRITE_ENTRY if not read_only else READ_ONLY_ENTRY
+    module, entry = load_boundary(entry_name)
+    provider = route[1] if len(route) > 1 else ''
+    environment = module.child_env(entry, provider,
+                                   dict(env if env is not None else os.environ))
+    command = module.wrap_argv(entry, worker_command(worker, workdir, route, read_only))
+    _check_bwrap(command)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     answer, log, stdout, stderr = _open_outputs(agents, stamp, name)
-    command = worker_command(worker, workdir, route, read_only)
     with stdout, stderr:
         code = subprocess.run(command, input=brief, text=True,
-                              stdout=stdout, stderr=stderr, env=env).returncode
+                              stdout=stdout, stderr=stderr, env=environment).returncode
     print(f'answer {answer}')
     print(f'log {log}')
     print(f'exit {code}')
@@ -710,6 +780,9 @@ def _card(args, root, worker):
         raise DispatchError(f'branch {card_branch} already exists')
     tier = card_tier(card)
     lineage = implementer_lineage(WORKER_ROUTE)
+    if not args.no_worker:
+        module, entry = load_boundary(WRITE_ENTRY)
+        _check_bwrap(module.wrap_argv(entry, ['true']))
     if git('status', '--porcelain', cwd=root).stdout.strip():
         print(f'warning: the checkout has uncommitted changes; the worktree starts from {branch}')
     (main / 'reports/worktrees').mkdir(parents=True, exist_ok=True)
