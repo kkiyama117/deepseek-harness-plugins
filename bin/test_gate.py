@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -283,6 +284,31 @@ class GateTest(unittest.TestCase):
                 code, _, _ = run_gate(repo)
             self.assertEqual(code, 0)
             self.assertEqual((repo / 'marker').read_text(), 'unset')
+
+    def test_package_checks_ignore_the_callers_git_index_file(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            env_out = Path(outside).resolve() / 'env.txt'
+            repo = make_repo(tmp, dump({'p': [{
+                'cwd': '.',
+                'run': f'printf %s "${{GIT_INDEX_FILE:-unset}}" > {shlex.quote(str(env_out))}'}]}))
+            (repo / 'p').mkdir()
+            (repo / 'p' / 'x.txt').write_text('x\n')
+            with mock.patch.dict(os.environ, {'GIT_INDEX_FILE': '/elsewhere'}):
+                code, _, _ = run_gate(repo)
+            self.assertEqual(code, 0)
+            self.assertEqual(env_out.read_text(), 'unset')
+
+    def test_gate_ignores_the_callers_git_dir(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            trap = Path(outside).resolve() / 'trap'
+            trap.mkdir()
+            repo = make_repo(tmp, dump({'p': [{'cwd': '.', 'run': 'true'}]}))
+            (repo / 'p').mkdir()
+            (repo / 'p' / 'x.txt').write_text('x\n')
+            with mock.patch.dict(os.environ, {'GIT_DIR': str(trap)}):
+                code, _, _ = run_gate(repo)
+            self.assertEqual(code, 0)
+            self.assertEqual(list(trap.iterdir()), [])
 
     def test_gate_skips_a_deleted_package_without_an_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
