@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "ACP usage",
+    "description": "Write one token-usage line per finished ACP turn to stderr and append the same record as JSONL to a configured file."
+  }
+}

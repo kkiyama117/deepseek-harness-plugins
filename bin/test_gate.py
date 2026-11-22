@@ -355,6 +355,7 @@ class RepositoryChecksTest(unittest.TestCase):
             'bin',
             'configs/dsh-inspector-origin',
             'configs/upgrade-rc1',
+            'plugins/dsh-acp-usage',
             'plugins/dsh-codex-transport-recovery',
             'plugins/dsh-open-in-app-icons',
             'plugins/dsh-prompt-compact',
@@ -376,6 +377,7 @@ class RepositoryChecksTest(unittest.TestCase):
         rows = {
             '.': ('b=$(git merge-base origin/main HEAD) || exit 1; if git diff --quiet "$b" -- core-exceptions.json; then echo "core-exceptions.json unchanged since the merge base; Core separation check skipped"; else python3 bin/check-core-separation.py --core "$DSH_UPSTREAM_ROOT"; fi',
                   {'DSH_UPSTREAM_ROOT': '/data/softwares/deepseek-harness'}),
+            'plugins/dsh-acp-usage': ('node --test tests/*.test.mjs', None),
             'plugins/dsh-codex-transport-recovery': ('node --test tests/*.test.mjs', None),
             'plugins/dsh-open-in-app-icons': ('python3 bin/test.py', None),
             'plugins/dsh-prompt-compact': ('node --test tests/*.test.mjs',
