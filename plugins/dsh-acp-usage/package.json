@@ -1,0 +1,25 @@
+{
+  "name": "@kkiyama117/dsh-acp-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Write one token-usage line per finished turn of an ACP session to stderr, and append the same record as JSONL to a configured file.",
+  "exports": {
+    ".": "./index.mjs",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "locale",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}
