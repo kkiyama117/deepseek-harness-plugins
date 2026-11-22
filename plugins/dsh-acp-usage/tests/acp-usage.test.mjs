@@ -140,7 +140,8 @@ test('writes steps=0 for a turn without steps', () => {
 
 test('keeps turns apart', () => {
   const { listener, lines } = collect();
-  for (const turn of [1, 2]) run(listener, session(), turnEvents(turn, { inputTokens: 10, outputTokens: 1 }));
+  const subject = session();
+  for (const turn of [1, 2]) run(listener, subject, turnEvents(turn, { inputTokens: 10, outputTokens: 1 }));
   assert.deepEqual(lines, [
     'dsh: usage: session=s1 cwd=/w steps=1 input=10 output=1\n',
     'dsh: usage: session=s1 cwd=/w steps=1 input=10 output=1\n',
@@ -188,6 +189,7 @@ test('ignores events before the first turn/start and a turn/end of another turn'
   listener(subject, ev('turn/start', { turn: 2 }));
   run(listener, subject, stepEvents(2, 1, { usage: { inputTokens: 10, outputTokens: 1 } }));
   listener(subject, ev('turn/end', { turn: 1, reason: 'stop' }));
+  assert.deepEqual(lines, []);
   listener(subject, ev('turn/end', { turn: 2, reason: 'stop' }));
   assert.deepEqual(lines, ['dsh: usage: session=s1 cwd=/w steps=1 input=10 output=1\n']);
 });
