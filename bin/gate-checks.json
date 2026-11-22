@@ -33,6 +33,12 @@
       }
     }
   ],
+  "plugins/dsh-acp-usage": [
+    {
+      "cwd": "plugins/dsh-acp-usage",
+      "run": "node --test tests/*.test.mjs"
+    }
+  ],
   "plugins/dsh-codex-transport-recovery": [
     {
       "cwd": "plugins/dsh-codex-transport-recovery",
