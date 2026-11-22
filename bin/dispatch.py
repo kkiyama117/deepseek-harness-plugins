@@ -17,12 +17,13 @@ issue branch to a second reviewer; with `--main`, it pipes the lead's
 uncommitted change of the given paths. `land` fast-forwards the issue branch,
 then removes the worktree and `card/<ID>`.
 
-Every verb that starts a worker, except `card`, starts it with `--read-only`, so
-`review` runs the gate itself, before the reviewer, and puts the exit code and
-the last lines of its output in the brief. The worker's answer (stdout) goes to
-`reports/agents/<UTC>-<name>.md` of the main checkout and its reasoning and
-errors (stderr) to the matching `.log`; a name already taken gains a `-2`,
-`-3`, ... suffix. Prints the paths and exits with the worker's code.
+Every verb that starts a worker, except `card`, starts it with `--read-only`,
+so `review` runs the gate itself, before the reviewer, and puts the exit code
+and a one-line summary of its result (gate: PASS or gate: FAIL) in the brief.
+The worker's answer (stdout) goes to `reports/agents/<UTC>-<name>.md` of the
+main checkout and its reasoning and errors (stderr) to the matching `.log`; a
+name already taken gains a `-2`, `-3`, ... suffix. Prints the paths and exits
+with the worker's code.
 
 `card` also writes `reports/agents/evidence/<ID>/scope.json` of the main
 checkout for kstack-accept, before the worker starts: the tier from the card's
@@ -101,6 +102,7 @@ HEADING = re.compile(r'^## (T[0-9]+)\. (.+)$')
 CARD_ID = re.compile(r'^T[0-9]+$')
 FINDING = re.compile(r'^(?P<loc>[^|]+?)\s*\|\s*(?P<sev>high|medium|low)\s*\|', re.IGNORECASE)
 FENCE = re.compile(r'^\s*(```|~~~)')
+GATE_RESULT = re.compile(r'^gate: PASS \(([0-9]+) checks\)$')
 
 CARD_BRIEF = '''{opening}
 
@@ -200,7 +202,7 @@ Output only this, as plain text:
 Be concrete. Skip style comments. Do not propose code.'''
 
 GATE_BLOCK = ('The dispatcher ran `python3 bin/gate.py` before you started; it exited {gate_code}. '
-              'The last lines of its output:\n\n```\n{gate_tail}\n```')
+              'Its result (the output of the checks is not shown to you):\n\n```\n{gate_tail}\n```')
 NO_GATE_BLOCK = 'bin/gate.py does not exist yet; the dispatcher ran no gate.'
 
 HARNESS_LINE = 'the worker did not start (cause:harness). Report it; do not switch the model or the runner.'
@@ -232,12 +234,19 @@ class Card:
     files: list
 
 
+def clean_env(environ=None):
+    source = os.environ if environ is None else environ
+    return {name: value for name, value in source.items() if not name.startswith('GIT_')}
+
+
 def git(*args, cwd=None, allow_failure=False):
     done = subprocess.run(['git', *[str(arg) for arg in args]], cwd=cwd,
-                          capture_output=True, text=True)
+                          capture_output=True, env=clean_env())
+    stderr = done.stderr.decode('utf-8', errors='replace')
     if done.returncode and not allow_failure:
-        raise DispatchError(f'git {" ".join(str(arg) for arg in args)}: {done.stderr.strip()}')
-    return done
+        raise DispatchError(f'git {" ".join(str(arg) for arg in args)}: {stderr.strip()}')
+    return subprocess.CompletedProcess(done.args, done.returncode,
+                                       os.fsdecode(done.stdout), stderr)
 
 
 def parse_card(path):
@@ -362,7 +371,8 @@ def read_scope(main, card_id):
 
 
 def work_state(path):
-    done = subprocess.run([str(ACCEPT), 'state', str(path)], capture_output=True, text=True)
+    done = subprocess.run([str(ACCEPT), 'state', str(path)], capture_output=True, text=True,
+                          env=clean_env())
     if done.returncode or not done.stdout.strip():
         raise DispatchError(f'kstack-accept state failed for {path}: {done.stderr.strip()}')
     return done.stdout.strip()
@@ -503,13 +513,23 @@ def _check_bwrap(command):
         raise DispatchError('bwrap is not installed; the kstack launch boundary needs it')
 
 
+def gate_summary(code, output):
+    if code == 0:
+        lines = [line for line in output.splitlines() if line.strip()]
+        match = GATE_RESULT.match(lines[-1]) if lines else None
+        if match:
+            return f'gate: PASS ({int(match.group(1))} checks)'
+    return 'gate: FAIL'
+
+
 def gate_step(main, root, card_id, worktree, branch):
     scope = read_scope(main, card_id)
     refresh_base(main, card_id, branch, scope)
     states = current_states(scope)
     started = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     done = subprocess.run(GATE, shell=True, cwd=worktree, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, errors='replace')
+                          stderr=subprocess.STDOUT, text=True, errors='replace',
+                          env=clean_env())
     ended = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     write_evidence(main, card_id, 'gate.log', done.stdout)
     path = write_evidence(main, card_id, 'gate.json', json.dumps({
@@ -523,9 +543,12 @@ def gate_step(main, root, card_id, worktree, branch):
         'states': states,
     }, indent=2) + '\n')
     print(f'gate exit {done.returncode}')
+    if done.stdout:
+        print(done.stdout, end='')
+        if not done.stdout.endswith('\n'):
+            print()
     print(f'gate.json {path}')
-    tail = '\n'.join(done.stdout.splitlines()[-40:])
-    return done.returncode, tail or '(no output)'
+    return done.returncode, gate_summary(done.returncode, done.stdout)
 
 
 def main_checkout(root):
@@ -550,10 +573,14 @@ def run_gate(tree):
         print('gate skipped: no bin/gate.py')
         return None, ''
     done = subprocess.run(GATE, shell=True, cwd=tree, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, errors='replace')
-    tail = '\n'.join(done.stdout.splitlines()[-40:])
+                          stderr=subprocess.STDOUT, text=True, errors='replace',
+                          env=clean_env())
     print(f'gate exit {done.returncode}')
-    return done.returncode, tail or '(no output)'
+    if done.stdout:
+        print(done.stdout, end='')
+        if not done.stdout.endswith('\n'):
+            print()
+    return done.returncode, gate_summary(done.returncode, done.stdout)
 
 
 def _status_paths(tree):
@@ -709,14 +736,15 @@ def run_worker(agents, name, workdir, route, brief, read_only, worker=WORKER, ch
     module, entry = load_boundary(entry_name)
     provider = route[1] if len(route) > 1 else ''
     environment = module.child_env(entry, provider,
-                                   dict(env if env is not None else os.environ))
+                                   clean_env(env if env is not None else os.environ))
     command = module.wrap_argv(entry, worker_command(worker, workdir, route, read_only))
     _check_bwrap(command)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     answer, log, stdout, stderr = _open_outputs(agents, stamp, name)
     with stdout, stderr:
-        code = subprocess.run(command, input=brief, text=True,
-                              stdout=stdout, stderr=stderr, env=environment).returncode
+        code = subprocess.run(command, input=brief, text=True, encoding='utf-8',
+                              errors='surrogateescape', stdout=stdout, stderr=stderr,
+                              env=environment).returncode
     print(f'answer {answer}')
     print(f'log {log}')
     print(f'exit {code}')
@@ -823,7 +851,18 @@ def _review(args, root, worker):
     if args.main:
         card = find_card(root, args.id)
         diff = git('diff', 'HEAD', '--', *args.main, cwd=root).stdout
-        untracked = [str(root / path) for path in _untracked(root, ('--', *args.main))]
+        untracked = []
+        for path in _untracked(root, ('--', *args.main)):
+            absolute = str(root / path)
+            if os.path.islink(absolute):
+                try:
+                    target = os.readlink(absolute)
+                except OSError:
+                    target = '(unreadable)'
+                line = f'untracked symlink not shown to the reviewer: {absolute} -> {target}'
+                print(line.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace'))
+            else:
+                untracked.append(absolute)
         if not diff.strip() and not untracked:
             raise DispatchError('no changes in the given paths')
         gate_code, gate_tail = run_gate(root)
@@ -922,9 +961,8 @@ def _review(args, root, worker):
             if (isinstance(gate_record, dict) and type(gate_record.get('exit')) is int
                     and gate_record.get('states') == states):
                 gate_code = gate_record['exit']
-                gate_tail = '\n'.join(
-                    log_path.read_text(encoding='utf-8', errors='replace').splitlines()[-40:])
-                gate_tail = gate_tail or '(no output)'
+                gate_tail = gate_summary(
+                    gate_code, log_path.read_text(encoding='utf-8', errors='replace'))
                 print(f'gate reused gate.json (exit {gate_code})')
         if gate_code is None:
             gate_code, gate_tail = gate_step(main, root, card.id, worktree, branch)
@@ -1162,7 +1200,7 @@ def _accept_record(agents, evidence, card_id):
     }
     try:
         done = subprocess.run([str(ACCEPT), 'check', str(agents), card_id],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=clean_env())
         sys.stdout.write(done.stdout)
         sys.stderr.write(done.stderr)
         if done.returncode < 0:

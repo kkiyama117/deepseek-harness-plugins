@@ -74,7 +74,7 @@ def make_repo(base):
 
 
 def fake_worker(directory, record, stdout_lines=('answer', 'TOTAL 0'),
-                stderr_lines=('reasoning',), code=0, touch=(), name='worker.sh'):
+                stderr_lines=('reasoning',), code=0, touch=(), name='worker.sh', env_out=None):
     path = directory / name
     lines = ['#!/bin/sh',
              f'printf "%s\\n" "$@" >> {shlex.quote(str(record / "argv.txt"))}',
@@ -87,6 +87,9 @@ def fake_worker(directory, record, stdout_lines=('answer', 'TOTAL 0'),
              '"$BOUNDARY_ENTRY" "${WRAP_ENTRY-none}" "$BOUNDARY_PROVIDER" '
              '"${BOUNDARY_WRAPPED-no}" "${SECRET_TOKEN-unset}" '
              f'>> {shlex.quote(str(record / "env.txt"))}']
+    if env_out is not None:
+        variable, out_path = env_out
+        lines.append(f'printf "%s\\n" "${{{variable}:-unset}}" > {shlex.quote(str(out_path))}')
     for line in stderr_lines:
         lines.append(f'printf "%s\\n" {shlex.quote(line)} >&2')
     for line in stdout_lines:
@@ -103,7 +106,7 @@ def fake_worker(directory, record, stdout_lines=('answer', 'TOTAL 0'),
 def fake_boundary(directory, entries=('dsh-ro', 'dsh-ws'),
                   wrap_prefix=('env', 'BOUNDARY_WRAPPED=1'), launch_text=None,
                   without_wrap_argv=False, without_child_env=False,
-                  policy_raises=False):
+                  policy_raises=False, entry_env=None):
     root = Path(directory) / 'boundary'
     (root / 'bin').mkdir(parents=True)
     policy = root / 'bin/kstack-policy'
@@ -116,8 +119,10 @@ def fake_boundary(directory, entries=('dsh-ro', 'dsh-ws'),
             "if key != 'SECRET_TOKEN'}",
             "    environment['BOUNDARY_ENTRY'] = entry['name']",
             "    environment['BOUNDARY_PROVIDER'] = provider",
-            '    return environment',
         ])
+        if entry_env is not None:
+            lines.append(f'    environment.update({entry_env!r})')
+        lines.append('    return environment')
     if not without_wrap_argv:
         prefix = list(wrap_prefix)
         lines.append('def wrap_argv(entry, argv):')
@@ -332,6 +337,15 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(worktree.is_dir())
         self.assertEqual(git('symbolic-ref', '--short', 'HEAD', cwd=worktree).strip(),
                          'card/T1')
+
+    def test_git_ignores_the_callers_git_environment(self):
+        trap = self.base / 'trap'
+        trap.mkdir()
+        with mock.patch.dict(os.environ, {'GIT_DIR': str(trap / 'nothing')}):
+            done = dispatch.git('rev-parse', '--show-toplevel', cwd=self.root)
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.stdout.strip(), str(self.root))
+        self.assertEqual(list(trap.iterdir()), [])
 
     def test_card_refuses_main(self):
         git('switch', 'main', cwd=self.root)
@@ -627,6 +641,22 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].endswith('secret=unset'))
 
+    def test_worker_does_not_get_the_callers_git_environment(self):
+        worker = self.worker(env_out=('GIT_DIR', self.record / 'gitdir.txt'))
+        with mock.patch.dict(os.environ, {'GIT_DIR': '/nonexistent'}):
+            code, out, err = self.invoke('card', 'T1', worker=worker)
+        self.assertEqual(code, 0)
+        self.assertEqual((self.record / 'gitdir.txt').read_text().strip(), 'unset')
+
+    def test_worker_keeps_git_variables_the_boundary_sets(self):
+        self.use_boundary(self.base / 'entry-env',
+                          entry_env={'GIT_CONFIG_GLOBAL': '/boundary/gitconfig'})
+        worker = self.worker(env_out=('GIT_CONFIG_GLOBAL', self.record / 'gitconfig.txt'))
+        with mock.patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': '/caller/gitconfig'}):
+            self.invoke('ambiguity', 'T1', worker=worker)
+        self.assertEqual((self.record / 'gitconfig.txt').read_text().strip(),
+                         '/boundary/gitconfig')
+
     def test_worker_refuses_without_the_boundary(self):
         with mock.patch.object(dispatch, 'POLICY', self.base / 'missing/kstack-policy'):
             code, out, err = self.invoke('ambiguity', 'T1')
@@ -756,6 +786,12 @@ class DispatchTest(unittest.TestCase):
         card = dispatch.find_card(self.root, 'T1')
         self.assertEqual(dispatch.off_list(self.worktree, card), ['ä.txt'])
 
+    def test_git_keeps_a_carriage_return_in_a_file_name(self):
+        self.invoke('card', 'T1', '--no-worker')
+        (self.worktree / 'a\rb.txt').write_text('x\n')
+        card = dispatch.find_card(self.root, 'T1')
+        self.assertIn('a\rb.txt', dispatch.off_list(self.worktree, card))
+
     def test_ambiguity_reviews_the_cards_that_are_not_done(self):
         self.commit_card(card_text('T1', 'Card dispatcher', done=True))
         (self.root / 'tasks/T2.md').write_text(card_text('T2', 'Second'))
@@ -826,7 +862,9 @@ class DispatchTest(unittest.TestCase):
         self.assertIn("+print('gate-' + 'said')", brief)
         self.assertIn('+Uncommitted body change.', brief)
         self.assertIn('exited 0', brief)
-        self.assertIn('gate-said', brief)
+        self.assertIn('gate-said', out)
+        self.assertIn('gate: FAIL', brief)
+        self.assertNotIn('gate-said', brief)
         self.assertIn('gate exit 0', out)
         argv = self.recorded('argv.txt')
         self.assertEqual(argv[0], '--read-only')
@@ -836,15 +874,51 @@ class DispatchTest(unittest.TestCase):
     def test_review_with_a_passing_gate(self):
         self.invoke('card', 'T1', '--no-worker')
         (self.worktree / 'bin').mkdir()
-        (self.worktree / 'bin/gate.py').write_text("print('fi' + 'ne')\n")
+        (self.worktree / 'bin/gate.py').write_text("print('fi' + 'ne')\n"
+                                                   "print('gate: ' + 'PASS (1 checks)')\n")
         commit(self.worktree, 'add the gate')
         code, out, err = self.invoke('review', 'T1')
         self.assertEqual(code, 0)
         self.assertIn('gate exit 0', out)
+        self.assertIn('fine', out)
         brief = self.record_text('stdin.txt')
         self.assertIn('exited 0', brief)
-        self.assertIn('fine', brief)
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('fine', brief)
         self.assertNotIn('does not exist yet', brief)
+
+    def test_review_brief_holds_only_gate_lines(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate("print('SECRET-' + 'TOKEN')\n"
+                      "print('gate: ' + 'PASS (1 checks)')\n")
+        code, out, err = self.invoke('review', 'T1')
+        brief = self.record_text('stdin.txt')
+        self.assertIn('gate exit 0', out)
+        self.assertIn('SECRET-TOKEN', out)
+        self.assertIn('exited 0', brief)
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('SECRET-TOKEN', brief)
+
+    def test_review_brief_drops_gate_lines_the_worktree_printed(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate("print('gate: SECRET-' + 'LINE')\n"
+                      "print('gate: ' + 'PASS (1 checks)')\n")
+        code, out, err = self.invoke('review', 'T1')
+        brief = self.record_text('stdin.txt')
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('SECRET-LINE', brief)
+        self.assertIn('gate: SECRET-LINE', out)
+
+    def test_reused_gate_json_gives_only_the_summary(self):
+        self.invoke('card', 'T1', '--no-worker')
+        self.add_gate("print('SECRET-' + 'TOKEN')\n"
+                      "print('gate: ' + 'PASS (1 checks)')\n")
+        self.invoke('gate', 'T1')
+        code, out, err = self.invoke('review', 'T1')
+        self.assertIn('gate reused gate.json (exit 0)', out)
+        brief = self.record_text('stdin.txt')
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('SECRET-TOKEN', brief)
 
     def test_review_without_a_gate(self):
         self.invoke('card', 'T1', '--no-worker')
@@ -891,6 +965,51 @@ class DispatchTest(unittest.TestCase):
         code, out, err = self.invoke('review', 'T1', '--main', 'tasks/T1.md')
         self.assertEqual(code, 2)
         self.assertIn('no changes in the given paths', err)
+
+    def test_review_main_brief_holds_only_gate_lines(self):
+        (self.root / 'bin').mkdir()
+        (self.root / 'bin/gate.py').write_text("print('SECRET-' + 'TOKEN')\n"
+                                               "print('gate: ' + 'PASS (1 checks)')\n")
+        commit(self.root, 'add the gate')
+        (self.root / 'tasks/T1.md').write_text(CARD_T1 + '\nLead change.\n')
+        code, out, err = self.invoke('review', 'T1', '--main', 'tasks/T1.md')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin.txt')
+        self.assertIn('gate: PASS (1 checks)', brief)
+        self.assertNotIn('SECRET-TOKEN', brief)
+        self.assertIn('SECRET-TOKEN', out)
+
+    def test_non_utf8_brief_reaches_the_worker(self):
+        (self.root / 'tasks/T1.md').write_text(CARD_T1 + '\nLead change.\n')
+        path = os.path.join(os.fsencode(self.root), b'x\xff.txt')
+        with open(path, 'wb') as handle:
+            handle.write(b'x\n')
+        code, out, err = self.invoke('review', 'T1', '--main', 'tasks/T1.md',
+                                     os.fsdecode(b'x\xff.txt'))
+        self.assertEqual(code, 0)
+        self.assertIn(b'\xff', (self.record / 'stdin.txt').read_bytes())
+
+    def test_review_main_does_not_show_an_untracked_symlink(self):
+        (self.root / 'other.txt').write_text('one\n')
+        commit(self.root, 'add other')
+        (self.root / 'other.txt').write_text('two\n')
+        (self.base / 'outside.txt').write_text('outside\n')
+        (self.root / 'link.md').symlink_to(self.base / 'outside.txt')
+        code, out, err = self.invoke('review', 'T1', '--main', 'link.md', 'other.txt')
+        self.assertEqual(code, 0)
+        brief = self.record_text('stdin.txt')
+        self.assertIn('other.txt', brief)
+        self.assertNotIn('link.md', brief)
+        self.assertIn(f'untracked symlink not shown to the reviewer: {self.root}/link.md -> '
+                      f'{self.base}/outside.txt', out)
+
+    def test_review_main_symlink_alone_is_no_change(self):
+        (self.base / 'outside.txt').write_text('outside\n')
+        (self.root / 'link.md').symlink_to(self.base / 'outside.txt')
+        code, out, err = self.invoke('review', 'T1', '--main', 'link.md')
+        self.assertEqual(code, 2)
+        self.assertIn('no changes in the given paths', err)
+        self.assertEqual(self.runs(), 0)
 
     def test_review_main_refuses_main(self):
         git('switch', 'main', cwd=self.root)
@@ -1113,6 +1232,32 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('the gate exited 3; the review does not start', err)
         self.assertEqual(self.runs(), 0)
         self.assertEqual(list(self.evidence.glob('review-*.json')), [])
+
+    def test_review_gate_does_not_get_the_callers_git_environment(self):
+        self.invoke('card', 'T1', '--no-worker')
+        path = self.record / 'gate-gitdir.txt'
+        self.add_gate(f'import os\n'
+                      f'with open({str(path)!r}, "w") as handle:\n'
+                      f'    handle.write(os.environ.get("GIT_DIR", "unset"))\n')
+        with mock.patch.dict(os.environ, {'GIT_DIR': '/nonexistent'}):
+            code, out, err = self.invoke('review', 'T1')
+        self.assertEqual(code, 0)
+        self.assertEqual(path.read_text().strip(), 'unset')
+
+    def test_review_main_gate_does_not_get_the_callers_git_environment(self):
+        path = self.record / 'main-gate-gitdir.txt'
+        (self.root / 'bin').mkdir()
+        (self.root / 'bin/gate.py').write_text(
+            f'import os\n'
+            f'with open({str(path)!r}, "w") as handle:\n'
+            f'    handle.write(os.environ.get("GIT_DIR", "unset"))\n'
+            "print('gate: PASS (1 checks)')\n")
+        commit(self.root, 'add the gate')
+        (self.root / 'tasks/T1.md').write_text(CARD_T1 + '\nLead change.\n')
+        with mock.patch.dict(os.environ, {'GIT_DIR': '/nonexistent'}):
+            code, out, err = self.invoke('review', 'T1', '--main', 'tasks/T1.md')
+        self.assertEqual(code, 0)
+        self.assertEqual(path.read_text().strip(), 'unset')
 
     def test_review_refuses_without_scope_json(self):
         self.invoke('card', 'T1', '--no-worker')
