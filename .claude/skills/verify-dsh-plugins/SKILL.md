@@ -43,7 +43,7 @@ RUN=latest                                 # or the printed "run" path
 4. Starts `dsh --profile web --port 0 --host 127.0.0.1 --no-open` and waits for the line `dsh web: http://127.0.0.1:<port>/?token=…`.
 5. Runs doctor. `up` exits 1 unless the instance is usable: the UI loads and every row of the packages under test is `active`. On failure it leaves the run up for inspection; run `down` afterwards.
 
-Expect about 5 seconds. `dshv state <run>` prints the run's paths, pids, URLs, and packages (`<run>/state.json`). A first web start also creates a "Default workspace" under `<run>/home/ドキュメント/` or `Documents/`. That is normal.
+Expect about 10 seconds. `dshv state <run>` prints the run's paths, pids, URLs, and packages (`<run>/state.json`). A fresh run has no workspace: the `Sessions` tree says `No sessions yet`.
 
 ## Doctor
 
@@ -71,9 +71,9 @@ $D web "$RUN" open --reload
 $D web "$RUN" screenshot workspace-attach/after.png      # relative paths land in the run's evidence
 ```
 
-Stable handles (en-US): buttons `New session`, `Add workspace`, `Plugins`, `More`, `Send message`. The tree `Sessions` holds workspace headers (treeitems with `aria-expanded`), the session rows after each header, and an `Ungrouped` header. The dialog `Select Workspace Directory` has an `Edit path` button that turns into a textbox, then `Open`. The composer is the textbox `Describe what you want to build, / commands, @ files or sessions`.
+Stable handles (en-US): buttons `New session`, `Add workspace`, `Plugins`, `More`, `Send message`. The tree `Sessions` holds workspace headers (treeitems with `aria-expanded`), the session rows after each header, and an `Ungrouped` header. The dialog `Select Workspace Directory` has an `Edit path` button that turns into a textbox, then `Open`. The composer is the textbox `Choose workspace` until a workspace is added, `Describe what you want to build, / commands, @ files or sessions` in a new session, and `Message or run a task, / commands, @ files or sessions` after the first turn. A session with a turn has `More actions` in its header (`Open in`, `Download session log`, and more).
 
-**CLI.** `dshv headless <run> [--cd DIR] [--env K=V]... "<task>"` runs `dsh --profile headless --json` in the isolated environment and prints `exitCode`, `sessionId`, `finished`, `text`, `warnings`, and the saved `transcript`. Against the default mock, `text` is `mock response recovered`. `dshv exec <run> [--cd DIR] -- <command>` runs anything else there, with the checkout's `dsh` on `PATH`.
+**CLI.** `dshv headless <run> [--cd DIR] [--env K=V]... [--patch FILE]... [--name N] "<task>"` runs `dsh --profile headless --json` in the isolated environment and prints `exitCode`, `sessionId`, `finished`, `text`, `warnings`, and the saved `transcript`. Against the default mock, `text` is `mock response recovered`. `dshv exec <run> [--cd DIR] -- <command>` runs anything else there, with the checkout's `dsh` on `PATH`.
 
 **State.** `dshv store <run> workspace` prints a storage file (workspaces and their session ids). `dshv logs <run> <web.err|web.out|mock.out|mock.err|browser.err> [--tail N]` prints log lines. `mock.out` has one record per LLM request with the behavior served.
 

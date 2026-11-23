@@ -11,7 +11,7 @@ A user adds one of this repository's bundles to a DSH profile. After that, the b
 
 ## How to get to it (user POV)
 
-- Run `dsh plugin --profile <web|headless> add <link:dir | file:archive.tgz>` in a terminal.
+- Run `dsh plugin --profile <web|headless> add <link:dir | file:archive.tgz>` in a terminal. The path must be absolute or start with `./` or `../`; any other relative path resolves under the profile directory.
 - Run `dsh --profile <p> --dump-config` to see the composed tree.
 - Open the web UI and choose `Plugins` in the sidebar.
 
@@ -19,16 +19,16 @@ A user adds one of this repository's bundles to a DSH profile. After that, the b
 
 Preconditions:
 
-- None beyond a package directory under `plugins/` or an archive under `releases/`. `dshv up` performs the install.
+- None beyond a package directory under `plugins/` or an archive under `releases/` whose manifest accepts the checkout's DSH version. `dshv up` performs the install.
 
 - **Install.** Run `dshv up plugins/<pkg>` (or `releases/<pkg>.tgz`). Exit code 0; the JSON has `"run"` and `"doctor": {"ok": true}`.
 - **Composed tree.** Run `dshv exec "$RUN" -- dsh --profile web --dump-config`. The output has a `# == <package name>` section listing the bundle's row ids.
-- **Active in the host.** Run `dshv doctor "$RUN"`. `checks` has an `<entryId> is active` entry with `"ok": true` for every row of the package.
+- **Active in the host.** Run `dshv doctor "$RUN"`. `checks` has an `<entryId> is active` entry with `"ok": true` for every row whose module is the package (rows the bundle inserts for another module, such as a preset, are checked only for `failed`).
 - **Headless pending.** Run `dshv headless "$RUN" "Say hello"`. `text` is `mock response recovered`, and `warnings` lists any web-only row as `pending (waiting for service: …)`.
 
 ## Gotchas
 
 - `dsh plugin add link:` prints a peerDependencies warning for `@deepseek-ai/cordis`. It is harmless when doctor shows the rows active.
-- A bundle whose manifest pins DSH versions (`engines.dsh`, peer ranges) can install and still fail to mount on another DSH version. Doctor's `failed` rows show this; the DSH version is the first doctor line.
+- A bundle whose manifest pins DSH versions (`engines.dsh`, `@deepseek-ai/dsh*` peer ranges) is refused at install on any other version: `dsh plugin add` prints `installation rejected: ... incompatible with dsh <version>` and `nothing was installed`, so `dshv up` exits 1 before starting anything. The exemption is `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <ver> --accept-risk`, which `dshv up` does not run. A bundle already installed and then booted on another version is skipped with `dsh: skipping profile bundle`, and doctor fails `<pkg> has rows in the web profile`.
 - `link:` tests the working tree, including uncommitted edits. Pass the `.tgz` to test what will ship.
 - Rows that inject a web-only service (for example `workspaceRegistry`) stay `pending` in headless by design. That is not a failure of this feature.
